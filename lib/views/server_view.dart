@@ -216,7 +216,7 @@ class _StatusHero extends StatelessWidget {
         if (isRunning && !isStarting)
           SizedBox(
             width: double.infinity,
-            child: TonalButton.destructive(context, label: 'Stop server',
+            child: TonalButton.destructive(context, label: 'Stop AI',
                 onTap: () {
               Haptics.mediumImpact();
               controller.toggleServer(false);
@@ -224,12 +224,12 @@ class _StatusHero extends StatelessWidget {
           )
         else
           PrimaryButton(
-            label: isStarting ? 'Starting…' : 'Start server',
+            label: isStarting ? 'Starting…' : 'Start AI',
             icon: Icons.play_arrow_rounded,
             busy: isStarting,
             onPressed: () {
               Haptics.mediumImpact();
-              controller.toggleServer(true);
+              controller.startAI();
             },
           ),
       ]),

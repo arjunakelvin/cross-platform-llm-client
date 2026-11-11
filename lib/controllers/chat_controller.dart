@@ -17,7 +17,9 @@ import '../core/constants.dart';
 import '../core/ui.dart';
 import '../models/chat_message.dart';
 import '../models/chat_session.dart';
-import '../ffi/sd_ffi_bindings.dart';
+import '../services/discord_service.dart';
+import '../ffi/sd_ffi_bindings.dart'
+    if (dart.library.html) '../ffi/sd_ffi_bindings_web.dart';
 import '../services/hive_service.dart';
 import '../services/inference_service.dart';
 import '../services/cloud_service.dart';
@@ -270,6 +272,9 @@ class ChatController extends GetxController {
     final provider = s.cloudProvider.value;
     String modelName = '';
     switch (provider) {
+      case 'local':
+        modelName = s.localCloudModel.value;
+        break;
       case 'anthropic':
         modelName = s.anthropicModel.value;
         break;
@@ -643,6 +648,31 @@ class ChatController extends GetxController {
       if (idx >= 0) sessions[idx] = updated;
     }
 
+    // Check token/credit depletion before generating
+    if (kIsWeb) {
+      final settings = Get.find<SettingsController>();
+      if (settings.tokenRemaining <= 0) {
+        final ds = Get.isRegistered<DiscordService>()
+            ? Get.find<DiscordService>()
+            : null;
+        final credit = ds?.sessionAccount.value?.creditBalance ?? 0;
+        if (credit <= 0) {
+          isLoading.value = false;
+          isStreaming.value = false;
+          final botMsg = ChatMessage(
+            id: _uuid.v4(),
+            chatId: currentSessionId.value,
+            role: 'assistant',
+            content: 'Your tokens and credits are exhausted. Please refill your balance or upgrade your tier to continue using the AI services.',
+          );
+          messages.add(botMsg);
+          _hive.saveMessage(botMsg.id, botMsg.toMap());
+          _scrollToBottom(force: true);
+          return;
+        }
+      }
+    }
+
     // Start generating
     final generationId = ++_generationSerial;
     isLoading.value = true;
@@ -866,6 +896,32 @@ class ChatController extends GetxController {
       messages.add(aiMsg);
       _hive.saveMessage(aiMsg.id, aiMsg.toMap());
       imageGenStartTime.value = null;
+
+      // Token quota + request log for the local AI server.
+      // Tokens are only deducted when running on the local AI server; when a
+      // cloud provider (user-owned API key) is used, no shared token balance
+      // is consumed.
+      try {
+        final settings = Get.find<SettingsController>();
+        final approxTokens = (effectiveText.length + rawResponse.length) ~/ 4;
+        final usesLocalAi = settings.inferenceMode.value == 'local' ||
+            (settings.inferenceMode.value == 'cloud' &&
+                settings.cloudProvider.value == 'local');
+        // Lewat gateway, token sudah dipotong server (itu acuan resmi),
+        // jadi jangan dipotong dua kali di perangkat.
+        if (usesLocalAi && !settings.localAiViaGateway) {
+          await settings.consumeTokens(approxTokens);
+        }
+        if (Get.isRegistered<AppLogService>()) {
+          final cloud = Get.find<CloudService>();
+          final usage = cloud.lastGatewayUsageLabel;
+          Get.find<AppLogService>().info(
+            'AI request: ${settings.inferenceMode.value} · '
+            '${settings.selectedCloudModelName} · ~$approxTokens tokens'
+            '${usage.isEmpty ? '' : ' · server: $usage'}',
+          );
+        }
+      } catch (_) {}
 
       // Update session
       final session =

@@ -1,0 +1,43 @@
+﻿# AI-Agent PiercingBlow â€” worker backend (CORS proxy + Discord auth + admin).
+#
+# Deploy:
+#   1. wrangler kv namespace create PB_KV
+#      -> salin id yang muncul ke bawah ini.
+#   2. wrangler secret put ADMIN_KEY
+#      -> masukkan kunci admin rahasia (dipakai di dashboard /admin/).
+#   3. wrangler deploy
+#      (route di bawah otomatis dipasang, jadi /api/* tidak lewat Vercel)
+#
+# Dashboard admin privat: https://piercingblow.ai.id/admin/
+# (file web/admin/index.html ikut ter-build ke situs; tidak ditautkan dari app).
+#
+# Cek setelah deploy:
+#   curl -i https://piercingblow.ai.id/api/admin/health \
+#        -H "X-Admin-Key: <ADMIN_KEY>"
+#   200 -> Worker hidup, ADMIN_KEY cocok, dashboard bisa dibuka
+#   503 "ADMIN_KEY is not set" -> secret belum di-set
+#   400 "Missing target URL"    -> route belum aktif / zona salah
+
+name = "piercingblow-api"
+main = "cloudflare-worker.js"
+compatibility_date = "2026-01-01"
+
+kv_namespaces = [
+  { binding = "PB_KV", id = "b9756579e4494f9caad21433d5c3cc22" }
+]
+
+# Route Worker di domain milik sendiri.
+#
+# PENTING: pakai apex `piercingblow.ai.id`. Host `www.piercingblow.ai.id`
+# tidak punya record DNS, jadi route www tidak akan pernah kena.
+#
+# Route `/api*` mengambil alih semua request API (admin dashboard, login
+# Discord, bot, proxy CORS) sehingga request tidak pernah sampai ke origin
+# Vercel dan tidak perlu forwarding lewat Vercel.
+#
+# Kalau route tidak bisa dipasang (mis. zone ini tidak ada di akun
+# Cloudflare yang dipakai), biarkan file `web/api/[...path].js` yang
+# meneruskan ke Worker â€” set env WORKER_URL di project Vercel.
+routes = [
+  { pattern = "piercingblow.ai.id/api*", zone_name = "piercingblow.ai.id" }
+]

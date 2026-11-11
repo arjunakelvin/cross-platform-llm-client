@@ -2,9 +2,10 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
+import 'core/desktop_autostart.dart' if (dart.library.html) 'core/io_stub.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 // import 'firebase_options.dart';
 import 'controllers/settings_controller.dart';
@@ -15,9 +16,12 @@ import 'core/theme.dart';
 //////
 import 'core/routes.dart';
 import 'services/hive_service.dart';
+import 'services/discord_service.dart';
+import 'services/secure_key_store.dart';
 import 'services/inference_service.dart';
-import 'services/cluster_service.dart';
 import 'services/cloud_service.dart';
+import 'services/dashboard_config_service.dart';
+import 'services/web_update_service.dart';
 import 'services/download_service.dart';
 import 'services/update_service.dart';
 import 'services/device_info_service.dart';
@@ -26,6 +30,18 @@ import 'services/app_log_service.dart';
 import 'services/crash_reporting_service.dart';
 import 'services/image_generation_notification_service.dart';
 import 'core/constants.dart';
+
+/// True kalau user sedang membuka endpoint callback OAuth Discord
+/// (https://piercingblow.ai.id/auth/discord).
+bool get isDiscordCallbackRoute {
+  if (!kIsWeb) return false;
+  return Uri.base.path.endsWith(AppRoutes.authDiscord);
+}
+
+/// Rute awal aplikasi: halaman callback OAuth Discord kalau memang dibuka
+/// dari link, selain itu home.
+String _initialRoute() =>
+    isDiscordCallbackRoute ? AppRoutes.authDiscord : AppRoutes.home;
 
 void main() {
   final appLogBuffer = <String>[];
@@ -74,6 +90,15 @@ void main() {
             return HiveService();
           },
         ));
+    // Keys are loaded before SettingsController so the rest of the app can
+    // read them synchronously.
+    await Get.putAsync(() => SecureKeyStore().init().timeout(
+          const Duration(seconds: 10),
+          onTimeout: () {
+            appLog.error('SecureKeyStore.init timed out');
+            return SecureKeyStore();
+          },
+        ));
     await Get.putAsync(() => DeviceInfoService().init().timeout(
           const Duration(seconds: 10),
           onTimeout: () {
@@ -85,11 +110,78 @@ void main() {
     // Settings controller must be initialized before runApp for theme support
     final settingsController = Get.put(SettingsController());
     Get.put(CloudModelController());
+    Get.put(DiscordService(), permanent: true);
 
-    if (ClusterService.isSupported) Get.put(ClusterService(), permanent: true);
-    Get.put(InferenceService());
+    Get.put(InferenceService());  // Auto-start the AI server on desktop.
+  if (!kIsWeb) {
+    autoStartDesktopAI();
+  }
+    Get.put(ServerController(), permanent: true);
     Get.put(CloudService());
     Get.put(DownloadService());
+    // Config dari dashboard admin (server, model, alamat AI server).
+    Get.put(DashboardConfigService(), permanent: true).ensureLoaded();
+    // Web: muat ulang otomatis kalau ada bundle baru di server.
+    Get.put(WebUpdateService(), permanent: true)..start();
+
+    // Web: default to the dedicated Local AI provider (listed above
+    // OpenRouter) so users don't need a cloud API key. Also migrates the
+    // legacy setup that stored Local AI inside the Custom API provider.
+    if (kIsWeb) {
+      final settings = Get.find<SettingsController>();
+      final hive = Get.find<HiveService>();
+      final savedProvider =
+          hive.getSetting<String>(AppConstants.keyCloudProvider) ?? '';
+      final profileIndex = settings.customCloudProfileIndex.value;
+      final activeProfile = profileIndex >= 0 &&
+              profileIndex < settings.customCloudProfiles.length
+          ? settings.customCloudProfiles[profileIndex]
+          : null;
+      final isLegacyLocalCustom = savedProvider == 'custom' &&
+          settings.customCloudName.value == 'Local AI' &&
+          ((activeProfile?['baseUrl'] ?? settings.customCloudBaseUrl.value) ==
+              settings.localServerUrl.value);
+      if (savedProvider.isEmpty || isLegacyLocalCustom) {
+        await settings.setCloudProvider('local');
+        await settings.setInferenceMode('cloud');
+        if (isLegacyLocalCustom) {
+          // Drop the surplus "Local AI" entry from the Custom API list.
+          await settings.clearCustomCloudConfig();
+        }
+      }
+    }
+
+    // Discord (DS) OAuth: config comes from the private admin dashboard's
+    // backend. Restore the session, refresh role/tier, and on web handle an
+    // OAuth redirect (`?code=`) through the server-side exchange.
+    if (Get.isRegistered<DiscordService>()) {
+      final discord = Get.find<DiscordService>();
+      final serverConfig = await discord.loadServerConfig();
+      if (serverConfig != null) {
+        final settings = Get.find<SettingsController>();
+        final aiServerUrl = (serverConfig['aiServerUrl'] ?? '').toString();
+        final hive = Get.find<HiveService>();
+        final savedLocalUrl =
+            hive.getSetting<String>(AppConstants.keyLocalServerUrl) ?? '';
+        final localUrlUnset = savedLocalUrl.isEmpty ||
+            savedLocalUrl == AppConstants.defaultLocalServerUrl;
+        if (aiServerUrl.isNotEmpty && localUrlUnset) {
+          await settings.setLocalServerUrl(
+            DashboardConfigService.normalizeAiBase(aiServerUrl),
+          );
+        }
+        // Secret AI server tidak pernah dikirim ke user anymore: aplikasi
+        // memakai API key milik user lewat gateway (Settings → AI API key).
+      }
+      await discord.loadSessionAndAccess();
+      if (kIsWeb && !isDiscordCallbackRoute) {
+        final discordUser = await discord.tryHandleRedirect();
+        if (discordUser != null) {
+          appLog.info(
+              'Discord login OK: ${discordUser.id} @${discordUser.username}');
+        }
+      }
+    }
     if (UpdateService.isSupported) Get.put(UpdateService(), permanent: true);
     Get.put(LocalImageService());
     final crashReporting = await Get.putAsync(() => CrashReportingService().init().timeout(
@@ -101,6 +193,8 @@ void main() {
         ));
     FlutterError.onError = (details) {
       FlutterError.presentError(details);
+      print('[main] FlutterError: ${details.exceptionAsString()}\n'
+          '${details.stack}');
       appLog.error(
         details.exceptionAsString(),
         details: details.stack?.toString() ?? 'No stack',
@@ -108,6 +202,7 @@ void main() {
       crashReporting.recordFlutterFatal(details);
     };
     PlatformDispatcher.instance.onError = (error, stack) {
+      print('[main] PlatformDispatcher error: $error\n$stack');
       appLog.error(
         error.toString(),
         details: stack.toString(),
@@ -117,8 +212,12 @@ void main() {
     };
     final imageNotifications = Get.put(ImageGenerationNotificationService());
     try {
-      await imageNotifications.init();
-      await imageNotifications.configureBackgroundService();
+      await imageNotifications
+          .init()
+          .timeout(const Duration(seconds: 3));
+      await imageNotifications
+          .configureBackgroundService()
+          .timeout(const Duration(seconds: 3));
     } catch (e) {
       appLog.error('[Notifications] Init failed', details: e);
     }
@@ -133,13 +232,14 @@ void main() {
     // Keep last model as a quick-load option, but do not auto-load on startup.
     _validateLastModel();
 
-    runApp(const PrivateLMApp());
+    runApp(const PiercingBlowApp());
 
     // Apply system UI after frame is rendered so Get.mediaQuery is available
     WidgetsBinding.instance.addPostFrameCallback((_) {
       settingsController.setThemeMode(settingsController.themeMode.value);
     });
   }, (error, stack) async {
+    print('[main] Uncaught zone error: $error\n$stack');
     if (Get.isRegistered<AppLogService>()) {
       Get.find<AppLogService>().error(
         'Uncaught zone error: $error',
@@ -217,8 +317,8 @@ void _autoConfigureForDevice() {
       'maxTokens=${device.recommendedMaxTokens} for ${device.totalRamGB.value.toStringAsFixed(1)}GB RAM');
 }
 
-class PrivateLMApp extends StatelessWidget {
-  const PrivateLMApp({super.key});
+class PiercingBlowApp extends StatelessWidget {
+  const PiercingBlowApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -227,12 +327,12 @@ class PrivateLMApp extends StatelessWidget {
       final themeMode = settings.themeMode.value;
       final scale = settings.fontScale.value; // read here → Obx tracks it
       return GetMaterialApp(
-        title: 'PrivateLM',
+        title: 'AI-Agent PiercingBlow',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.lightTheme,
         darkTheme: AppTheme.darkTheme,
         themeMode: themeMode,
-        initialRoute: AppRoutes.home,
+        initialRoute: _initialRoute(),
         getPages: AppPages.pages,
         builder: (ctx, child) => MediaQuery(
           data: MediaQuery.of(ctx).copyWith(

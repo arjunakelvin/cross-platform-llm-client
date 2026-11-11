@@ -18,21 +18,56 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="AI-Agent PiercingBlow — private local and cloud AI chat.">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="PrivateLM">
+  <meta name="apple-mobile-web-app-title" content="AI-Agent PiercingBlow">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>PrivateLM</title>
+  <title>AI-Agent PiercingBlow</title>
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>
+  <script>
+    // On some embedded/occluded windows the Flutter engine receives a
+    // zero-sized surface during startup and never schedules the first frame,
+    // leaving a blank page until the user resizes the window. Nudge the engine
+    // with resize events until its canvas is attached.
+    (function () {
+      var attempts = 0;
+      var running = false;
+      function hasCanvas() {
+        var pane = document.querySelector('flt-glass-pane');
+        return !!(pane && pane.shadowRoot &&
+            pane.shadowRoot.querySelector('canvas'));
+      }
+      function tick() {
+        if (hasCanvas() || attempts >= 600) {
+          running = false;
+          return;
+        }
+        attempts++;
+        window.dispatchEvent(new Event('resize'));
+        setTimeout(tick, 500);
+      }
+      function kick() {
+        if (running) return;
+        running = true;
+        attempts = 0;
+        setTimeout(tick, 150);
+      }
+      window.addEventListener('focus', kick);
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') kick();
+      });
+      kick();
+    })();
+  </script>
 </body>
 </html>

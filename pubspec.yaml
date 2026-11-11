@@ -1,7 +1,7 @@
 name: privatelm
-description: AI Chat — Local/Cloud LLM Assistant
+description: AI-Agent PiercingBlow — Local/Cloud LLM Assistant
 publish_to: "none"
-version: 1.0.7+7
+version: 1.0.9+9
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -31,6 +31,7 @@ dependencies:
   # Networking
   dio: ^5.7.0
   http: ^1.2.0
+  crypto: ^3.0.5
 
   # Firebase (Push Updates)
   firebase_core: ^3.8.0
@@ -47,16 +48,19 @@ dependencies:
   # UI
   google_fonts: ^6.2.0
   flutter_markdown: ^0.7.4
+  flutter_math_fork: ^0.7.2
+  flutter_highlight: ^0.7.0
 
   # Utils
   uuid: ^4.5.0
   intl: ^0.19.0
+  markdown: ^7.3.1
 
   # Background / Boot Persistence
   flutter_background_service: ^5.0.5
   flutter_local_notifications: ^17.0.0
   file_picker: ^11.0.2
-  flutter_inappwebview: ^6.1.5
+  
   image: ^4.8.0
   flutter_litert_lm:
     path: local_plugins/flutter_litert_lm
@@ -70,6 +74,7 @@ dependencies:
   xml: ^6.6.1
   qr_flutter: ^4.1.0
   mobile_scanner: ^7.4.2
+  flutter_secure_storage: ^10.3.4
 
 dev_dependencies:
   flutter_test:

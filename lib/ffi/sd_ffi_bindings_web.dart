@@ -64,6 +64,7 @@ enum Backend {
   cpu,
   vulkan,
   opencl,
+  metal,
 }
 
 extension BackendExtension on Backend {
@@ -75,6 +76,8 @@ extension BackendExtension on Backend {
         return 'Vulkan (GPU)';
       case Backend.opencl:
         return 'OpenCL (GPU)';
+      case Backend.metal:
+        return 'Metal (GPU)';
     }
   }
 

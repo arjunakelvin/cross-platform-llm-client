@@ -1,11 +1,11 @@
 {
-    "name": "PrivateLM",
-    "short_name": "PrivateLM",
+    "name": "AI-Agent PiercingBlow",
+    "short_name": "AI-Agent PB",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "AI-Agent PiercingBlow — private local and cloud AI chat.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

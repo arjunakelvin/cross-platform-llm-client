@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:get/get.dart';
@@ -13,8 +14,14 @@ import '../controllers/home_controller.dart';
 import '../services/cluster_service.dart';
 import '../services/inference_service.dart';
 import '../services/local_image_service.dart';
-import '../ffi/sd_ffi_bindings.dart';
+import '../ffi/sd_ffi_bindings.dart'
+    if (dart.library.html) '../ffi/sd_ffi_bindings_web.dart';
+import '../services/discord_service.dart';
+import '../widgets/account_info_sheet.dart';
 import '../utils/thought_parser.dart';
+import '../utils/math_syntax.dart';
+import '../widgets/math_builder.dart';
+import '../widgets/code_block.dart';
 import '../widgets/attachment_preview.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/chat_drawer.dart';
@@ -85,7 +92,7 @@ class ChatView extends GetView<ChatController> {
       ),
     );
 
-    if (Platform.isIOS) {
+    if (!kIsWeb && Platform.isIOS) {
       return GestureDetector(
         onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
         behavior: HitTestBehavior.translucent,
@@ -125,7 +132,9 @@ class ChatView extends GetView<ChatController> {
         if (controller.messages.isEmpty) {
           return Padding(
             padding: const EdgeInsets.only(right: 16),
-            child: Text('PrivateLM',
+            child: Text('AI-Agent PiercingBlow',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: GoogleFonts.inter(
                     fontWeight: FontWeight.w700,
                     fontSize: 18,
@@ -215,6 +224,40 @@ class ChatView extends GetView<ChatController> {
                 Haptics.selectionClick();
                 controller.createNewChat();
               });
+        }),
+        Obx(() {
+          final ds = Get.isRegistered<DiscordService>()
+              ? Get.find<DiscordService>()
+              : null;
+          final user = ds?.sessionUser.value;
+          final isLoggedIn = user != null;
+          return IconButton(
+            tooltip: isLoggedIn
+                ? 'Info akun (@${user.username})'
+                : 'Info akun & kuota token',
+            icon: isLoggedIn
+                ? Container(
+                    width: 24,
+                    height: 24,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Color(0xFF5865F2),
+                    ),
+                    child: const Center(
+                      child: Icon(Icons.discord_rounded,
+                          size: 15, color: Colors.white),
+                    ),
+                  )
+                : Icon(
+                    Icons.account_circle_outlined,
+                    size: 22,
+                    color: isDark ? Colors.white70 : Colors.black87,
+                  ),
+            onPressed: () {
+              Haptics.selectionClick();
+              showAccountInfoSheet(context);
+            },
+          );
         }),
         const SizedBox(width: 4),
       ],
@@ -508,7 +551,12 @@ class ChatView extends GetView<ChatController> {
                   child: MarkdownBody(
                       data: answer,
                       selectable: true,
-                      styleSheet: _streamMd(context, isDark))),
+                      styleSheet: _streamMd(context, isDark),
+                      extensionSet: piercingExtensionSet,
+                      builders: {
+                        'pre': CodeBlockBuilder(Theme.of(context).brightness == Brightness.dark),
+                        'math': MathInlineBuilder(),
+                      })),
               _BlinkingCursor(color: Theme.of(context).hintColor),
             ]),
         ],

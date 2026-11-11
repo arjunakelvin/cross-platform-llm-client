@@ -18,11 +18,14 @@ class LocalImageService extends GetxService {
   final isGenerating = false.obs;
   final progress = 0.0.obs;
   final loadedModelName = ''.obs;
+  final loadingModelName = ''.obs;
   final gpuVendor = 'unknown'.obs;
   final isUsingGpu = false.obs;
   final latestLog = ''.obs;
   final currentBackend = Backend.cpu.obs;
   final currentQuantization = QuantizationType.q4_0.obs;
+
+  String? lastFailureReason;
 
   SdIsolateProcessor? _processor;
 
@@ -140,6 +143,7 @@ class LocalImageService extends GetxService {
       }
 
       isLoadingModel.value = true;
+      loadingModelName.value = modelName ?? modelPath.split('/').last;
       progress.value = 0.0;
 
       print('[LocalImageService] loadModel called with path: $modelPath');
@@ -236,6 +240,7 @@ class LocalImageService extends GetxService {
         isUsingGpu.value = backend != Backend.cpu;
         isModelLoaded.value = true;
         isLoadingModel.value = false;
+        loadingModelName.value = '';
         loadedModelName.value = modelName ?? modelPath.split('/').last;
         await _hive.setSetting(AppConstants.keyImageModelPath, modelPath);
         await _hive.setSetting(
@@ -249,6 +254,7 @@ class LocalImageService extends GetxService {
 
       isModelLoaded.value = false;
       isLoadingModel.value = false;
+      loadingModelName.value = '';
       Get.find<AppLogService>().error(
         'Image model load failed',
         details:
@@ -258,6 +264,7 @@ class LocalImageService extends GetxService {
     } catch (e) {
       isModelLoaded.value = false;
       isLoadingModel.value = false;
+      loadingModelName.value = '';
       Get.find<AppLogService>().error('Image model load exception',
           details:
               'model=${modelName ?? modelPath.split('/').last}, error=$e');

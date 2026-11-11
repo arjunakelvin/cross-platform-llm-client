@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../controllers/cloud_model_controller.dart';
@@ -7,6 +9,8 @@ import '../controllers/model_controller.dart';
 import '../controllers/settings_controller.dart';
 import '../core/ui.dart';
 import '../models/ai_model.dart';
+import '../services/dashboard_config_service.dart';
+import '../services/discord_service.dart';
 import '../services/download_service.dart';
 import '../services/inference_service.dart';
 import '../services/local_image_service.dart';
@@ -60,6 +64,10 @@ class ModelView extends GetView<ModelController> {
       ),
       body: RefreshIndicator(
         onRefresh: () async {
+          if (controller.modelScope.value == 'models') {
+            await Get.find<DashboardConfigService>().refresh();
+            return;
+          }
           if (controller.modelScope.value != 'online') {
             await controller.refreshDownloaded();
           }
@@ -81,6 +89,8 @@ class ModelView extends GetView<ModelController> {
                 _buildFeatured(context),
                 _buildLocalFilterChips(context),
                 ..._buildBrowse(context),
+              ] else if (scope == 'models') ...[
+                _buildModelList(context),
               ] else
                 _buildOnlineProviders(context),
             ],
@@ -91,14 +101,38 @@ class ModelView extends GetView<ModelController> {
   }
 
   Widget _buildScopeToggle(BuildContext context) {
+    final isWeb = kIsWeb;
+    if (isWeb) {
+      return Obx(() => AppSegmented<String>(
+            items: const [
+              ('online', 'Cloud'),
+              ('models', 'Model List'),
+            ],
+            selected: controller.modelScope.value == 'models'
+                ? 'models'
+                : 'online',
+            onChanged: (value) {
+              controller.modelScope.value = value;
+              if (value == 'models') {
+                Get.find<DashboardConfigService>().ensureLoaded();
+              }
+            },
+          ));
+    }
     return Obx(() => AppSegmented<String>(
           items: const [
             ('local', 'My models'),
             ('browse', 'Browse'),
             ('online', 'Cloud'),
+            ('models', 'Model List'),
           ],
           selected: controller.modelScope.value,
-          onChanged: (value) => controller.modelScope.value = value,
+          onChanged: (value) {
+            controller.modelScope.value = value;
+            if (value == 'models') {
+              Get.find<DashboardConfigService>().ensureLoaded();
+            }
+          },
         ));
   }
 
@@ -209,7 +243,8 @@ class ModelView extends GetView<ModelController> {
   Widget _buildActiveModelBanner(BuildContext context) {
     return Obx(() {
       final t = AppTokens.of(context);
-      if (controller.modelScope.value == 'online') {
+      if (controller.modelScope.value == 'online' ||
+          controller.modelScope.value == 'models') {
         return Padding(
           padding: const EdgeInsets.only(bottom: 16),
           child: _buildActiveCloudBanner(context),
@@ -259,7 +294,8 @@ class ModelView extends GetView<ModelController> {
   /// helper files), so progress stays visible while browsing the list.
   Widget _buildActiveDownloadsBanner(BuildContext context) {
     return Obx(() {
-      if (controller.modelScope.value == 'online') {
+      if (controller.modelScope.value == 'online' ||
+          controller.modelScope.value == 'models') {
         return const SizedBox.shrink();
       }
       final downloads = controller.activeDownloads.values.toList();
@@ -555,6 +591,242 @@ class ModelView extends GetView<ModelController> {
     });
   }
 
+  // ── Model List (from admin dashboard) ─────────────────────────────────
+
+  String _modelListTier(DashboardConfigService config) {
+    if (Get.isRegistered<DiscordService>()) {
+      final tier = Get.find<DiscordService>().sessionTier.value.trim();
+      if (tier.isNotEmpty) return tier.toLowerCase();
+    }
+    return config.defaultTier.value;
+  }
+
+  Widget _buildModelList(BuildContext context) {
+    final config = Get.find<DashboardConfigService>();
+    // Fire once; no-op when the config is already loaded.
+    config.ensureLoaded();
+    return Obx(() {
+      final t = AppTokens.of(context);
+      final tier = _modelListTier(config);
+      final groups = config.groupedByServer(tier);
+
+      if (config.isLoading.value && config.models.isEmpty) {
+        return const Padding(
+          padding: EdgeInsets.symmetric(vertical: 40),
+          child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+        );
+      }
+
+      if (groups.isEmpty) {
+        return Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: EmptyState(
+            icon: Icons.dns_outlined,
+            title: 'No models configured',
+            message: config.models.isEmpty
+                ? 'Admin hasn\'t added any AI server model yet. '
+                    'Models added in the dashboard Server manager will appear here.'
+                : 'No model on your tier (${tier.toUpperCase()}). '
+                    'Ask admin to enable it for your tier.',
+            action: PillButton(
+              label: 'Refresh',
+              onPressed:
+                  config.isLoading.value ? null : () => config.refresh(),
+            ),
+          ),
+        );
+      }
+
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${config.models.length} model dari server yang dikelola admin',
+                  style: t.caption,
+                ),
+              ),
+              _IconAction(
+                icon: Icons.refresh_rounded,
+                tooltip: 'Refresh model list',
+                onPressed:
+                    config.isLoading.value ? null : () => config.refresh(),
+              ),
+            ],
+          ),
+          for (final entry in groups.entries) ...[
+            SectionHeader(
+              entry.key.name,
+              padding: const EdgeInsets.fromLTRB(4, 20, 4, 6),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+              child: Text(
+                [
+                  if (entry.key.baseUrl.isNotEmpty) entry.key.baseUrl,
+                  '${entry.value.length} model',
+                  if (entry.key.runtime.isNotEmpty) entry.key.runtime,
+                ].join(' · '),
+                style: t.caption,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            AppGroup(
+              dividerIndent: 60,
+              children: [
+                for (final model in entry.value)
+                  _buildAdminModelRow(context, model, tier),
+              ],
+            ),
+          ],
+          const SectionFootnote(
+              'Only models registered in the admin dashboard are listed.'),
+        ],
+      );
+    });
+  }
+
+  /// Angka dengan pemisah ribuan, contoh: 32,768.
+  static String _fmtThousands(int value) {
+    final s = value.toString();
+    final buf = StringBuffer();
+    var count = 0;
+    for (var i = s.length - 1; i >= 0; i--) {
+      if (count > 0 && count % 3 == 0) buf.write(',');
+      buf.write(s[i]);
+      count++;
+    }
+    return buf.toString().split('').reversed.join();
+  }
+
+  Widget _buildAdminModelRow(
+    BuildContext context,
+    AdminModelInfo model,
+    String tier,
+  ) {    final t = AppTokens.of(context);
+    final settings = Get.find<SettingsController>();
+    final isActive = settings.cloudProvider.value == 'local' &&
+        settings.localCloudModel.value == model.modelId;
+    final meta = [
+      if (model.runtime.isNotEmpty) model.runtime,
+    ].join(' · ');
+    // Pengaturan model sesuai dashboard admin: context, max output, dan
+    // harga input/output (per request atau per 1M token).
+    final specs = [
+      if (model.contextSize > 0)
+        'Context ${_fmtThousands(model.contextSize)}',
+      if (model.maxOutput > 0)
+        'Max output ${_fmtThousands(model.maxOutput)}',
+    ].join(' · ');
+
+    return InkWell(
+      onTap: () => _selectAdminModel(context, model),
+      splashFactory: NoSplash.splashFactory,
+      highlightColor: t.surfacePressed,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 6, 12),
+        child: Row(
+          children: [
+            IconBadge(
+              isActive ? Icons.check_circle_outline : Icons.memory_rounded,
+              size: 36,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          model.name,
+                          style: t.bodyStrong,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (isActive) ...[
+                        const SizedBox(width: 8),
+                        AppTag('Active', color: t.accent),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    model.modelId,
+                    style: t.small.copyWith(color: t.muted),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 5),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: [
+                      AppTag(tier.toUpperCase()),
+                      AppTag(model.usesTokens ? 'Token quota' : 'Credit'),
+                      if (meta.isNotEmpty) AppTag(meta),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  // Harga input & output (dari dashboard admin).
+                  Text(
+                    'Input ${model.inputPriceLabel} · '
+                    'Output ${model.outputPriceLabel}',
+                    style: t.small.copyWith(color: t.text),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (specs.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      specs,
+                      style: t.small.copyWith(color: t.muted),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(width: 4),
+            _IconAction(
+              icon: Icons.copy_rounded,
+              tooltip: 'Copy model ID',
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: model.modelId));
+                showToast('Model ID copied', model.modelId,
+                    tone: ToastTone.info);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _selectAdminModel(
+    BuildContext context,
+    AdminModelInfo model,
+  ) async {
+    final settings = Get.find<SettingsController>();
+    final cloud = Get.find<CloudModelController>();
+    if (model.serverBaseUrl.isNotEmpty) {
+      await settings.setLocalServerUrl(
+        DashboardConfigService.normalizeAiBase(model.serverBaseUrl),
+      );
+    }
+    await cloud.selectModel('local', model.modelId);
+    if (!context.mounted) return;
+    final server = model.serverName.isEmpty ? 'Local AI' : model.serverName;
+    showToast('Model active', '$server · ${model.modelId}',
+        tone: ToastTone.success);
+  }
+
   // ── Online providers ──────────────────────────────────────────────────
 
   Widget _buildOnlineProviders(BuildContext context) {
@@ -602,7 +874,7 @@ class ModelView extends GetView<ModelController> {
                 : cloud.statusLabel(provider.id);
 
     return InkWell(
-      onTap: () => isCustom
+      onTap: () => isCustom && !canUse
           ? _showCustomProviderSheet(context, cloud)
           : _openProviderFlow(context, cloud, provider),
       splashFactory: NoSplash.splashFactory,
@@ -683,18 +955,27 @@ class ModelView extends GetView<ModelController> {
     CloudProviderInfo provider,
   ) async {
     if (!cloud.canSelectModel(provider.id)) {
-      _showProviderKeyDialog(
-        context,
-        cloud,
-        provider,
-        openModelsAfterSave: true,
-      );
+      if (provider.id == 'custom') {
+        _showCustomProviderSheet(context, cloud);
+      } else {
+        _showProviderKeyDialog(
+          context,
+          cloud,
+          provider,
+          openModelsAfterSave: true,
+        );
+      }
       return;
     }
 
     await cloud.refreshModels(provider.id);
     if (!context.mounted) return;
-    if ((cloud.errorByProvider[provider.id] ?? '').isNotEmpty) {
+    // Custom endpoints and the dedicated Local AI server may not expose
+    // /models; still open the picker, which shows the error and offers
+    // manual model-ID entry.
+    if (provider.id != 'custom' &&
+        provider.id != 'local' &&
+        (cloud.errorByProvider[provider.id] ?? '').isNotEmpty) {
       _showProviderKeyDialog(
         context,
         cloud,
@@ -761,7 +1042,7 @@ class ModelView extends GetView<ModelController> {
             AppGroup(
               dividerIndent: 60,
               children: [
-                if (!isCustom)
+                if (!isCustom && provider.id != 'local')
                   AppRow(
                     icon: Icons.key_outlined,
                     title: configured ? 'Update API key' : 'Add API key',
@@ -794,6 +1075,14 @@ class ModelView extends GetView<ModelController> {
                     }
                   },
                 ),
+                if (provider.id == 'local') ...[
+                  AppRow(
+                    icon: Icons.lock_outline_rounded,
+                    title: 'Local AI server',
+                    subtitle: 'Alamat dan kunci API dikelola server',
+                    chevron: false,
+                  ),
+                ],
               ],
             ),
           ],
@@ -810,12 +1099,13 @@ class ModelView extends GetView<ModelController> {
   }) {
     final keyController = cloud.apiKeyControllerFor(provider.id);
     final obscureKey = true.obs;
-    final isVerifying = false.obs;
+    final isSaving = false.obs;
 
     showAppSheet<void>(
       context,
       title: '${provider.name} API key',
-      subtitle: 'Save the key to verify it and load live models.',
+      subtitle: 'Stored securely on this device. It is sent only to '
+          '${provider.name} when you load models or chat.',
       builder: (ctx) {
         final t = AppTokens.of(ctx);
         return Column(
@@ -865,30 +1155,26 @@ class ModelView extends GetView<ModelController> {
                       label: 'Cancel', onTap: () => Navigator.pop(ctx)),
                 ),
                 const SizedBox(width: 10),
-                Expanded(
-                  child: Obx(() => PrimaryButton(
-                        label: isVerifying.value ? 'Verifying' : 'Save key',
-                        busy: isVerifying.value,
-                        onPressed: () async {
-                          final value = keyController.text.trim();
-                          if (value.isEmpty || isVerifying.value) return;
-                          final nav = Navigator.of(ctx);
-                          isVerifying.value = true;
-                          await cloud.saveApiKey(provider.id, value);
-                          await cloud.refreshModels(provider.id);
-                          isVerifying.value = false;
-                          if ((cloud.errorByProvider[provider.id] ?? '')
-                              .isNotEmpty) {
-                            return;
-                          }
-                          if (!ctx.mounted) return;
-                          nav.pop();
-                          if (openModelsAfterSave && context.mounted) {
-                            _showModelSelectSheet(context, cloud, provider);
-                          }
-                        },
-                      )),
-                ),
+                    Expanded(
+                      child: Obx(() => PrimaryButton(
+                            label: isSaving.value ? 'Saving' : 'Save key',
+                            busy: isSaving.value,
+                            onPressed: () async {
+                              final value = keyController.text.trim();
+                              if (value.isEmpty || isSaving.value) return;
+                              final nav = Navigator.of(ctx);
+                              isSaving.value = true;
+                              await cloud.saveApiKey(provider.id, value);
+                              isSaving.value = false;
+                              if (!ctx.mounted) return;
+                              nav.pop();
+                              if (openModelsAfterSave && context.mounted) {
+                                _showModelSelectSheet(
+                                    context, cloud, provider);
+                              }
+                            },
+                          )),
+                    ),
               ],
             ),
           ],
@@ -905,8 +1191,8 @@ class ModelView extends GetView<ModelController> {
     showAppSheet<void>(
       context,
       title: 'Custom provider',
-      subtitle:
-          'Use any OpenAI-compatible endpoint. Enter the base URL without /chat/completions.',
+      subtitle: 'Any OpenAI-compatible endpoint. Enter the base URL without '
+          '/chat/completions. Keys stay on this device.',
       builder: (ctx) {
         final t = AppTokens.of(ctx);
         return Column(
@@ -995,6 +1281,28 @@ class ModelView extends GetView<ModelController> {
             ),
             const SizedBox(height: 14),
             AppField(
+              label: 'Proxy URL (optional)',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: cloud.customProxyUrlController,
+                    keyboardType: TextInputType.url,
+                    autocorrect: false,
+                    style: t.body,
+                    decoration: _sheetInput(ctx,
+                        hint: 'Kosongkan untuk koneksi langsung'),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Kosongkan untuk koneksi langsung ke provider tanpa proxy.',
+                    style: t.small,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            AppField(
               label: 'API key',
               child: Obx(
                 () => TextField(
@@ -1026,17 +1334,27 @@ class ModelView extends GetView<ModelController> {
             ),
             const SizedBox(height: 14),
             AppField(
-              label: 'Model ID',
+              label: 'Model ID (optional)',
               child: TextField(
                 controller: cloud.customModelController,
                 autocorrect: false,
                 style: t.body,
-                decoration: _sheetInput(ctx, hint: 'e.g. llama-3.1-8b'),
+                decoration: _sheetInput(ctx,
+                    hint: 'Leave empty to pick from the model list'),
               ),
             ),
             const SizedBox(height: 24),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                'The key is encrypted on this device. It is sent to the Base '
+                'URL you enter (and to the proxy, if set) only when you load '
+                'models or send a message - never to PiercingBlow servers.',
+                style: t.small,
+              ),
+            ),
             PrimaryButton(
-              label: 'Save and select',
+              label: 'Save provider',
               onPressed: () async {
                 final nav = Navigator.of(ctx);
                 await cloud.saveCustomProvider();

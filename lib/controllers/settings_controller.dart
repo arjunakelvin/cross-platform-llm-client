@@ -10,12 +10,17 @@ import '../core/haptics.dart';
 import '../core/ui.dart';
 import '../services/hive_service.dart';
 import '../services/app_log_service.dart';
+import '../services/dashboard_config_service.dart';
+import '../services/discord_service.dart';
 import '../services/local_image_service.dart';
-import '../ffi/sd_ffi_bindings.dart';
+import '../services/secure_key_store.dart';
+import '../ffi/sd_ffi_bindings.dart'
+    if (dart.library.html) '../ffi/sd_ffi_bindings_web.dart';
 import 'package:sd_flutter_android/sd_flutter_android.dart';
 
 class SettingsController extends GetxController {
   final HiveService _hive = Get.find<HiveService>();
+  final SecureKeyStore _secure = Get.find<SecureKeyStore>();
 
   // Observable settings
   final themeMode = ThemeMode.system.obs;
@@ -31,6 +36,7 @@ class SettingsController extends GetxController {
   final deepSeekKey = ''.obs;
   final customCloudName = 'Custom API'.obs;
   final customCloudBaseUrl = ''.obs;
+  final customCloudProxyUrl = ''.obs;
   final customCloudKey = ''.obs;
   final customCloudProfiles = <Map<String, String>>[].obs;
   final customCloudProfileIndex = (-1).obs;
@@ -47,8 +53,34 @@ class SettingsController extends GetxController {
   final nvidiaModels = <String>[].obs;
   final isLoadingNvidiaModels = false.obs;
   final temperature = 0.1.obs;
-  final maxTokens = 512.obs;
+  final maxTokens = 4096.obs;
   final contextSize = 2048.obs;
+  final tokenBalance = AppConstants.defaultTokenBalance.obs;
+  /// Token terpakai (server + on-device).
+  final tokenUsed = 0.obs;
+
+  /// Token terpakai untuk inference on-device (tidak tercatat di server).
+  final localTokenUsed = 0.obs;
+
+  /// Credit terpakai (dari server).
+  final creditUsed = 0.0.obs;
+
+  /// Credit tersisa (dari server).
+  final creditBalance = 0.0.obs;
+
+  /// Token terpakai di sisi server (dipakai lewat gateway).
+  int _serverTokenUsed = 0;
+  final tokenLastReset = 0.obs;
+  final tokenResetDays = AppConstants.tokenResetDays.obs;
+  final localServerUrl = AppConstants.defaultLocalServerUrl.obs;
+  final localCloudModel = 'local'.obs;
+  final localCloudKey = ''.obs;
+  // API key milik user untuk gateway AI (dibuat di Settings).
+  final userApiKey = ''.obs;
+  final userApiKeyPrefix = ''.obs;
+  final apiKeyBusy = false.obs;
+  final apiKeyTestResult = ''.obs;
+  bool _apiKeyStatusLoaded = false;
   final liteRtPerformanceMode = AppConstants.defaultLiteRtPerformanceMode.obs;
 
   final imageSteps = 1.obs;
@@ -146,21 +178,22 @@ class SettingsController extends GetxController {
     cloudProvider.value = _hive.getSetting(AppConstants.keyCloudProvider,
             defaultValue: 'openrouter') ??
         'openrouter';
-    openaiKey.value = _hive.getSetting(AppConstants.keyOpenaiKey) ?? '';
-    anthropicKey.value = _hive.getSetting(AppConstants.keyAnthropicKey) ?? '';
-    googleKey.value = _hive.getSetting(AppConstants.keyGoogleKey) ?? '';
-    kimiKey.value = _hive.getSetting(AppConstants.keyKimiKey) ?? '';
-    stabilityKey.value = _hive.getSetting(AppConstants.keyStabilityKey) ?? '';
-    nvidiaKey.value = _hive.getSetting(AppConstants.keyNvidiaKey) ?? '';
-    openRouterKey.value = _hive.getSetting(AppConstants.keyOpenRouterKey) ?? '';
-    deepSeekKey.value = _hive.getSetting(AppConstants.keyDeepSeekKey) ?? '';
+    openaiKey.value = _secure.read(AppConstants.keyOpenaiKey);
+    anthropicKey.value = _secure.read(AppConstants.keyAnthropicKey);
+    googleKey.value = _secure.read(AppConstants.keyGoogleKey);
+    kimiKey.value = _secure.read(AppConstants.keyKimiKey);
+    stabilityKey.value = _secure.read(AppConstants.keyStabilityKey);
+    nvidiaKey.value = _secure.read(AppConstants.keyNvidiaKey);
+    openRouterKey.value = _secure.read(AppConstants.keyOpenRouterKey);
+    deepSeekKey.value = _secure.read(AppConstants.keyDeepSeekKey);
     customCloudName.value = _hive.getSetting(AppConstants.keyCustomCloudName,
             defaultValue: 'Custom API') ??
         'Custom API';
     customCloudBaseUrl.value =
         _hive.getSetting(AppConstants.keyCustomCloudBaseUrl) ?? '';
-    customCloudKey.value =
-        _hive.getSetting(AppConstants.keyCustomCloudKey) ?? '';
+    customCloudProxyUrl.value =
+        _hive.getSetting(AppConstants.keyCustomCloudProxyUrl) ?? '';
+    customCloudKey.value = _secure.read(AppConstants.keyCustomCloudKey);
     openaiModel.value = _hive.getSetting(AppConstants.keyOpenaiModel,
             defaultValue: 'gpt-5.2') ??
         'gpt-5.2';
@@ -187,6 +220,14 @@ class SettingsController extends GetxController {
         'deepseek-v4-flash';
     customCloudModel.value =
         _hive.getSetting(AppConstants.keyCustomCloudModel) ?? '';
+    localCloudModel.value = _hive.getSetting(AppConstants.keyLocalCloudModel,
+            defaultValue: 'local') ??
+        'local';
+    localCloudKey.value = _secure.read(AppConstants.keyLocalCloudKey);
+    userApiKey.value = _secure.read(AppConstants.keyUserApiKey);
+    userApiKeyPrefix.value =
+        (_hive.getSetting<String>(AppConstants.keyUserApiKeyPrefix) ?? '')
+            .toString();
     _loadCustomCloudProfiles();
     globalSystemPrompt.value = _hive.getSetting(
             AppConstants.keyGlobalSystemPrompt,
@@ -201,6 +242,26 @@ class SettingsController extends GetxController {
     contextSize.value = _hive.getSetting(AppConstants.keyContextSize,
             defaultValue: AppConstants.defaultContextSize) ??
         AppConstants.defaultContextSize;
+    tokenBalance.value = _hive.getSetting<int>(AppConstants.keyTokenBalance,
+            defaultValue: AppConstants.defaultTokenBalance) ??
+        AppConstants.defaultTokenBalance;
+    tokenUsed.value = _hive.getSetting<int>(AppConstants.keyTokenUsed,
+            defaultValue: 0) ??
+        0;
+    localTokenUsed.value = _hive.getSetting<int>(AppConstants.keyLocalTokenUsed,
+            defaultValue: 0) ??
+        0;
+    tokenLastReset.value = _hive.getSetting<int>(AppConstants.keyTokenLastReset,
+            defaultValue: 0) ??
+        0;
+    tokenResetDays.value = _hive.getSetting<int>(AppConstants.keyTokenResetDays,
+            defaultValue: AppConstants.tokenResetDays) ??
+        AppConstants.tokenResetDays;
+    _checkTokenReset();
+    localServerUrl.value = _hive.getSetting<String>(
+            AppConstants.keyLocalServerUrl,
+            defaultValue: AppConstants.defaultLocalServerUrl) ??
+        AppConstants.defaultLocalServerUrl;
     liteRtPerformanceMode.value = _hive.getSetting(
           AppConstants.keyLiteRtPerformanceMode,
           defaultValue: AppConstants.defaultLiteRtPerformanceMode,
@@ -356,48 +417,47 @@ class SettingsController extends GetxController {
       case 'openai':
         openaiKey.value = trimmed;
         openaiKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyOpenaiKey, trimmed);
+        await _secure.write(AppConstants.keyOpenaiKey, trimmed);
         break;
       case 'anthropic':
         anthropicKey.value = trimmed;
         anthropicKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyAnthropicKey, trimmed);
+        await _secure.write(AppConstants.keyAnthropicKey, trimmed);
         break;
       case 'google':
         googleKey.value = trimmed;
         googleKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyGoogleKey, trimmed);
+        await _secure.write(AppConstants.keyGoogleKey, trimmed);
         break;
       case 'kimi':
         kimiKey.value = trimmed;
         kimiKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyKimiKey, trimmed);
+        await _secure.write(AppConstants.keyKimiKey, trimmed);
         break;
       case 'stability':
         stabilityKey.value = trimmed;
         stabilityKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyStabilityKey, trimmed);
+        await _secure.write(AppConstants.keyStabilityKey, trimmed);
         break;
       case 'nvidia':
         nvidiaKey.value = trimmed;
         nvidiaKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyNvidiaKey, trimmed);
-        await refreshNvidiaModels();
+        await _secure.write(AppConstants.keyNvidiaKey, trimmed);
         break;
       case 'openrouter':
         openRouterKey.value = trimmed;
         openRouterKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyOpenRouterKey, trimmed);
+        await _secure.write(AppConstants.keyOpenRouterKey, trimmed);
         break;
       case 'deepseek':
         deepSeekKey.value = trimmed;
         deepSeekKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyDeepSeekKey, trimmed);
+        await _secure.write(AppConstants.keyDeepSeekKey, trimmed);
         break;
       case 'custom':
         customCloudKey.value = trimmed;
         customCloudKeyController.text = trimmed;
-        await _hive.setSetting(AppConstants.keyCustomCloudKey, trimmed);
+        await _secure.write(AppConstants.keyCustomCloudKey, trimmed);
         break;
     }
   }
@@ -460,12 +520,17 @@ class SettingsController extends GetxController {
         customCloudModelController.text = model;
         await _hive.setSetting(AppConstants.keyCustomCloudModel, model);
         break;
+      case 'local':
+        localCloudModel.value = model;
+        await _hive.setSetting(AppConstants.keyLocalCloudModel, model);
+        break;
     }
   }
 
   Future<void> setCustomCloudConfig({
     required String name,
     required String baseUrl,
+    String proxyUrl = '',
     required String apiKey,
     required String model,
   }) async {
@@ -474,12 +539,14 @@ class SettingsController extends GetxController {
 
     customCloudName.value = normalizedName;
     customCloudBaseUrl.value = normalizedBaseUrl;
+    customCloudProxyUrl.value = proxyUrl.trim();
     customCloudKey.value = apiKey.trim();
     customCloudModel.value = model.trim();
 
     final profile = <String, String>{
       'name': customCloudName.value,
       'baseUrl': customCloudBaseUrl.value,
+      'proxyUrl': customCloudProxyUrl.value,
       'apiKey': customCloudKey.value,
       'model': customCloudModel.value,
     };
@@ -501,6 +568,8 @@ class SettingsController extends GetxController {
     await _hive.setSetting(
         AppConstants.keyCustomCloudBaseUrl, customCloudBaseUrl.value);
     await _hive.setSetting(
+        AppConstants.keyCustomCloudProxyUrl, customCloudProxyUrl.value);
+    await _secure.write(
         AppConstants.keyCustomCloudKey, customCloudKey.value);
     await _hive.setSetting(
         AppConstants.keyCustomCloudModel, customCloudModel.value);
@@ -519,6 +588,7 @@ class SettingsController extends GetxController {
     }
     customCloudName.value = 'Custom API';
     customCloudBaseUrl.value = '';
+    customCloudProxyUrl.value = '';
     customCloudKey.value = '';
     customCloudModel.value = '';
 
@@ -530,7 +600,8 @@ class SettingsController extends GetxController {
     await _hive.setSetting(
         AppConstants.keyCustomCloudName, customCloudName.value);
     await _hive.setSetting(AppConstants.keyCustomCloudBaseUrl, '');
-    await _hive.setSetting(AppConstants.keyCustomCloudKey, '');
+    await _hive.setSetting(AppConstants.keyCustomCloudProxyUrl, '');
+    await _secure.write(AppConstants.keyCustomCloudKey, '');
     await _hive.setSetting(AppConstants.keyCustomCloudModel, '');
     customCloudProfileIndex.value = -1;
     await _saveCustomCloudProfiles();
@@ -540,6 +611,7 @@ class SettingsController extends GetxController {
     customCloudProfileIndex.value = -1;
     customCloudName.value = 'Custom API';
     customCloudBaseUrl.value = '';
+    customCloudProxyUrl.value = '';
     customCloudKey.value = '';
     customCloudModel.value = '';
     customCloudNameController.text = customCloudName.value;
@@ -554,6 +626,7 @@ class SettingsController extends GetxController {
     final profile = customCloudProfiles[index];
     customCloudName.value = profile['name'] ?? 'Custom API';
     customCloudBaseUrl.value = profile['baseUrl'] ?? '';
+    customCloudProxyUrl.value = profile['proxyUrl'] ?? '';
     customCloudKey.value = profile['apiKey'] ?? '';
     customCloudModel.value = profile['model'] ?? '';
     customCloudNameController.text = customCloudName.value;
@@ -565,6 +638,8 @@ class SettingsController extends GetxController {
     await _hive.setSetting(
         AppConstants.keyCustomCloudBaseUrl, customCloudBaseUrl.value);
     await _hive.setSetting(
+        AppConstants.keyCustomCloudProxyUrl, customCloudProxyUrl.value);
+    await _secure.write(
         AppConstants.keyCustomCloudKey, customCloudKey.value);
     await _hive.setSetting(
         AppConstants.keyCustomCloudModel, customCloudModel.value);
@@ -572,16 +647,15 @@ class SettingsController extends GetxController {
   }
 
   void _loadCustomCloudProfiles() {
-    final raw = _hive.getSetting<List>(AppConstants.keyCustomCloudProfiles);
-    if (raw != null) {
-      customCloudProfiles.assignAll(raw.whereType<Map>().map((profile) =>
-          profile.map((key, value) =>
-              MapEntry(key.toString(), value?.toString() ?? ''))));
+    final saved = _secure.readJsonList(AppConstants.keyCustomCloudProfiles);
+    if (saved.isNotEmpty) {
+      customCloudProfiles.assignAll(saved);
     }
     if (customCloudProfiles.isEmpty && customCloudBaseUrl.value.isNotEmpty) {
       customCloudProfiles.add({
         'name': customCloudName.value,
         'baseUrl': customCloudBaseUrl.value,
+        'proxyUrl': customCloudProxyUrl.value,
         'apiKey': customCloudKey.value,
         'model': customCloudModel.value,
       });
@@ -596,12 +670,13 @@ class SettingsController extends GetxController {
     final profile = customCloudProfiles[index];
     customCloudName.value = profile['name'] ?? 'Custom API';
     customCloudBaseUrl.value = profile['baseUrl'] ?? '';
+    customCloudProxyUrl.value = profile['proxyUrl'] ?? '';
     customCloudKey.value = profile['apiKey'] ?? '';
     customCloudModel.value = profile['model'] ?? '';
   }
 
   Future<void> _saveCustomCloudProfiles() async {
-    await _hive.setSetting(
+    await _secure.writeJsonList(
         AppConstants.keyCustomCloudProfiles, customCloudProfiles.toList());
     await _hive.setSetting(
         AppConstants.keyCustomCloudProfileIndex, customCloudProfileIndex.value);
@@ -609,6 +684,447 @@ class SettingsController extends GetxController {
 
   /// One stop sequence per line. Escapes like `\n` are allowed so a stop
   /// string can include a newline (e.g. `\nUser:`).
+  void _checkTokenReset() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final last = tokenLastReset.value;
+    if (last == 0) {
+      tokenLastReset.value = now;
+      _hive.setSetting(AppConstants.keyTokenLastReset, now);
+      return;
+    }
+    final elapsed = now - last;
+    final resetMs = tokenResetDays.value * 24 * 60 * 60 * 1000;
+    if (elapsed >= resetMs) {
+      resetToken();
+    }
+  }
+
+  /// Admin-configurable reset cycle (days). Persists and re-checks the reset.
+  Future<void> setTokenResetDays(int days) async {
+    tokenResetDays.value = days < 1 ? 1 : days;
+    await _hive.setSetting(AppConstants.keyTokenResetDays, tokenResetDays.value);
+    _checkTokenReset();
+  }
+
+  int get maxTokenBalance {
+    if (Get.isRegistered<DiscordService>()) {
+      final ds = Get.find<DiscordService>();
+      if (ds.isLoggedIn) {
+        final acc = ds.sessionAccount.value;
+        if (acc != null && acc.tokenBalance > 0) {
+          return acc.tokenBalance;
+        }
+        final loginBal = ds.serverLoginTokenBalance.value;
+        return loginBal > 0 ? loginBal : AppConstants.defaultLoginTokenBalance;
+      }
+      final guestBal = ds.serverGuestTokenBalance.value;
+      return guestBal > 0 ? guestBal : AppConstants.defaultTokenBalance;
+    }
+    return AppConstants.defaultTokenBalance;
+  }
+
+  void syncResetDays(int days) {
+    if (days > 0 && tokenResetDays.value != days) {
+      setTokenResetDays(days);
+    }
+  }
+
+  /// True kalau ada sesi login Discord tersimpan di perangkat ini (bisa
+  /// saja sesinya belum dimuat ke memori saat app start).
+  bool get _hasStoredSession =>
+      (_hive.getSetting<Map>(AppConstants.keyDiscordSessionUser,
+              defaultValue: const {}) ??
+          const {})
+          .isNotEmpty;
+
+  /// Keeps the device quota in line with the account state.
+  ///
+  /// Guest: 10M total. Setelah login, kuota diambil dari baris akun di
+  /// server (bisa 20M, 50M, dll sesuai yang diatur admin) — jadi sisa
+  /// kuota di perangkat ikut Dinaikkan, bukan cuma batasnya.
+  ///
+  /// Token terpakai memakai angka server sebagai acuan (dipakai user lewat
+  /// gateway), ditambah pemakaian on-device yang hanya diketahui di perangkat
+  /// ini. Jadi "12.0k terpakai" di server tetap tampil terpakai di app.
+  void syncTokenQuotaWithAuth({bool justLoggedIn = false}) {
+    final ds = Get.isRegistered<DiscordService>()
+        ? Get.find<DiscordService>()
+        : null;
+    final acc = ds?.sessionAccount.value;
+    // Sesi tersimpan di perangkat = sudah login, walau baris akun belum
+    // sempat dimuat (mis. config server arrive lebih dulu).
+    final loggedIn = ds != null && (ds.isLoggedIn || _hasStoredSession);
+    final max = maxTokenBalance;
+
+    if (loggedIn) {
+      if (acc != null) {
+        // Kuota akun (dari server) yang jadi acuan.
+        _serverTokenUsed = acc.tokenUsed;
+        creditUsed.value = acc.creditUsed;
+        creditBalance.value = acc.creditBalance;
+        final total = _serverTokenUsed + localTokenUsed.value;
+        if (tokenUsed.value != total) {
+          tokenUsed.value = total;
+          _hive.setSetting(AppConstants.keyTokenUsed, total);
+        }
+        final remaining = (max - total).clamp(0, max);
+        if (tokenBalance.value != remaining) {
+          tokenBalance.value = remaining;
+          _hive.setSetting(AppConstants.keyTokenBalance, remaining);
+        }
+      }
+      // Baris akun belum arrive: jangan turunkan saldo.
+      return;
+    }
+
+    if (justLoggedIn) {
+      // Login with Discord adds bonus 10M tokens up to max (e.g. 10M -> 20M)
+      tokenBalance.value = (tokenBalance.value + 10000000).clamp(0, max);
+      _hive.setSetting(AppConstants.keyTokenBalance, tokenBalance.value);
+    } else {
+      if (tokenBalance.value > max) {
+        tokenBalance.value = max;
+        _hive.setSetting(AppConstants.keyTokenBalance, tokenBalance.value);
+      }
+    }
+  }
+
+  Future<void> consumeTokens(int amount) async {
+    if (amount <= 0) return;
+    localTokenUsed.value += amount;
+    tokenUsed.value = _serverTokenUsed + localTokenUsed.value;
+    tokenBalance.value = (tokenBalance.value - amount).clamp(0, maxTokenBalance);
+    await _hive.setSetting(AppConstants.keyLocalTokenUsed, localTokenUsed.value);
+    await _hive.setSetting(AppConstants.keyTokenUsed, tokenUsed.value);
+    await _hive.setSetting(AppConstants.keyTokenBalance, tokenBalance.value);
+  }
+
+  Future<void> resetToken() async {
+    tokenBalance.value = maxTokenBalance;
+    tokenUsed.value = 0;
+    localTokenUsed.value = 0;
+    _serverTokenUsed = 0;
+    tokenLastReset.value = DateTime.now().millisecondsSinceEpoch;
+    await _hive.setSetting(AppConstants.keyTokenBalance, tokenBalance.value);
+    await _hive.setSetting(AppConstants.keyTokenUsed, 0);
+    await _hive.setSetting(AppConstants.keyLocalTokenUsed, 0);
+    await _hive.setSetting(AppConstants.keyTokenLastReset, tokenLastReset.value);
+  }
+
+  // ── Token quota helpers ──────────────────────────────────────────────────
+
+  /// Fraction of the daily token quota that has been used (0..1).
+  /// Drives the usage progress bar in the UI.
+  double get tokenUsageRatio {
+    final max = maxTokenBalance;
+    final used = tokenUsed.value
+        .clamp(0, max)
+        .toInt();
+    final raw = max > 0
+        ? used / max
+        : 0.0;
+    return raw.clamp(0.0, 1.0);
+  }
+
+  /// Tokens left before the daily quota resets.
+  int get tokenRemaining =>
+      tokenBalance.value.clamp(0, maxTokenBalance).toInt();
+
+  /// Milliseconds until the daily token quota resets.
+  int get tokenTimeToResetMs {
+    final lastReset = tokenLastReset.value;
+    if (lastReset <= 0) return 0;
+    final resetAtMs =
+        lastReset + tokenResetDays.value * 24 * 60 * 60 * 1000;
+    final ms = resetAtMs - DateTime.now().millisecondsSinceEpoch;
+    return ms > 0 ? ms : 0;
+  }
+
+  /// Countdown until the token quota resets (e.g. "23h 41m").
+  String get tokenResetCountdownLabel {
+    final ms = tokenTimeToResetMs;
+    if (ms <= 0) return 'Resets today';
+    final duration = Duration(milliseconds: ms);
+    final days = duration.inDays;
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes % 60;
+    if (days > 0) return 'Resets in ${days}d ${hours}h';
+    if (hours > 0) return 'Resets in ${hours}h ${minutes}m';
+    return 'Resets in ${duration.inMinutes}m';
+  }
+
+
+  Future<void> setLocalServerUrl(String url) async {
+    final normalized = url.trim();
+    localServerUrl.value = normalized.isEmpty ? AppConstants.defaultLocalServerUrl : normalized;
+    await _hive.setSetting(AppConstants.keyLocalServerUrl, localServerUrl.value);
+  }
+
+  /// Admin-managed API key for the Local AI server. Stored encrypted — never
+  /// echoed back to the UI and never shown to end users.
+  Future<void> setLocalCloudKey(String key) async {
+    final trimmed = key.trim();
+    localCloudKey.value = trimmed;
+    await _secure.write(AppConstants.keyLocalCloudKey, trimmed);
+  }
+
+  // ── API key user (gateway AI) ─────────────────────────────────────────
+
+  /// Origin backend admin/Worker. Dipakai untuk endpoint auth + gateway.
+  ///
+  /// Kalau base URL gateway sudah diketahui (diambil dari config dashboard),
+  /// origin itu yang dipakai — jadi app dan gateway selalu satu host.
+  String get apiOrigin {
+    final saved =
+        (_hive.getSetting<String>(AppConstants.keyGatewayBaseUrl) ?? '').trim();
+    if (saved.isNotEmpty) {
+      final origin = Uri.tryParse(saved)?.origin ?? '';
+      if (origin.isNotEmpty && origin != 'null') return origin;
+    }
+    var origin = Uri.base.origin;
+    if (origin == 'null' || origin.isEmpty) {
+      origin = 'https://piercingblow.ai.id';
+    }
+    return origin;
+  }
+
+  /// Base URL OpenAI-compatible untuk API key user, contoh
+  /// `https://piercingblow.ai.id/api/gateway/v1`.
+  String get gatewayBaseUrl {
+    final saved =
+        (_hive.getSetting<String>(AppConstants.keyGatewayBaseUrl) ?? '').trim();
+    if (saved.isNotEmpty) return saved.replaceAll(RegExp(r'/+$'), '');
+    return '$apiOrigin/api/gateway/v1';
+  }
+
+  String get _sessionTokenForApiKey =>
+      Get.isRegistered<DiscordService>()
+          ? Get.find<DiscordService>().sessionToken
+          : '';
+
+  /// True kalau Local AI dijalankan lewat gateway pakai API key user.
+  /// Kalau iya, pemakaian token tercatat di server (bukan di perangkat).
+  bool get localAiViaGateway {
+    final key = _secure.read(AppConstants.keyUserApiKey).trim();
+    final base =
+        (_hive.getSetting<String>(AppConstants.keyGatewayBaseUrl) ?? '').trim();
+    return key.isNotEmpty && base.isNotEmpty;
+  }
+
+  bool get isLoggedInForApiKey => _sessionTokenForApiKey.isNotEmpty;
+
+  bool get hasUserApiKey =>
+      userApiKeyPrefix.value.isNotEmpty || userApiKey.value.isNotEmpty;
+
+  /// Muat status API key sekali saat halaman Settings dibuka.
+  Future<void> ensureApiKeyStatusLoaded() async {
+    if (_apiKeyStatusLoaded) return;
+    _apiKeyStatusLoaded = true;
+    if (!isLoggedInForApiKey) return;
+    await refreshUserApiKeyStatus();
+  }
+
+  /// Cek apakah akun ini sudah punya API key aktif (prefix saja).
+  Future<String?> refreshUserApiKeyStatus() async {
+    final token = _sessionTokenForApiKey;
+    if (token.isEmpty) {
+      return 'Login Discord dulu untuk memakai AI API key.';
+    }
+    try {
+      final res = await http.get(
+        Uri.parse('$apiOrigin/api/auth/api-key'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 20));
+      if (res.statusCode == 401) {
+        return 'Sesi login kedaluwarsa. Login ulang lewat Discord.';
+      }
+      if (res.statusCode != 200) {
+        return 'Gagal memuat status API key (${res.statusCode}).';
+      }
+      final data = jsonDecode(res.body);
+      if (data is! Map) return 'Respons server tidak valid.';
+      if (data['hasKey'] == true) {
+        userApiKeyPrefix.value =
+            (data['prefix'] ?? 'pb_...').toString();
+        await _hive.setSetting(
+            AppConstants.keyUserApiKeyPrefix, userApiKeyPrefix.value);
+      } else {
+        userApiKeyPrefix.value = '';
+        userApiKey.value = '';
+        await _secure.write(AppConstants.keyUserApiKey, '');
+        await _hive.setSetting(AppConstants.keyUserApiKeyPrefix, '');
+      }
+      return null;
+    } catch (e) {
+      return 'Tidak bisa menghubungi server: $e';
+    }
+  }
+
+  /// Buat API key baru. Key mentah hanya dikembalikan sekali oleh server,
+  /// jadi langsung disimpan terenkripsi di perangkat.
+  Future<String?> createUserApiKey() async {
+    final token = _sessionTokenForApiKey;
+    if (token.isEmpty) return 'Login Discord dulu untuk membuat API key.';
+    if (apiKeyBusy.value) return null;
+    apiKeyBusy.value = true;
+    try {
+      final res = await http.post(
+        Uri.parse('$apiOrigin/api/auth/api-key'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 20));
+      if (res.statusCode != 200) {
+        return 'Gagal membuat API key (${res.statusCode}): ${res.body}';
+      }
+      final data = jsonDecode(res.body);
+      final key = data is Map ? (data['apiKey'] ?? '').toString() : '';
+      final prefix = data is Map ? (data['prefix'] ?? '').toString() : '';
+      if (key.isEmpty) return 'Server tidak mengembalikan API key.';
+      userApiKey.value = key;
+      userApiKeyPrefix.value = prefix;
+      await _secure.write(AppConstants.keyUserApiKey, key);
+      await _hive.setSetting(AppConstants.keyUserApiKeyPrefix, prefix);
+      return null;
+    } catch (e) {
+      return 'Tidak bisa membuat API key: $e';
+    } finally {
+      apiKeyBusy.value = false;
+    }
+  }
+
+  /// Hapus API key (server memberi masa tenggang 3 hari).
+  Future<String?> deleteUserApiKey() async {
+    final token = _sessionTokenForApiKey;
+    if (token.isEmpty) return 'Login Discord dulu.';
+    apiKeyBusy.value = true;
+    try {
+      final res = await http.delete(
+        Uri.parse('$apiOrigin/api/auth/api-key'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 20));
+      if (res.statusCode != 200) {
+        return 'Gagal menghapus API key (${res.statusCode}): ${res.body}';
+      }
+      userApiKey.value = '';
+      userApiKeyPrefix.value = '';
+      await _secure.write(AppConstants.keyUserApiKey, '');
+      await _hive.setSetting(AppConstants.keyUserApiKeyPrefix, '');
+      apiKeyTestResult.value = '';
+      return null;
+    } catch (e) {
+      return 'Tidak bisa menghapus API key: $e';
+    } finally {
+      apiKeyBusy.value = false;
+    }
+  }
+
+  /// Tes lokal: daftar model + satu chat singkat lewat gateway.
+  ///
+  /// Hasil tersimpan di [apiKeyTestResult] supaya UI bisa menampilkannya.
+  Future<String> testUserApiKey() async {
+    final result = await _runApiKeyTest();
+    apiKeyTestResult.value = result;
+    return result;
+  }
+
+  Future<String> _runApiKeyTest() async {
+    final key = userApiKey.value.trim().isNotEmpty
+        ? userApiKey.value.trim()
+        : _secure.read(AppConstants.keyUserApiKey).trim();
+    if (key.isEmpty) {
+      return 'Belum ada API key. Buat dulu di halaman ini.';
+    }
+    apiKeyBusy.value = true;
+    try {
+      final base = gatewayBaseUrl;
+      final headers = {'Authorization': 'Bearer $key'};
+      final modelsRes = await http
+          .get(Uri.parse('$base/models'), headers: headers)
+          .timeout(const Duration(seconds: 25));
+      if (modelsRes.statusCode == 401) {
+        return 'API key ditolak (401). Buat key baru.';
+      }
+      if (modelsRes.statusCode == 403) {
+        return 'API key diblokir atau akun dibanned (403).';
+      }
+      if (modelsRes.statusCode != 200) {
+        return 'Gateway error ${modelsRes.statusCode}: '
+            '${_shortBody(modelsRes.body)}';
+      }
+      final decoded = jsonDecode(modelsRes.body);
+      final rawList =
+          decoded is Map && decoded['data'] is List ? decoded['data'] as List : const [];
+      final ids = rawList
+          .map((e) => e is Map ? (e['id'] ?? '').toString() : '')
+          .where((e) => e.isNotEmpty)
+          .toList();
+      if (ids.isEmpty) {
+        return 'Terhubung ke gateway, tetapi belum ada model untuk tier '
+            'akun ini. Minta admin menambah model / menaikkan tier.';
+      }
+      final chatRes = await http
+          .post(
+            Uri.parse('$base/chat/completions'),
+            headers: {...headers, 'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'model': ids.first,
+              'messages': [
+                {'role': 'user', 'content': 'ping'}
+              ],
+              'max_tokens': 16,
+            }),
+          )
+          .timeout(const Duration(seconds: 90));
+      if (chatRes.statusCode != 200) {
+        return 'Model OK (${ids.length}), tetapi chat gagal '
+            '(${chatRes.statusCode}): ${_shortBody(chatRes.body)}';
+      }
+      final chatData = jsonDecode(chatRes.body);
+      final reply = chatData is Map &&
+              chatData['choices'] is List &&
+              (chatData['choices'] as List).isNotEmpty &&
+              (chatData['choices'] as List).first is Map
+          ? ((chatData['choices'] as List).first as Map)['message']
+          : null;
+      final content = reply is Map ? (reply['content'] ?? '').toString() : '';
+      if (content.isEmpty) {
+        return 'Model OK (${ids.length}), chat dibalas kosong.';
+      }
+      return 'Berhasil · ${ids.length} model · ${ids.first} membalas: '
+          '"${content.length > 80 ? '${content.substring(0, 80)}…' : content}"';
+    } catch (e) {
+      return 'Gagal menghubungi gateway: $e';
+    } finally {
+      apiKeyBusy.value = false;
+    }
+  }
+
+  static String _shortBody(String body) {
+    final text = body.trim();
+    return text.length > 200 ? '${text.substring(0, 200)}…' : text;
+  }
+
+  /// Pulls the AI server address and secret from the admin dashboard.
+  ///
+  /// The dashboard is the only place where servers are managed; this just
+  /// keeps the app in sync with whatever the owner set there.
+  Future<bool> syncAiServerFromDashboard() async {
+    final changed = await Get.find<DashboardConfigService>().apply();
+    // Refresh the values shown in the UI.
+    localServerUrl.value = _hive.getSetting<String>(
+            AppConstants.keyLocalServerUrl,
+            defaultValue: AppConstants.defaultLocalServerUrl) ??
+        AppConstants.defaultLocalServerUrl;
+    localCloudKey.value = _secure.read(AppConstants.keyLocalCloudKey);
+    showToast(
+      changed ? 'Config AI server diperbarui' : 'Config sudah sama',
+      changed
+          ? 'Alamat server + daftar model diperbarui dari dashboard.'
+          : 'Tidak ada perubahan dari server.',
+      tone: changed ? ToastTone.success : ToastTone.info,
+    );
+    return changed;
+  }
+
   Future<void> setStopSequences(String text) async {
     final list = text
         .split('\n')

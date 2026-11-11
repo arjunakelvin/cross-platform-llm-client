@@ -1,0 +1,1557 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Admin — AI-Agent PiercingBlow</title>
+<style>
+  :root {
+    --bg: #0e1116; --card: #161b22; --line: #262d37; --text: #e6edf3;
+    --muted: #8b949e; --accent: #4f8cff; --green: #2ea043; --red: #f85149;
+    --orange: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+  h1 { font-size: 18px; margin: 0; }
+  h1 small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 18px; margin-bottom: 16px;
+  }
+  label { display: block; color: var(--muted); font-size: 12px; margin: 10px 0 4px; }
+  input[type=text], input[type=password], input[type=number], select {
+    width: 100%; padding: 9px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: #0d1117; color: var(--text);
+    font: inherit;
+  }
+  input:focus, select:focus { outline: 1px solid var(--accent); }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; }
+  button {
+    padding: 9px 16px; border-radius: 8px; border: 1px solid var(--line);
+    background: #21262d; color: var(--text); font: inherit; cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--red); }
+  button:disabled { opacity: .5; cursor: default; }
+  .switch { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+  .switch input { width: 18px; height: 18px; accent-color: var(--accent); }
+  .status { margin-top: 10px; font-size: 13px; color: var(--muted); min-height: 18px; }
+  .status.ok { color: var(--green); }
+  .status.err { color: var(--red); }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  th { color: var(--muted); font-weight: 500; }
+  td input, td select { padding: 5px 6px; font-size: 13px; }
+  td input[type=number] { width: 100px; }
+  .pill { padding: 2px 8px; border-radius: 99px; font-size: 11px; }
+  .pill.active { background: rgba(46,160,67,.15); color: var(--green); }
+  .pill.banned { background: rgba(248,81,73,.15); color: var(--red); }
+  .pill.info { background: rgba(31,111,235,.15); color: var(--blue, #1f6feb); }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  #login { max-width: 380px; margin: 12vh auto; }
+  #app { display: none; }
+  .actions { display: flex; gap: 6px; }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+
+  /* ── Server manager ─────────────────────────────────────────────── */
+  .srv {
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px; margin-top: 10px; background: #0d1117;
+  }
+  .srv-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .srv-head b { font-size: 14px; }
+  .srv-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .tag {
+    padding: 2px 8px; border-radius: 99px; font-size: 11px;
+    background: rgba(110,118,129,.18); color: var(--muted);
+  }
+  .tag.on { background: rgba(46,160,67,.16); color: var(--green); }
+  .tag.off { background: rgba(110,118,129,.14); color: var(--muted); }
+  .stats { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .stat {
+    flex: 1 1 90px; background: #161b22; border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 9px;
+  }
+  .stat span { display: block; color: var(--muted); font-size: 11px; }
+  .stat b { font-size: 13px; font-weight: 600; }
+  .bar { height: 4px; border-radius: 99px; background: #21262d; margin-top: 6px; }
+  .bar i { display: block; height: 100%; border-radius: 99px; background: var(--accent); }
+  .srv-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .srv button { padding: 6px 12px; font-size: 13px; }
+  .logs {
+    margin-top: 10px; max-height: 190px; overflow: auto;
+    background: #0b0e13; border: 1px solid var(--line); border-radius: 8px;
+    padding: 9px 10px; font-family: ui-monospace, Consolas, monospace;
+    font-size: 11.5px; line-height: 1.5; white-space: pre-wrap;
+  }
+  .logs div { color: #adbac7; }
+  .models { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  h3 { font-size: 13px; margin: 0 0 6px; }
+  .model-row {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 10px; padding: 8px 0; border-top: 1px solid var(--line);
+  }
+  .model-row:first-child { border-top: 0; }
+  .model-row .meta { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+  .model-row .actions { flex: 0 0 auto; }
+  .price {
+    font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+    color: #adbac7;
+  }
+  .empty { color: var(--muted); font-size: 12px; padding: 6px 0; }
+  .model-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; margin-top: 12px; padding-top: 10px;
+    border-top: 1px solid var(--line);
+  }
+  .model-head h3 { margin: 0; }
+  .srv-key { color: var(--muted); font-size: 11.5px; }
+  dialog {
+    width: min(680px, 94vw); max-height: 90vh; overflow: auto;
+    background: var(--card); color: var(--text);
+    border: 1px solid var(--line); border-radius: 12px; padding: 20px;
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, .6); }
+  dialog h2 { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div id="login" class="card">
+    <h2>Admin privat</h2>
+    <p class="hint">Halaman ini tidak ditautkan dari aplikasi. Masukkan admin key
+      (secret <span class="mono">ADMIN_KEY</span> di worker) untuk mengelola login
+      Discord, tier, dan akun.</p>
+    <label for="workerUrl">Worker URL (opsional)</label>
+    <input type="text" id="workerUrl" autocomplete="off"
+           placeholder="https://piercingblow-api.&lt;subdomain&gt;.workers.dev">
+    <div class="hint">Kosong = pakai API di domain ini sendiri. Isi kalau
+      <span class="mono">/api</span> di domain masih ketahan proxy CORS
+      (error <span class="mono">Missing target URL</span>) — isi alamat Worker
+      Cloudflare, atau set env <span class="mono">WORKER_URL</span> di Vercel,
+      atau pasang route <span class="mono">piercingblow.ai.id/api*</span>.</div>
+    <label for="adminKey">Admin key</label>
+    <input type="password" id="adminKey" autocomplete="off" placeholder="ADMIN_KEY">
+    <div class="hint">Token disimpan di <span class="mono">sessionStorage</span>
+      browser ini saja — hilang kalau tab ditutup, tidak pernah disimpan
+      permanen dan tidak pernah dikirim ke pengguna aplikasi.</div>
+    <div style="margin-top:12px">
+      <button class="primary" id="loginBtn" style="width:100%">Masuk</button>
+    </div>
+    <div class="status" id="loginStatus"></div>
+  </div>
+
+  <div id="app">
+    <header>
+      <h1>AI-Agent PiercingBlow <small>Dashboard admin privat</small></h1>
+      <button id="logoutBtn">Keluar</button>
+    </header>
+
+    <div class="card">
+      <h2>Login Discord (OAuth)</h2>
+      <div class="switch">
+        <input type="checkbox" id="dsEnabled">
+        <span>Aktifkan login Discord di aplikasi</span>
+      </div>
+      <div class="row">
+        <div>
+          <label for="dsClientId">Client ID (Application ID)</label>
+          <input type="text" id="dsClientId" placeholder="123456789012345678">
+        </div>
+        <div>
+          <label for="dsSecret">Client Secret</label>
+          <input type="password" id="dsSecret" autocomplete="new-password"
+                 placeholder="Kosongkan = tidak diubah">
+        </div>
+      </div>
+      <label for="dsRedirect">Redirect URI</label>
+      <input type="text" id="dsRedirect" placeholder="https://piercingblow.ai.id/auth/discord">
+      <div style="margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+        <button id="copyRedirect">Copy URL untuk didaftarkan</button>
+        <span class="hint" id="redirectCurrent" style="margin:0"></span>
+      </div>
+      <div class="hint">Harus sama persis dengan yang didaftarkan di Discord Developer
+        Portal → OAuth2 → Redirects. Endpoint login web:
+        <span class="mono">https://piercingblow.ai.id/auth/discord</span>
+        (default). <b>Jangan pakai URL lama</b> (<span class="mono">https://piercingblow.ai.id/</span>)
+        — Discord menolaknya kalau tidak terdaftar. Kosong = otomatis pakai
+        endpoint yang benar. Secret disimpan di server (KV) dan tidak pernah
+        dikirim ke browser user.</div>
+      <div style="margin-top:12px">
+        <button class="primary" id="saveDiscord">Simpan konfigurasi Discord</button>
+      </div>
+      <div class="status" id="discordStatus"></div>
+    </div>
+
+    <div class="card">
+      <h2>Tier &amp; kuota token</h2>
+      <div class="row">
+        <div>
+          <label for="tiers">Daftar tier (pisahkan dengan koma)</label>
+          <input type="text" id="tiers" placeholder="free, pro, vip">
+        </div>
+        <div>
+          <label for="defaultTier">Tier default akun baru</label>
+          <select id="defaultTier"></select>
+        </div>
+        <div>
+          <label for="tokenResetDays">Durasi reset token (hari)</label>
+          <input type="number" id="tokenResetDays" min="1" step="1" placeholder="1">
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div>
+          <label for="guestTokens">Token tanpa login (Guest)</label>
+          <input type="number" id="guestTokens" min="0" step="100000" placeholder="10000000">
+          <div class="hint">Default: 10.000.000 (10M).</div>
+        </div>
+        <div>
+          <label for="loginTokens">Token login Discord</label>
+          <input type="number" id="loginTokens" min="0" step="100000" placeholder="20000000">
+          <div class="hint">Default: 20.000.000 (20M, bonus +10M saat login).</div>
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <button class="primary" id="saveTiers">Simpan kuota &amp; tier</button>
+      </div>
+      <div class="status" id="tierStatus"></div>
+    </div>
+
+    <div class="card">
+      <h2>API Bot Discord (Verifikasi Akun)</h2>
+      <p class="hint">Endpoint ini dipanggil oleh Bot Discord untuk memverifikasi apakah member Discord telah login/terhubung di web, serta memeriksa tier dan kuota tokennya.</p>
+      <div class="row">
+        <div>
+          <label for="botSecretKey">Bot API Key (opsional — kosong = verifikasi publik tanpa auth header)</label>
+          <input type="password" id="botSecretKey" autocomplete="new-password" placeholder="Kosongkan = tanpa proteksi key">
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <button class="primary" id="saveBot">Simpan pengaturan bot</button>
+      </div>
+      <div class="status" id="botStatus"></div>
+
+      <label style="margin-top:14px">Contoh Endpoint Verifikasi Bot:</label>
+      <div style="background:#0d1117; padding:10px; border-radius:8px; border:1px solid var(--line); font-family:monospace; font-size:12px; word-break:break-all;">
+        GET https://piercingblow.ai.id/api/bot/verify?discord_id=123456789012345678
+      </div>
+      <div class="hint" style="margin-top:6px">Header (jika Bot API Key diset): <span class="mono">X-Bot-Key: &lt;kunci&gt;</span></div>
+
+      <details style="margin-top:10px; cursor:pointer;">
+        <summary style="color:var(--accent); font-size:13px; font-weight:500;">Lihat contoh kode bot (JavaScript &amp; Python)</summary>
+        <div style="margin-top:8px; font-size:12px; font-family:monospace; background:#0b0d11; padding:12px; border-radius:8px; overflow-x:auto;">
+<b>// discord.js (v14)</b><br>
+const res = await fetch(`https://piercingblow.ai.id/api/bot/verify?discord_id=${interaction.user.id}`, {<br>
+&nbsp;&nbsp;headers: { 'X-Bot-Key': 'KUNCI_BOT' }<br>
+});<br>
+const data = await res.json();<br>
+if (data.verified) {<br>
+&nbsp;&nbsp;await interaction.reply(`Akun terverifikasi! Tier: ${data.user.tier}, Sisa token: ${data.user.tokenRemaining}`);<br>
+} else {<br>
+&nbsp;&nbsp;await interaction.reply('Silakan login di web terlebih dahulu!');<br>
+}<br>
+<br>
+<b># discord.py</b><br>
+import aiohttp<br>
+async with aiohttp.ClientSession() as session:<br>
+&nbsp;&nbsp;async with session.get(f"https://piercingblow.ai.id/api/bot/verify?discord_id={ctx.author.id}", headers={"X-Bot-Key": "KUNCI_BOT"}) as r:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;data = await r.json()<br>
+&nbsp;&nbsp;&nbsp;&nbsp;if data.get("verified"):<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;await ctx.send(f"Terverifikasi! Tier: {data['user']['tier']}")<br>
+        </div>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>Server manager &amp; model AI</h2>
+      <p class="hint" style="margin:0 0 12px">
+        Satu kartu server = satu VPS. Cukup isi <b>Manager URL</b> daemon
+        Python + <b>secret key manager</b>. Alamat inference, daftar model,
+        status CPU/RAM/disk/network, dan traffic dibaca langsung dari daemon
+        VPS tersebut — tidak perlu mengetik base URL atau secret inference
+        lagi. Model terdeteksi otomatis; admin hanya mengedit harga, tier,
+        context, dan max output.</p>
+
+      <h3 id="srvFormTitle" style="margin-top:12px">Tambah server AI (VPS baru)</h3>
+      <div class="hint" style="margin:0 0 8px">
+        Ulangi untuk VPS/server 2, server 3, dan seterusnya. Setiap VPS punya
+        Manager URL + secret sendiri sehingga model, CPU/RAM, dan traffic-nya
+        terpisah.</div>
+      <div class="row">
+        <div>
+          <label for="srvManagerUrl">Manager URL (daemon VPS ini)</label>
+          <input type="text" id="srvManagerUrl"
+                 placeholder="https://api-ai.domain.com/manager">
+          <div class="hint">Alamat daemon Python <span class="mono">manager.py</span>
+            di VPS ini. Cukup domain + <span class="mono">/manager</span>.</div>
+        </div>
+        <div>
+          <label for="srvManagerKey">Secret key manager</label>
+          <input type="password" id="srvManagerKey" autocomplete="new-password"
+                 placeholder="secretKey di servers.json VPS ini">
+          <div class="hint">Dipakai untuk membaca daftar model, start/stop,
+            statistik, dan request chat ke inference di VPS ini.</div>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="srvName">Nama server (opsional)</label>
+          <input type="text" id="srvName" placeholder="VPS 1 — Qwen3 8B">
+        </div>
+        <div>
+          <label for="srvId">Server ID (opsional)</label>
+          <input type="text" id="srvId" placeholder="otomatis: server-1">
+          <div class="hint">Dipakai gateway sebagai <span class="mono">owned_by</span>.</div>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="srvEnabled">Status server</label>
+          <select id="srvEnabled">
+            <option value="1">Aktif</option>
+            <option value="0">Nonaktif</option>
+          </select>
+        </div>
+        <div>
+          <label for="srvNotes">Catatan (opsional)</label>
+          <input type="text" id="srvNotes" placeholder="GPU 0 · 24 GB">
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <button class="primary" id="saveServerEntry">Tambah server &amp; deteksi model</button>
+        <button id="resetServerForm">Reset form</button>
+        <button id="refreshGatewayServers">Refresh data</button>
+      </div>
+      <div class="status" id="serverModelStatus"></div>
+
+      <h3 style="margin-top:20px">Server terdaftar</h3>
+      <div id="gatewayServerList">
+        <div class="hint">Memuat server…</div>
+      </div>
+    </div>
+
+    <dialog id="modelDialog">
+      <h2 id="modelDialogTitle">Edit model</h2>
+      <div class="hint" id="modelDialogServer" style="margin:0 0 6px"></div>
+      <div class="hint" style="margin:0 0 6px">
+        Model ID terdeteksi otomatis dari server dan tidak bisa ditambah
+        manual. Harga <span class="mono">$0</span> di /req dan /1M = pemakaian
+        memotong kuota token user; harga &gt; 0 = memotong credit.</div>
+      <div class="row">
+        <div>
+          <label for="smModelId">Model ID (dari server, read-only)</label>
+          <input type="text" id="smModelId" readonly>
+        </div>
+        <div>
+          <label for="smName">Nama tampilan</label>
+          <input type="text" id="smName" placeholder="Qwen3 8B">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="smContextSize">Context size</label>
+          <input type="number" id="smContextSize" min="0" value="4096">
+        </div>
+        <div>
+          <label for="smMaxOutput">Max output</label>
+          <input type="number" id="smMaxOutput" min="0" value="2048">
+        </div>
+      </div>
+      <label>Tier yang boleh akses</label>
+      <div style="display:flex;gap:16px;margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:4px;color:var(--text);margin:0">
+          <input type="checkbox" id="smTierFree" checked> Free
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;color:var(--text);margin:0">
+          <input type="checkbox" id="smTierPro" checked> Pro
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;color:var(--text);margin:0">
+          <input type="checkbox" id="smTierVip" checked> VIP
+        </label>
+      </div>
+      <label>Pricing input</label>
+      <div class="row">
+        <div>
+          <input type="number" id="smInputPerReq" min="0" step="0.0001" placeholder="$ per request">
+          <div class="hint">$ / request (0 = pakai token)</div>
+        </div>
+        <div>
+          <input type="number" id="smInputPer1M" min="0" step="0.01" placeholder="$ per 1M tokens">
+          <div class="hint">$ / 1M tokens (dipakai kalau /req = 0)</div>
+        </div>
+      </div>
+      <label>Pricing output</label>
+      <div class="row">
+        <div>
+          <input type="number" id="smOutputPerReq" min="0" step="0.0001" placeholder="$ per request">
+          <div class="hint">$ / request (0 = pakai token)</div>
+        </div>
+        <div>
+          <input type="number" id="smOutputPer1M" min="0" step="0.01" placeholder="$ per 1M tokens">
+          <div class="hint">$ / 1M tokens (dipakai kalau /req = 0)</div>
+        </div>
+      </div>
+      <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+        <button id="cancelModelDialog">Batal</button>
+        <button class="primary" id="saveModelEntry">Simpan perubahan</button>
+      </div>
+      <div class="status" id="modelDialogStatus"></div>
+    </dialog>
+
+    <div class="card">
+      <h2>API Key Logs</h2>
+      <p style="color:var(--muted);font-size:12px;margin:0 0 8px">
+        Log siapa yang membuat API key untuk gateway.</p>
+      <button id="refreshApiKeyLogs">Refresh log</button>
+      <div class="status" id="apiKeyLogStatus"></div>
+      <table>
+        <thead>
+          <tr><th>Waktu</th><th>Akun</th><th>Aksi</th><th>Prefix Key</th></tr>
+        </thead>
+        <tbody id="apiKeyLogRows">
+          <tr><td colspan="4" style="color:var(--muted)">Belum ada log.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Log pemakaian AI (token &amp; kredit)</h2>
+      <p style="color:var(--muted);font-size:12px;margin:0 0 8px">
+        Setiap request ke AI server manager yang tercatat: token terpakai
+        (mode token) atau kredit terpakai (mode kredit).</p>
+      <button id="refreshUsageLogs">Refresh log</button>
+      <div class="status" id="usageLogStatus"></div>
+      <table>
+        <thead>
+          <tr>
+            <th>Waktu</th><th>Akun</th><th>Model</th>
+            <th>Token</th><th>Kredit</th><th>Mode</th>
+          </tr>
+        </thead>
+        <tbody id="usageLogRows">
+          <tr><td colspan="6" style="color:var(--muted)">Belum ada pemakaian.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Akun</h2>
+      <div class="row">
+        <div>
+          <label for="newName">Nama akun baru</label>
+          <input type="text" id="newName" placeholder="nama user">
+        </div>
+        <div>
+          <label for="newDiscordId">Discord ID (opsional, untuk linking)</label>
+          <input type="text" id="newDiscordId" placeholder="123456789012345678">
+        </div>
+        <div>
+          <label for="newTier">Tier</label>
+          <select id="newTier"></select>
+        </div>
+        <div style="flex:0 0 auto; display:flex; align-items:flex-end">
+          <button class="primary" id="addAccount">Tambah</button>
+        </div>
+      </div>
+      <div class="status" id="accountsInfo"></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Nama</th><th>Discord ID</th><th>Role</th><th>Tier</th>
+              <th>Token (limit)</th><th>Token terpakai</th>
+              <th>Kredit (sisa)</th><th>Kredit terpakai</th>
+              <th>Status</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="accountRows"></tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px">
+        <button id="refreshAccounts">Muat ulang akun</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+let adminKey = sessionStorage.getItem('pb_admin_key') || '';
+let config = null;
+
+// Endpoint callback OAuth Discord yang harus didaftarkan di Discord Portal.
+const DEFAULT_REDIRECT_URI = window.location.origin + '/auth/discord';
+
+// Base API: defaultnya domain ini sendiri. Kalau /api di domain masih
+// ketahan proxy CORS, isi "Worker URL" untuk langsung menembak Worker.
+let workerUrl = localStorage.getItem('pb_worker_url') || '';
+
+function apiUrl(path) {
+  const base = workerUrl.trim().replace(/\/+$/, '');
+  return base + path;
+}
+
+function setStatus(el, msg, ok) {
+  el.textContent = msg;
+  el.className = 'status' + (ok === true ? ' ok' : ok === false ? ' err' : '');
+}
+
+async function api(method, path, body) {
+  const res = await fetch(apiUrl(path), {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Admin-Key': adminKey,
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let data = null;
+  let text = '';
+  try {
+    text = await res.text();
+    data = JSON.parse(text);
+  } catch (_) {}
+  if (!res.ok) {
+    const detail = (data && data.error) ||
+      (text ? text.slice(0, 200) : ('HTTP ' + res.status));
+    throw new Error(detail);
+  }
+  return data || {};
+}
+
+function tierOptions(selected) {
+  const tiers = (config && config.tiers) || ['free'];
+  return tiers.map((t) =>
+    '<option value="' + escapeAttr(t) + '"' +
+    (t === selected ? ' selected' : '') + '>' + escapeHtml(t) + '</option>'
+  ).join('');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+function escapeAttr(s) { return escapeHtml(s); }
+
+function fillTierSelects() {
+  const tiers = (config && config.tiers) || ['free'];
+  for (const id of ['defaultTier', 'newTier']) {
+    const el = $(id);
+    const current = id === 'defaultTier'
+      ? (config.defaultTier || tiers[0])
+      : (config.defaultTier || tiers[0]);
+    el.innerHTML = tierOptions(current);
+  }
+}
+
+async function loadConfig() {
+  config = await api('GET', '/api/admin/config');
+  $('dsEnabled').checked = !!config.discord.enabled;
+  $('dsClientId').value = config.discord.clientId || '';
+  $('dsSecret').value = '';
+  $('dsSecret').placeholder = config.discord.hasSecret
+    ? 'Tersimpan di server — kosongkan = tidak diubah'
+    : 'Belum diset';
+  $('dsRedirect').value = config.discord.redirectUri || '';
+  $('redirectCurrent').textContent = config.discord.redirectUri
+    ? 'Server memakai: ' + config.discord.redirectUri
+    : 'Server memakai default: ' + DEFAULT_REDIRECT_URI;
+  $('tiers').value = (config.tiers || []).join(', ');
+  $('tokenResetDays').value = config.tokenResetDays ?? 1;
+  $('guestTokens').value = config.guestTokenBalance ?? 10000000;
+  $('loginTokens').value = config.loginTokenBalance ?? 20000000;
+  $('botSecretKey').value = '';
+  $('botSecretKey').placeholder = config.hasBotSecret
+    ? 'Tersimpan — kosongkan = tidak diubah' : 'Kosongkan = tanpa proteksi key';
+  fillTierSelects();
+}
+
+// ── Monitoring daemon per server ───────────────────────────────────────
+// Setiap VPS menjalankan daemon manager.py sendiri, jadi Manager URL dan
+// secret-nya disimpan per server. Statistik CPU/RAM/disk/network yang
+// ditampilkan di kartu server berasal dari daemon VPS itu.
+
+let gatewayServers = [];
+let serverModels = [];
+let managerTimer = null;
+let usageTimer = null;
+// serverId -> { ok, servers, error } dari daemon manager VPS tsb.
+const managerCache = {};
+const managerLogsOpen = {};
+const managerLogsText = {};
+
+function managerApi(server, method, path, body) {
+  const base = String(server.managerUrl || '').trim().replace(/\/+$/, '');
+  if (!base) throw new Error('Manager URL server ini belum diisi.');
+  return fetch(base + path, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Secret-Key': server.managerKey || '',
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }).then(async (res) => {
+    let data = null;
+    let text = '';
+    try {
+      text = await res.text();
+      data = JSON.parse(text);
+    } catch (_) {}
+    if (!res.ok) {
+      throw new Error((data && data.error) || text.slice(0, 160) ||
+        ('HTTP ' + res.status));
+    }
+    return data || {};
+  });
+}
+
+function fmtNum(value, digits) {
+  const n = Number(value || 0);
+  return n.toFixed(digits === undefined ? 1 : digits);
+}
+
+// Angka dengan pemisah ribuan (mis. 12,000).
+function fmtInt(value) {
+  const n = Math.floor(Number(value || 0));
+  return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+// Uang dengan pemisah ribuan (mis. 12,000.50).
+function fmtMoney(value) {
+  const n = Number(value || 0);
+  const parts = n.toFixed(4).split('.');
+  return fmtInt(parts[0]) + '.' + parts[1];
+}
+
+function statTile(label, value, ratio) {
+  const pct = Math.max(0, Math.min(100, ratio || 0));
+  return '<div class="stat"><span>' + label + '</span><b>' + value + '</b>' +
+    (ratio === undefined ? '' :
+      '<div class="bar"><i style="width:' + pct + '%"></i></div>') + '</div>';
+}
+
+function daemonsFor(server) {
+  const cache = managerCache[String(server.id)];
+  if (!cache || !cache.ok) return [];
+  return cache.servers || [];
+}
+
+function daemonById(server, daemonId) {
+  return daemonsFor(server)
+    .find((d) => String(d.id) === String(daemonId)) || null;
+}
+
+function logKey(serverId, daemonId) {
+  return String(serverId) + '::' + String(daemonId);
+}
+
+async function loadManagerFor(server) {
+  const id = String(server.id);
+  if (!String(server.managerUrl || '').trim()) {
+    managerCache[id] = {
+      ok: false, servers: [], error: 'Manager URL belum diisi.',
+    };
+    return;
+  }
+  try {
+    const data = await managerApi(server, 'GET', '/servers');
+    managerCache[id] = { ok: true, servers: data.servers || [], error: '' };
+    // Refresh panel log yang sedang terbuka.
+    const prefix = id + '::';
+    for (const key of Object.keys(managerLogsOpen)) {
+      if (!managerLogsOpen[key] || !key.startsWith(prefix)) continue;
+      const daemon = daemonById(server, key.slice(prefix.length));
+      if (daemon) await fetchLogs(server, daemon);
+    }
+  } catch (e) {
+    managerCache[id] = {
+      ok: false, servers: [], error: String(e.message || e),
+    };
+  }
+}
+
+async function loadAllManagers() {
+  const targets = gatewayServers.filter((s) =>
+    String(s.managerUrl || '').trim());
+  await Promise.allSettled(targets.map((s) => loadManagerFor(s)));
+  renderGatewayServers();
+}
+
+async function fetchLogs(server, daemon) {
+  const key = logKey(server.id, daemon.id);
+  try {
+    const data = await managerApi(server, 'GET',
+      '/servers/' + encodeURIComponent(daemon.id) + '/logs?lines=60');
+    managerLogsText[key] = data.lines || [];
+  } catch (e) {
+    managerLogsText[key] = ['Gagal memuat log: ' + String(e.message || e)];
+  }
+  const el = document.getElementById('logs-' + key);
+  if (el) {
+    const lines = managerLogsText[key];
+    el.innerHTML = lines.length
+      ? lines.map((l) => '<div>' + escapeHtml(l) + '</div>').join('')
+      : '<div>Belum ada log.</div>';
+    el.scrollTop = el.scrollHeight;
+  }
+}
+
+async function mgrLogs(serverId, daemonId, forceOpen) {
+  const server = gatewayServers.find((s) => String(s.id) === String(serverId));
+  if (!server) return;
+  const daemon = daemonById(server, daemonId);
+  if (!daemon) return;
+  const key = logKey(serverId, daemonId);
+  const open = forceOpen === undefined
+    ? !managerLogsOpen[key]
+    : !!forceOpen;
+  managerLogsOpen[key] = open;
+  renderGatewayServers();
+  if (open) await fetchLogs(server, daemon);
+}
+
+async function mgrStart(serverId, daemonId) {
+  const server = gatewayServers.find((s) => String(s.id) === String(serverId));
+  if (!server) return;
+  const daemon = daemonById(server, daemonId);
+  if (!daemon) {
+    setStatus($('serverModelStatus'),
+      'Proses AI "' + daemonId + '" tidak ada di daemon.', false);
+    return;
+  }
+  setStatus($('serverModelStatus'), 'Menyalakan ' + daemon.id + '…', null);
+  try {
+    await managerApi(server, 'POST',
+      '/servers/' + encodeURIComponent(daemon.id) + '/start');
+    await loadManagerFor(server);
+    renderGatewayServers();
+    setStatus($('serverModelStatus'), daemon.id + ' dinyalakan.', true);
+  } catch (e) {
+    setStatus($('serverModelStatus'), 'Gagal menyalakan ' + daemon.id + ': ' +
+      String(e.message || e), false);
+  }
+}
+
+async function mgrStop(serverId, daemonId) {
+  const server = gatewayServers.find((s) => String(s.id) === String(serverId));
+  if (!server) return;
+  const daemon = daemonById(server, daemonId);
+  if (!daemon) {
+    setStatus($('serverModelStatus'),
+      'Proses AI "' + daemonId + '" tidak ada di daemon.', false);
+    return;
+  }
+  setStatus($('serverModelStatus'), 'Mematikan ' + daemon.id + '…', null);
+  try {
+    await managerApi(server, 'POST',
+      '/servers/' + encodeURIComponent(daemon.id) + '/stop');
+    await loadManagerFor(server);
+    renderGatewayServers();
+    setStatus($('serverModelStatus'), daemon.id + ' dimatikan.', true);
+  } catch (e) {
+    setStatus($('serverModelStatus'), 'Gagal mematikan ' + daemon.id + ': ' +
+      String(e.message || e), false);
+  }
+}
+
+
+function rowAccount(tr) {
+  const get = (f) => tr.querySelector('[data-f="' + f + '"]');
+  const existing = currentAccounts.find((a) => a.id === tr.dataset.id) || {};
+  return {
+    ...existing,
+    id: tr.dataset.id,
+    name: get('name').value.trim(),
+    discordId: get('discordId').value.trim(),
+    role: get('role').value,
+    tier: get('tier').value,
+    tokenBalance: Number(get('tokenBalance').value) || 0,
+    creditBalance: Number(get('creditBalance').value) || 0,
+  };
+}
+
+let currentAccounts = [];
+
+async function refreshAll() {
+  await loadConfig();
+  await loadGatewayData(true);
+  const data = await api('GET', '/api/admin/accounts');
+  currentAccounts = data.accounts || [];
+  renderAccounts();
+  await loadApiKeyLogs();
+  await loadUsageLogs();
+}
+
+function renderAccounts() {
+  const rows = currentAccounts.map((a) => {
+    return '<tr data-id="' + escapeAttr(a.id) + '">' +
+      '<td><input type="text" data-f="name" value="' + escapeAttr(a.name || '') + '"></td>' +
+      '<td><input type="text" data-f="discordId" value="' + escapeAttr(a.discordId || '') + '"></td>' +
+      '<td><select data-f="role">' +
+        '<option value="user"' + (a.role !== 'admin' ? ' selected' : '') + '>user</option>' +
+        '<option value="admin"' + (a.role === 'admin' ? ' selected' : '') + '>admin</option>' +
+      '</select></td>' +
+      '<td><select data-f="tier">' + tierOptions(a.tier || config.defaultTier) + '</select></td>' +
+      '<td><input type="number" data-f="tokenBalance" min="0" value="' + (a.tokenBalance ?? 0) + '"></td>' +
+      '<td class="mono">' + fmtInt(a.tokenUsed ?? 0) + '</td>' +
+      '<td><input type="number" data-f="creditBalance" min="0" step="0.01" value="' + (a.creditBalance ?? 0) + '"></td>' +
+      '<td class="mono">$' + fmtMoney(a.creditUsed ?? 0) + '</td>' +
+      '<td><span class="pill ' + (a.status === 'banned' ? 'banned' : 'active') + '">' +
+        (a.status === 'banned' ? 'banned' : 'active') + '</span></td>' +
+      '<td><div class="actions">' +
+        '<button data-act="save">Simpan</button>' +
+        '<button data-act="ban">' + (a.status === 'banned' ? 'Unban' : 'Ban') + '</button>' +
+        '<button data-act="delete" class="danger">Hapus</button>' +
+      '</div></td>' +
+    '</tr>';
+  });
+  $('accountRows').innerHTML = rows.join('') ||
+    '<tr><td colspan="10" style="color:var(--muted)">Belum ada akun. Akun otomatis dibuat saat user login Discord.</td></tr>';
+  setStatus($('accountsInfo'), currentAccounts.length + ' akun', null);
+}
+
+async function refreshAccountsAndUsage() {
+  // Jangan menimpa input yang sedang diketik admin.
+  const active = document.activeElement;
+  const editing = active && active.tagName === 'INPUT' &&
+    active.closest && active.closest('#accountRows');
+  try {
+    const data = await api('GET', '/api/admin/accounts');
+    currentAccounts = data.accounts || [];
+    if (!editing) renderAccounts();
+    await loadUsageLogs();
+  } catch (e) {
+    setStatus($('accountsInfo'), String(e.message || e), false);
+  }
+}
+
+async function showApp() {
+  $('login').style.display = 'none';
+  $('app').style.display = 'block';
+  await refreshAll();
+  // Browser kadang memulihkan isi form setelah reload; mulai dari form kosong.
+  resetServerForm();
+  // Pantau daemon tiap server (CPU/RAM/disk/network + log).
+  if (managerTimer) clearInterval(managerTimer);
+  managerTimer = setInterval(() => loadAllManagers(), 6000);
+  loadAllManagers();
+  // Status token/kredit per akun diperbarui otomatis (live).
+  if (usageTimer) clearInterval(usageTimer);
+  usageTimer = setInterval(() => refreshAccountsAndUsage(), 15000);
+}
+
+$('loginBtn').addEventListener('click', async () => {
+  adminKey = $('adminKey').value.trim();
+  if (!adminKey) {
+    setStatus($('loginStatus'), 'Admin key wajib diisi.', false);
+    return;
+  }
+  try {
+    await api('GET', '/api/admin/health');
+    sessionStorage.setItem('pb_admin_key', adminKey);
+    await showApp();
+  } catch (e) {
+    const msg = String(e.message || e);
+    if (msg.includes('Missing target URL')) {
+      setStatus($('loginStatus'),
+        'API tidak terjangkau: /api di domain ini masih diteruskan ke proxy '
+        + 'CORS. Isi "Worker URL" di atas dengan alamat Worker Cloudflare, '
+        + 'atau set env WORKER_URL di project Vercel, atau pasang route '
+        + 'piercingblow.ai.id/api* di Cloudflare.', false);
+    } else if (msg.includes('NOT_FOUND') || msg.includes('not found')) {
+      setStatus($('loginStatus'),
+        'Endpoint admin tidak ada (404). Worker belum mengambil alih /api di '
+        + 'jalankan "npx wrangler deploy" di folder proxy (route '
+        + 'piercingblow.ai.id/api* sudah dipasang), atau isi "Worker URL" '
+        + 'di atas.', false);
+    } else if (msg.includes('ADMIN_KEY is not set')) {
+      setStatus($('loginStatus'),
+        'Worker belum punya ADMIN_KEY. Jalankan: wrangler secret put ADMIN_KEY',
+        false);
+    } else if (msg.includes('Invalid admin key')) {
+      setStatus($('loginStatus'), 'Admin key salah.', false);
+    } else if (msg.includes('Failed to fetch')) {
+      setStatus($('loginStatus'),
+        'Tidak bisa menghubungi Worker. Cek "Worker URL" (harus '
+        + 'https://...workers.dev tanpa path /api).', false);
+    } else {
+      setStatus($('loginStatus'), msg, false);
+    }
+  }
+});
+
+// Worker URL disimpan di browser supaya tidak diisi ulang tiap sesi.
+$('workerUrl').value = workerUrl;
+$('workerUrl').addEventListener('input', () => {
+  workerUrl = $('workerUrl').value.trim();
+  localStorage.setItem('pb_worker_url', workerUrl);
+});
+
+$('copyRedirect').addEventListener('click', async () => {
+  const value = $('dsRedirect').value.trim() || DEFAULT_REDIRECT_URI;
+  try {
+    await navigator.clipboard.writeText(value);
+    setStatus($('discordStatus'), 'Disalin: ' + value, true);
+  } catch (e) {
+    setStatus($('discordStatus'),
+      'Gagal menyalin otomatis — salin manual: ' + value, false);
+  }
+});
+
+$('logoutBtn').addEventListener('click', () => {
+  sessionStorage.removeItem('pb_admin_key');
+  adminKey = '';
+  if (managerTimer) { clearInterval(managerTimer); managerTimer = null; }
+  location.reload();
+});
+
+$('saveDiscord').addEventListener('click', async () => {
+  const clientId = $('dsClientId').value.trim();
+  if (clientId && !/^\d+$/.test(clientId)) {
+    setStatus($('discordStatus'), 'Client ID harus angka (Discord Application ID).', false);
+    return;
+  }
+  try {
+    await api('PATCH', '/api/admin/config', {
+      discord: {
+        enabled: $('dsEnabled').checked,
+        clientId,
+        clientSecret: $('dsSecret').value.trim(),
+        redirectUri: $('dsRedirect').value.trim(),
+      },
+    });
+    await loadConfig();
+    setStatus($('discordStatus'), 'Konfigurasi Discord disimpan.', true);
+  } catch (e) {
+    setStatus($('discordStatus'), String(e.message || e), false);
+  }
+});
+
+$('saveTiers').addEventListener('click', async () => {
+  const tiers = $('tiers').value.split(',').map((t) => t.trim()).filter(Boolean);
+  if (tiers.length === 0) {
+    setStatus($('tierStatus'), 'Minimal satu tier.', false);
+    return;
+  }
+  const resetDays = Math.max(1, Number($('tokenResetDays').value) || 1);
+  const guestTokens = Math.max(0, Number($('guestTokens').value) || 10000000);
+  const loginTokens = Math.max(0, Number($('loginTokens').value) || 20000000);
+  try {
+    await api('PATCH', '/api/admin/config', {
+      tiers,
+      defaultTier: $('defaultTier').value,
+      tokenResetDays: resetDays,
+      guestTokenBalance: guestTokens,
+      loginTokenBalance: loginTokens,
+      defaultTokenBalance: loginTokens,
+    });
+    await loadConfig();
+    setStatus($('tierStatus'), 'Kuota token & tier berhasil disimpan.', true);
+  } catch (e) {
+    setStatus($('tierStatus'), String(e.message || e), false);
+  }
+});
+
+$('saveBot').addEventListener('click', async () => {
+  try {
+    await api('PATCH', '/api/admin/config', {
+      botSecretKey: $('botSecretKey').value.trim(),
+    });
+    await loadConfig();
+    setStatus($('botStatus'), 'Pengaturan API Bot Discord disimpan.', true);
+  } catch (e) {
+    setStatus($('botStatus'), String(e.message || e), false);
+  }
+});
+
+$('tiers').addEventListener('change', () => {
+  const tiers = $('tiers').value.split(',').map((t) => t.trim()).filter(Boolean);
+  if (tiers.length) {
+    config = { ...config, tiers };
+    fillTierSelects();
+  }
+});
+
+$('addAccount').addEventListener('click', async () => {
+  const name = $('newName').value.trim();
+  if (!name) {
+    setStatus($('accountsInfo'), 'Nama akun wajib diisi.', false);
+    return;
+  }
+  const id = 'acc_' + Date.now() + '_' + Math.floor(Math.random() * 65536);
+  try {
+    await api('POST', '/api/admin/accounts/' + encodeURIComponent(id), {
+      id,
+      name,
+      discordId: $('newDiscordId').value.trim(),
+      tier: $('newTier').value,
+      role: 'user',
+      tokenBalance: config.defaultTokenBalance ?? 0,
+      creditBalance: 0,
+      status: 'active',
+    });
+    $('newName').value = '';
+    $('newDiscordId').value = '';
+    const data = await api('GET', '/api/admin/accounts');
+    currentAccounts = data.accounts || [];
+    renderAccounts();
+    setStatus($('accountsInfo'), 'Akun "' + name + '" dibuat.', true);
+  } catch (e) {
+    setStatus($('accountsInfo'), String(e.message || e), false);
+  }
+});
+
+$('refreshAccounts').addEventListener('click', async () => {
+  try {
+    const data = await api('GET', '/api/admin/accounts');
+    currentAccounts = data.accounts || [];
+    renderAccounts();
+  } catch (e) {
+    setStatus($('accountsInfo'), String(e.message || e), false);
+  }
+});
+
+$('accountRows').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-act]');
+  if (!btn) return;
+  const tr = btn.closest('tr');
+  const id = tr.dataset.id;
+  const act = btn.dataset.act;
+  try {
+    if (act === 'delete') {
+      if (!confirm('Hapus akun ini?')) return;
+      await api('DELETE', '/api/admin/accounts/' + encodeURIComponent(id));
+    } else {
+      const account = rowAccount(tr);
+      if (act === 'ban') {
+        const existing = currentAccounts.find((a) => a.id === id);
+        account.status = existing && existing.status === 'banned' ? 'active' : 'banned';
+      }
+      await api('POST', '/api/admin/accounts/' + encodeURIComponent(id), account);
+    }
+    const data = await api('GET', '/api/admin/accounts');
+    currentAccounts = data.accounts || [];
+    renderAccounts();
+    setStatus($('accountsInfo'),
+      act === 'delete' ? 'Akun dihapus.' : 'Akun diperbarui.', true);
+  } catch (e) {
+    setStatus($('accountsInfo'), String(e.message || e), false);
+  }
+});
+
+$('adminKey').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') $('loginBtn').click();
+});
+
+if (adminKey) {
+  api('GET', '/api/admin/health')
+    .then(showApp)
+    .catch(() => { sessionStorage.removeItem('pb_admin_key'); adminKey = ''; });
+}
+
+// ── Server manager (KV) ─────────────────────────────────────────────────
+// Server + model + pricing diedit dari sini. Daemon manager hanya dipakai
+// untuk status CPU/RAM/disk/network, log, start/stop.
+
+let editingServerId = null;
+let modelServerId = null;
+let editingModelId = null;
+
+function pricingLabel(model) {
+  const p = model.pricing || {};
+  const inReq = Number(p.inputPerReq) || 0;
+  const in1M = Number(p.inputPer1M) || 0;
+  const outReq = Number(p.outputPerReq) || 0;
+  const out1M = Number(p.outputPer1M) || 0;
+  if (!inReq && !in1M && !outReq && !out1M) return '$0 · pakai token';
+  return 'In $' + inReq + '/req · $' + in1M + '/1M — ' +
+    'Out $' + outReq + '/req · $' + out1M + '/1M';
+}
+
+function modelRowHtml(model) {
+  const tiers = (model.tierAccess || []).join(', ') || '-';
+  const backend = model.backendModelId && model.backendModelId !== model.modelId
+    ? ' · backend <span class="mono">' + escapeHtml(model.backendModelId) + '</span>'
+    : '';
+  return '<div class="model-row">' +
+    '<div><b class="mono">' + escapeHtml(model.modelId) + '</b> ' +
+    '<span class="tag">' + escapeHtml(tiers) + '</span>' +
+    '<div class="meta">' + escapeHtml(model.name || '') +
+    ' · ctx ' + (model.contextSize || 0) +
+    ' · max ' + (model.maxOutput || 0) + backend + '</div>' +
+    '<div class="price">' + escapeHtml(pricingLabel(model)) + '</div></div>' +
+    '<div class="actions">' +
+    '<button data-model-edit="' + escapeAttr(model.modelId) + '">Edit</button>' +
+    '</div></div>';
+}
+
+function nextServerId() {
+  let n = gatewayServers.length + 1;
+  while (gatewayServers.some((s) => String(s.id) === 'server-' + n)) n++;
+  return 'server-' + n;
+}
+
+function renderGatewayServers() {
+  const list = $('gatewayServerList');
+  if (!list) return;
+  if (!gatewayServers.length) {
+    list.innerHTML = '<div class="hint">Belum ada server. Isi Manager URL + ' +
+      'secret key manager VPS di form atas, lalu tekan ' +
+      '<b>Tambah server &amp; deteksi model</b>.</div>';
+    return;
+  }
+  list.innerHTML = gatewayServers.map((s) => {
+    const models = serverModels.filter((m) => String(m.serverId || '') === String(s.id));
+    const cache = managerCache[String(s.id)];
+    const daemons = daemonsFor(s);
+    const live = daemons[0] || null;
+    const st = (live && live.stats) || {};
+    const ramRatio = st.ramTotalMb ? (st.ramUsedMb / st.ramTotalMb) * 100 : 0;
+    const diskRatio = st.diskTotalGb ? (st.diskUsedGb / st.diskTotalGb) * 100 : 0;
+    const enabled = s.enabled !== false;
+    const running = daemons.filter((d) => d.running).length;
+    const liveTag = daemons.length
+      ? '<span class="tag ' + (running ? 'on' : 'off') + '">' +
+        running + '/' + daemons.length + ' running</span>'
+      : '<span class="tag off">' +
+        (s.managerUrl ? 'Daemon offline' : 'Tanpa manager URL') + '</span>';
+    const mgrKeyTag = s.managerKey
+      ? '<span class="tag on">Manager key ✓</span>'
+      : (s.managerUrl ? '<span class="tag off">Manager key kosong</span>' : '');
+    let stats;
+    if (live) {
+      stats = '<div class="stats">' +
+        statTile('CPU', fmtNum(st.cpuPercent, 0) + '%', st.cpuPercent) +
+        statTile('RAM', fmtNum(st.ramUsedMb, 0) + ' MB', ramRatio) +
+        statTile('Disk', fmtNum(st.diskUsedGb, 0) + ' GB', diskRatio) +
+        statTile('Net', fmtNum(st.netDownMbps, 1) + '↓ ' +
+          fmtNum(st.netUpMbps, 1) + '↑') +
+        '</div>';
+    } else if (!String(s.managerUrl || '').trim()) {
+      stats = '<div class="hint" style="margin-top:8px">Manager URL belum ' +
+        'diisi — CPU/RAM/network VPS ini belum bisa dipantau.</div>';
+    } else if (cache && !cache.ok) {
+      stats = '<div class="hint" style="margin-top:8px">Gagal menghubungi ' +
+        'daemon manager: ' + escapeHtml(cache.error || '') + '</div>';
+    } else {
+      stats = '<div class="hint" style="margin-top:8px">Memuat statistik ' +
+        'daemon…</div>';
+    }
+    const daemonBlock = daemons.length
+      ? '<div class="model-head"><h3>Proses AI (' + daemons.length + ')</h3></div>' +
+        daemons.map((d) => {
+          const key = s.id + '::' + d.id;
+          const open = !!managerLogsOpen[key];
+          return '<div class="model-row">' +
+            '<div><b>' + escapeHtml(d.name || d.id) + '</b> ' +
+            '<span class="tag ' + (d.running ? 'on' : 'off') + '">' +
+            (d.running ? 'Running' : 'Stopped') + '</span>' +
+            '<div class="meta"><span class="mono">' + escapeHtml(d.id) + '</span>' +
+            (d.runtime ? ' · ' + escapeHtml(d.runtime) : '') +
+            (d.port ? ' · port ' + d.port : '') +
+            (d.apiUrl ? ' · ' + escapeHtml(d.apiUrl) : '') + '</div></div>' +
+            '<div class="actions">' +
+            (d.running
+              ? '<button class="danger" data-mgr-action="stop" data-server="' +
+                escapeAttr(s.id) + '" data-daemon="' + escapeAttr(d.id) +
+                '">Stop</button>'
+              : '<button class="primary" data-mgr-action="start" data-server="' +
+                escapeAttr(s.id) + '" data-daemon="' + escapeAttr(d.id) +
+                '">Start AI</button>') +
+            '<button data-mgr-action="logs" data-server="' + escapeAttr(s.id) +
+            '" data-daemon="' + escapeAttr(d.id) + '">' +
+            (open ? 'Tutup log' : 'Lihat log') + '</button>' +
+            '</div></div>' +
+            (open
+              ? '<div class="logs" id="logs-' + escapeAttr(key) + '">' +
+                ((managerLogsText[key] || []).length
+                  ? managerLogsText[key].map((l) =>
+                    '<div>' + escapeHtml(l) + '</div>').join('')
+                  : 'memuat…') + '</div>'
+              : '');
+        }).join('')
+      : '';
+    const modelBlock =
+      '<div class="model-head"><h3>Model (' + models.length + ') · otomatis</h3>' +
+      '<button data-srv-detect="' + escapeAttr(s.id) + '">Deteksi model</button>' +
+      '</div>' +
+      (models.length
+        ? models.map(modelRowHtml).join('')
+        : '<div class="empty">Belum ada model terdeteksi. Tekan ' +
+          '<b>Deteksi model</b> untuk mengambil daftar dari daemon VPS.</div>');
+    return '<div class="srv">' +
+      '<div class="srv-head"><b>' + escapeHtml(s.name || s.id) + '</b>' +
+      '<span class="tag ' + (enabled ? 'on' : 'off') + '">' +
+      (enabled ? 'Aktif' : 'Nonaktif') + '</span>' +
+      (s.runtime ? '<span class="tag">' + escapeHtml(s.runtime) + '</span>' : '') +
+      mgrKeyTag + liveTag + '</div>' +
+      '<div class="srv-sub"><span class="mono">' + escapeHtml(s.id) + '</span> · ' +
+      (s.managerUrl
+        ? 'daemon <span class="mono">' + escapeHtml(s.managerUrl) + '</span>'
+        : 'Manager URL belum diisi') +
+      (s.notes ? ' · ' + escapeHtml(s.notes) : '') + '</div>' +
+      stats +
+      daemonBlock +
+      '<div>' + modelBlock + '</div>' +
+      '<div class="srv-actions">' +
+      '<button data-srv-edit="' + escapeAttr(s.id) + '">Edit server</button>' +
+      '<button class="danger" data-srv-del="' + escapeAttr(s.id) + '">Hapus server</button>' +
+      '</div>' +
+      '</div>';
+  }).join('');
+}
+
+async function loadGatewayData(silent) {
+  try {
+    const [srv, mods] = await Promise.all([
+      api('GET', '/api/admin/servers'),
+      api('GET', '/api/admin/server-models'),
+    ]);
+    gatewayServers = srv.servers || [];
+    serverModels = mods.models || [];
+    renderGatewayServers();
+    if (!silent) {
+      setStatus($('serverModelStatus'),
+        gatewayServers.length + ' server · ' + serverModels.length + ' model', true);
+    }
+  } catch (e) {
+    setStatus($('serverModelStatus'), String(e.message || e), false);
+  }
+}
+
+function fillModelFormFrom(model) {
+  $('smModelId').value = model ? model.modelId : '';
+  $('smName').value = model ? (model.name || '') : '';
+  $('smContextSize').value = model ? (model.contextSize || 0) : 4096;
+  $('smMaxOutput').value = model ? (model.maxOutput || 0) : 2048;
+  const tiers = (model && model.tierAccess) || ['free', 'pro', 'vip'];
+  $('smTierFree').checked = tiers.includes('free');
+  $('smTierPro').checked = tiers.includes('pro');
+  $('smTierVip').checked = tiers.includes('vip');
+  const p = (model && model.pricing) || {};
+  $('smInputPerReq').value = p.inputPerReq || 0;
+  $('smInputPer1M').value = p.inputPer1M || 0;
+  $('smOutputPerReq').value = p.outputPerReq || 0;
+  $('smOutputPer1M').value = p.outputPer1M || 0;
+}
+
+function fillServerFormFrom(server) {
+  $('srvId').value = server ? server.id : '';
+  $('srvId').readOnly = !!server;
+  $('srvName').value = server ? (server.name || '') : '';
+  $('srvManagerUrl').value = server ? (server.managerUrl || '') : '';
+  $('srvManagerKey').value = '';
+  $('srvManagerKey').placeholder = server && server.managerKey
+    ? 'Tersimpan — kosongkan = tidak diubah'
+    : 'secretKey di servers.json VPS ini';
+  $('srvEnabled').value = server && server.enabled === false ? '0' : '1';
+  $('srvNotes').value = server ? (server.notes || '') : '';
+}
+
+function resetServerForm() {
+  editingServerId = null;
+  fillServerFormFrom(null);
+  $('srvFormTitle').textContent = 'Tambah server AI (VPS baru)';
+  $('saveServerEntry').textContent = 'Tambah server & deteksi model';
+  setStatus($('serverModelStatus'), '', null);
+}
+
+function editServerEntry(id) {
+  const server = gatewayServers.find((s) => String(s.id) === String(id));
+  if (!server) return;
+  editingServerId = server.id;
+  fillServerFormFrom(server);
+  $('srvFormTitle').textContent = 'Edit server: ' + (server.name || server.id);
+  $('saveServerEntry').textContent = 'Simpan perubahan';
+  $('srvManagerUrl').focus();
+  $('srvFormTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function openModelDialog(serverId, modelId) {
+  const server = gatewayServers.find((s) => String(s.id) === String(serverId));
+  if (!server) return;
+  const model = serverModels.find((m) => String(m.modelId) === String(modelId));
+  if (!model) {
+    setStatus($('serverModelStatus'), 'Model tidak ditemukan — deteksi ulang.',
+      false);
+    return;
+  }
+  modelServerId = server.id;
+  editingModelId = model.modelId;
+  fillModelFormFrom(model);
+  $('modelDialogTitle').textContent = 'Edit model · ' + model.modelId;
+  $('modelDialogServer').innerHTML = 'Server: <b>' +
+    escapeHtml(server.name || server.id) + '</b>' +
+    (model.apiUrl || server.baseUrl
+      ? ' · <span class="mono">' +
+        escapeHtml(model.apiUrl || server.baseUrl) + '</span>'
+      : '') +
+    (model.daemonId ? ' · daemon <span class="mono">' +
+      escapeHtml(model.daemonId) + '</span>' : '') +
+    (model.backendModelId && model.backendModelId !== model.modelId
+      ? ' · backend <span class="mono">' +
+        escapeHtml(model.backendModelId) + '</span>'
+      : '');
+  setStatus($('modelDialogStatus'), '', null);
+  $('modelDialog').showModal();
+  setTimeout(() => $('smName').focus(), 50);
+}
+
+function closeModelDialog() {
+  editingModelId = null;
+  modelServerId = null;
+  if ($('modelDialog').open) $('modelDialog').close();
+}
+
+$('saveServerEntry').addEventListener('click', async () => {
+  const managerUrl = $('srvManagerUrl').value.trim();
+  if (!managerUrl) {
+    setStatus($('serverModelStatus'), 'Manager URL wajib diisi.', false);
+    $('srvManagerUrl').focus();
+    return;
+  }
+  const wasEditing = !!editingServerId;
+  const id = $('srvId').value.trim() ||
+    (wasEditing ? editingServerId : nextServerId());
+  const serverBody = {
+    id,
+    name: $('srvName').value.trim() ||
+      (wasEditing ? id : 'Server ' + (gatewayServers.length + 1)),
+    managerUrl,
+    enabled: $('srvEnabled').value === '1',
+    notes: $('srvNotes').value.trim(),
+  };
+  // Secret kosong saat edit = pertahankan key lama di server.
+  const managerKey = $('srvManagerKey').value.trim();
+  if (managerKey) serverBody.managerKey = managerKey;
+  setStatus($('serverModelStatus'), 'Menyimpan server & mendeteksi model…', null);
+  try {
+    const result = await api('POST', '/api/admin/servers', serverBody);
+    const savedId = (result.server && result.server.id) || id;
+    await loadGatewayData(true);
+    resetServerForm();
+    const detection = result.detection || {};
+    if (detection.ok) {
+      setStatus($('serverModelStatus'),
+        (wasEditing ? 'Server "' + savedId + '" diperbarui. ' :
+          'Server "' + savedId + '" ditambahkan. ') +
+        detection.count + ' model terdeteksi dari ' +
+        (detection.daemons || 0) + ' proses AI' +
+        (detection.added && detection.added.length
+          ? ' · baru: ' + detection.added.join(', ') : '') +
+        (detection.removed && detection.removed.length
+          ? ' · dihapus: ' + detection.removed.join(', ') : '') + '.', true);
+    } else {
+      setStatus($('serverModelStatus'),
+        'Server "' + savedId + '" disimpan, tapi deteksi model gagal: ' +
+        (detection.error || 'tidak diketahui') +
+        ' — periksa Manager URL + secret manager, lalu tekan Deteksi model.',
+        false);
+    }
+    await loadManagerFor(result.server || { id: savedId });
+    renderGatewayServers();
+  } catch (e) {
+    setStatus($('serverModelStatus'), String(e.message || e), false);
+  }
+});
+
+async function detectServerModels(serverId) {
+  const server = gatewayServers.find((s) => String(s.id) === String(serverId));
+  if (!server) return;
+  setStatus($('serverModelStatus'),
+    'Mendeteksi model dari daemon ' + (server.managerUrl || server.id) + '…',
+    null);
+  try {
+    const result = await api('POST',
+      '/api/admin/servers/' + encodeURIComponent(server.id) + '/detect-models');
+    await loadGatewayData(true);
+    setStatus($('serverModelStatus'),
+      (result.count || 0) + ' model terdeteksi di "' + server.id + '"' +
+      (result.added && result.added.length
+        ? ' · baru: ' + result.added.join(', ') : '') +
+      (result.removed && result.removed.length
+        ? ' · dihapus: ' + result.removed.join(', ') : '') + '.', true);
+    await loadManagerFor(server);
+    renderGatewayServers();
+  } catch (e) {
+    setStatus($('serverModelStatus'), 'Deteksi model gagal: ' +
+      String(e.message || e), false);
+  }
+}
+
+$('saveModelEntry').addEventListener('click', async () => {
+  const server = gatewayServers.find((s) => String(s.id) === String(modelServerId));
+  if (!server) {
+    setStatus($('modelDialogStatus'), 'Pilih server dulu.', false);
+    return;
+  }
+  const modelId = $('smModelId').value.trim();
+  if (!modelId) {
+    setStatus($('modelDialogStatus'), 'Model ID wajib diisi.', false);
+    return;
+  }
+  const tierAccess = [];
+  if ($('smTierFree').checked) tierAccess.push('free');
+  if ($('smTierPro').checked) tierAccess.push('pro');
+  if ($('smTierVip').checked) tierAccess.push('vip');
+  if (!tierAccess.length) {
+    setStatus($('modelDialogStatus'), 'Minimal satu tier harus dipilih.', false);
+    return;
+  }
+  const model = serverModels.find((m) => String(m.modelId) === String(modelId));
+  const ctx = Number($('smContextSize').value) || 0;
+  const max = Number($('smMaxOutput').value) || 0;
+  try {
+    await api('POST', '/api/admin/server-models', {
+      modelId,
+      backendModelId: (model && model.backendModelId) || modelId,
+      name: $('smName').value.trim() || modelId,
+      serverId: server.id,
+      // serverUrl/apiUrl/runtime mengikuti server; Worker mempertahankan
+      // nilai lama kalau field ini tidak dikirim.
+      contextSize: ctx,
+      maxOutput: max,
+      tierAccess,
+      pricing: {
+        inputPerReq: Number($('smInputPerReq').value) || 0,
+        inputPer1M: Number($('smInputPer1M').value) || 0,
+        outputPerReq: Number($('smOutputPerReq').value) || 0,
+        outputPer1M: Number($('smOutputPer1M').value) || 0,
+        contextSize: ctx,
+        maxOutput: max,
+      },
+    });
+    await loadGatewayData(true);
+    closeModelDialog();
+    setStatus($('serverModelStatus'),
+      'Model "' + modelId + '" diperbarui.', true);
+  } catch (e) {
+    setStatus($('modelDialogStatus'), String(e.message || e), false);
+  }
+});
+
+$('cancelModelDialog').addEventListener('click', closeModelDialog);
+$('modelDialog').addEventListener('cancel', (ev) => {
+  ev.preventDefault();
+  closeModelDialog();
+});
+
+$('resetServerForm').addEventListener('click', resetServerForm);
+$('refreshGatewayServers').addEventListener('click', () => loadGatewayData(false));
+
+$('gatewayServerList').addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button');
+  if (!btn) return;
+  try {
+    if (btn.dataset.srvEdit) {
+      editServerEntry(btn.dataset.srvEdit);
+      return;
+    }
+    if (btn.dataset.srvDetect) {
+      await detectServerModels(btn.dataset.srvDetect);
+      return;
+    }
+    if (btn.dataset.mgrAction) {
+      const serverId = btn.dataset.server;
+      const daemonId = btn.dataset.daemon;
+      if (btn.dataset.mgrAction === 'start') {
+        await mgrStart(serverId, daemonId);
+      } else if (btn.dataset.mgrAction === 'stop') {
+        await mgrStop(serverId, daemonId);
+      } else if (btn.dataset.mgrAction === 'logs') {
+        await mgrLogs(serverId, daemonId);
+      }
+      return;
+    }
+    if (btn.dataset.modelEdit) {
+      const model = serverModels.find((m) =>
+        String(m.modelId) === String(btn.dataset.modelEdit));
+      if (!model) return;
+      openModelDialog(model.serverId, model.modelId);
+      return;
+    }
+    if (btn.dataset.srvDel) {
+      const id = btn.dataset.srvDel;
+      if (!confirm('Hapus server "' + id + '" beserta modelnya?')) return;
+      await api('DELETE', '/api/admin/servers/' + encodeURIComponent(id));
+      await loadGatewayData(true);
+      if (editingServerId === id) resetServerForm();
+      setStatus($('serverModelStatus'), 'Server "' + id + '" dihapus.', true);
+    }
+  } catch (e) {
+    setStatus($('serverModelStatus'), String(e.message || e), false);
+  }
+});
+
+// ── API Key Logs ────────────────────────────────────────────────────────
+
+async function loadApiKeyLogs() {
+  try {
+    const data = await api('GET', '/api/admin/api-key-logs');
+    const logs = data.logs || [];
+    if (!logs.length) {
+      $('apiKeyLogRows').innerHTML =
+        '<tr><td colspan="4" style="color:var(--muted)">Belum ada log.</td></tr>';
+      return;
+    }
+    $('apiKeyLogRows').innerHTML = logs.slice(0, 50).map((l) => {
+      const d = new Date(l.timestamp);
+      const ts = d.toLocaleString('id-ID');
+      return '<tr>' +
+        '<td>' + escapeHtml(ts) + '</td>' +
+        '<td>' + escapeHtml(l.accountId || '') + '</td>' +
+        '<td>' + escapeHtml(l.action || '') + '</td>' +
+        '<td><code>' + escapeHtml(l.keyPrefix || '') + '</code></td>' +
+      '</tr>';
+    }).join('');
+  } catch (e) {
+    setStatus($('apiKeyLogStatus'), String(e.message || e), false);
+  }
+}
+
+$('refreshApiKeyLogs').addEventListener('click', loadApiKeyLogs);
+
+// ── Usage Logs (token & kredit) ──────────────────────────────────────────
+
+async function loadUsageLogs() {
+  try {
+    const data = await api('GET', '/api/admin/usage-logs');
+    const logs = data.logs || [];
+    if (!logs.length) {
+      $('usageLogRows').innerHTML =
+        '<tr><td colspan="6" style="color:var(--muted)">Belum ada pemakaian.</td></tr>';
+      return;
+    }
+    $('usageLogRows').innerHTML = logs.slice(0, 50).map((l) => {
+      const d = new Date(l.timestamp);
+      const ts = d.toLocaleString('id-ID');
+      return '<tr>' +
+        '<td>' + escapeHtml(ts) + '</td>' +
+        '<td>' + escapeHtml(l.accountName || l.accountId || '') + '</td>' +
+        '<td><code>' + escapeHtml(l.modelName || l.modelId || '') + '</code></td>' +
+        '<td class="mono">' + fmtInt(l.tokens || 0) + '</td>' +
+        '<td class="mono">$' + fmtMoney(l.credits || 0) + '</td>' +
+        '<td><span class="pill ' + (l.mode === 'credit' ? 'info' : 'active') +
+          '">' + escapeHtml(l.mode || 'token') + '</span></td>' +
+      '</tr>';
+    }).join('');
+  } catch (e) {
+    setStatus($('usageLogStatus'), String(e.message || e), false);
+  }
+}
+
+$('refreshUsageLogs').addEventListener('click', loadUsageLogs);
+</script>
+</body>
+</html>

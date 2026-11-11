@@ -60,6 +60,10 @@ lib/firebase_options.dart
 *.secret
 secrets/
 
+# Generated copies (dev harness) & large binaries
+proxy/.worker-dev.mjs
+tools/llama-server/
+
 # iOS
 /ios/Pods/
 /ios/.symlinks/

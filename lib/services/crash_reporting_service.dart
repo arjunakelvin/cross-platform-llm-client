@@ -10,7 +10,8 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../controllers/chat_controller.dart';
 import '../controllers/settings_controller.dart';
 import '../core/redact.dart';
-import '../ffi/sd_ffi_bindings.dart';
+import '../ffi/sd_ffi_bindings.dart'
+    if (dart.library.html) '../ffi/sd_ffi_bindings_web.dart';
 import 'app_log_service.dart';
 import 'device_info_service.dart';
 import 'inference_service.dart';

@@ -8,6 +8,9 @@ import 'attachment_preview.dart';
 import 'image_viewer.dart';
 import 'thought_disclosure.dart';
 import '../core/haptics.dart';
+import '../utils/math_syntax.dart';
+import '../widgets/math_builder.dart';
+import '../widgets/code_block.dart';
 
 class ChatBubble extends StatelessWidget {
   final ChatMessage message;
@@ -114,49 +117,66 @@ class ChatBubble extends StatelessWidget {
       if (message.imageGenDurationMs != null && message.imageGenDurationMs! > 0)
         _formatGenTime(message.imageGenDurationMs!),
     ];
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        if (thoughtParts.hasThought)
-          ThoughtDisclosure(
-            thought: thoughtParts.thought,
-            durationSeconds: message.thoughtDurationSeconds,
-            styleSheet: _thoughtMarkdownStyle(context),
-          ),
-        if (answerContent.isNotEmpty)
-          MarkdownBody(
-            data: answerContent,
-            selectable: true,
-            styleSheet: answerStyle(context),
-          ),
-        if (message.fileName != null) ...[
-          const SizedBox(height: 10),
-          AttachmentPreview(
-            fileName: message.fileName!,
-            fileType: message.fileType,
-            fileSize: message.fileSize,
-            imageBase64: message.imageBase64,
-            imagePath: message.imagePath,
-            compact: true,
-          ),
-        ],
-        const SizedBox(height: 4),
-        // Nudge left so the copy glyph lines up with the text edge.
-        Transform.translate(
-            offset: const Offset(-6, 0),
-            child: Row(children: [
-              if (answerContent.isNotEmpty)
-                _CopyButton(text: answerContent, color: muted),
-              if (meta.isNotEmpty) ...[
-                const SizedBox(width: 6),
-                Text(meta.join(' · '),
-                    style: GoogleFonts.inter(
-                        fontSize: 12,
-                        color: muted.withValues(alpha: 0.8),
-                        fontFeatures: const [FontFeature.tabularFigures()])),
-              ],
-            ])),
-      ]),
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.0, end: 1.0),
+      duration: const Duration(milliseconds: 450),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, child) => Opacity(
+        opacity: value,
+        child: Transform.translate(
+          offset: Offset(0, 8 * (1 - value)),
+          child: child,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          if (thoughtParts.hasThought)
+            ThoughtDisclosure(
+              thought: thoughtParts.thought,
+              durationSeconds: message.thoughtDurationSeconds,
+              styleSheet: _thoughtMarkdownStyle(context),
+            ),
+          if (answerContent.isNotEmpty)
+            MarkdownBody(
+              data: answerContent,
+              selectable: true,
+              styleSheet: answerStyle(context),
+              extensionSet: piercingExtensionSet,
+              builders: {
+                'pre': CodeBlockBuilder(isDark),
+                'math': MathInlineBuilder(),
+              },
+            ),
+          if (message.fileName != null) ...[
+            const SizedBox(height: 10),
+            AttachmentPreview(
+              fileName: message.fileName!,
+              fileType: message.fileType,
+              fileSize: message.fileSize,
+              imageBase64: message.imageBase64,
+              imagePath: message.imagePath,
+              compact: true,
+            ),
+          ],
+          const SizedBox(height: 4),
+          // Nudge left so the copy glyph lines up with the text edge.
+          Transform.translate(
+              offset: const Offset(-6, 0),
+              child: Row(children: [
+                if (answerContent.isNotEmpty)
+                  _CopyButton(text: answerContent, color: muted),
+                if (meta.isNotEmpty) ...[
+                  const SizedBox(width: 6),
+                  Text(meta.join(' · '),
+                      style: GoogleFonts.inter(
+                          fontSize: 12,
+                          color: muted.withValues(alpha: 0.8),
+                          fontFeatures: const [FontFeature.tabularFigures()])),
+                ],
+              ])),
+        ]),
+      ),
     );
   }
 
@@ -184,21 +204,13 @@ class ChatBubble extends StatelessWidget {
         color: color,
         backgroundColor: codeBlockBg,
       ),
-      codeblockDecoration: BoxDecoration(
-        color: codeBlockBg,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-            color: isDark
-                ? Colors.white.withValues(alpha: 0.07)
-                : Colors.black.withValues(alpha: 0.06),
-            width: 0.5),
-      ),
+      codeblockDecoration: const BoxDecoration(color: Colors.transparent),
+      codeblockPadding: EdgeInsets.zero,
       h1: base.copyWith(fontSize: 22, fontWeight: FontWeight.w700, height: 1.3),
       h2: base.copyWith(fontSize: 19, fontWeight: FontWeight.w700, height: 1.3),
       h3: base.copyWith(
           fontSize: 17, fontWeight: FontWeight.w600, height: 1.35),
       pPadding: const EdgeInsets.only(bottom: 2),
-      codeblockPadding: const EdgeInsets.all(14),
       blockquote: base.copyWith(color: muted),
       blockquoteDecoration: BoxDecoration(
         border: Border(

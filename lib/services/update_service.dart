@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:ffi' show Abi;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
@@ -150,7 +149,7 @@ class UpdateService extends GetxService with WidgetsBindingObserver {
       state.value = UpdateState.idle;
       if (manual && !newer) {
         showToast('You\'re up to date',
-            'PrivateLM ${currentVersion.value} is the latest version.',
+            'AI-Agent PiercingBlow ${currentVersion.value} is the latest version.',
             tone: ToastTone.success);
       }
       return availableUpdate.value;
@@ -179,7 +178,7 @@ class UpdateService extends GetxService with WidgetsBindingObserver {
       version: _normalize(tag),
       name: (json['name'] as String?)?.trim().isNotEmpty == true
           ? json['name'] as String
-          : 'PrivateLM $tag',
+          : 'AI-Agent PiercingBlow $tag',
       notes: json['body'] as String? ?? '',
       pageUrl: json['html_url'] as String? ?? '',
       publishedAt: DateTime.tryParse(json['published_at'] as String? ?? ''),
@@ -190,16 +189,9 @@ class UpdateService extends GetxService with WidgetsBindingObserver {
   }
 
   static String _abiTag() {
-    switch (Abi.current()) {
-      case Abi.androidArm64:
-        return 'arm64-v8a';
-      case Abi.androidArm:
-        return 'armeabi-v7a';
-      case Abi.androidX64:
-        return 'x86_64';
-      default:
-        return 'universal';
-    }
+    // ABI detection relies on dart:ffi native device info, which is not
+    // available on web; the universal APK is the fallback asset.
+    return 'universal';
   }
 
   static String _normalize(String v) {
@@ -336,7 +328,7 @@ class UpdateService extends GetxService with WidgetsBindingObserver {
   // ── Files ─────────────────────────────────────────────────────────────
 
   static String _fileName(String apkName, String version) =>
-      'PrivateLM-$version-$apkName';
+      'PiercingBlow-$version-$apkName';
 
   Future<Directory?> _updatesDir() async {
     final base = await getExternalStorageDirectory();
@@ -359,7 +351,8 @@ class UpdateService extends GetxService with WidgetsBindingObserver {
       await for (final f in dir.list()) {
         if (f is! File) continue;
         final m =
-            RegExp(r'PrivateLM-([\d.]+)-').firstMatch(f.uri.pathSegments.last);
+            RegExp(r'PiercingBlow-([\d.]+)-')
+                .firstMatch(f.uri.pathSegments.last);
         if (m == null ||
             compareVersions(m.group(1)!, currentVersion.value) <= 0) {
           await f.delete();

@@ -357,7 +357,7 @@ class DownloadService extends GetxService with WidgetsBindingObserver {
 
   void pauseDownload(String filename) {
     final nativeId = _nativeDownloadIds[filename];
-    if (nativeId != null && Platform.isAndroid) {
+    if (!kIsWeb && nativeId != null && Platform.isAndroid) {
       platform_dl.cancelNativeDownload(
           downloadId: nativeId, filename: filename);
       activeDownloads.remove(filename);

@@ -1,4 +1,4 @@
-# PrivateLM
+# PiercingBlow
 
 [![Live Web App](https://img.shields.io/badge/Live_Demo-Try_Web_App-02569B?style=for-the-badge&logo=flutter&logoColor=white)](https://ai-chat-orailnoor.web.app/)
 
@@ -85,6 +85,46 @@ Idle detection (5s) and hard timeouts (180s) keep the UX responsive even on unde
 - **Kimi** — OpenAI-compatible endpoint from Moonshot AI
 
 API keys are stored in Hive and never transmitted anywhere except to the provider's endpoint.
+
+### Server Manager (AI server remote)
+
+Semua AI server dikelola dari **dashboard admin privat**
+(`https://piercingblow.ai.id/admin/` → kartu **Server manager**):
+
+- daftar server AI + model yang tersedia di tiap server,
+- nyalakan / matikan AI per server atau **semua sekaligus**,
+- status CPU, RAM, penyimpanan, dan jaringan (di-refresh otomatis),
+- log sederhana (kapan server dinyalakan, output runtime terakhir).
+
+Request dari web client selalu membawa header `X-Secret-Key` (di-gerbang
+nginx), jadi server AI hanya menerima request yang memanghdr-authorized —
+tanpa secret, request tidak dikirim sama sekali.
+
+Backend-nya ada di [`server/`](server/README.md) — daemon Python 3 tanpa
+dependency + contoh nginx yang menjadi gerbang secret key:
+
+```bash
+cp server/servers.json.example server/servers.json   # isi secretKey + apiUrl
+python3 server/manager.py --config server/servers.json
+```
+
+Di aplikasi, provider **AI Local** otomatis mengikuti alamat + secret yang
+diatur di dashboard (ditarik saat startup, atau tekan **Sync** di
+**Settings → AI servers**). Jadi user tidak pernah memilih server sendiri.
+
+### Web admin & domain
+
+- Dashboard admin privat: **https://piercingblow.ai.id/admin/** (tidak
+  ditautkan dari app).
+- `www.piercingblow.ai.id` **tidak punya record DNS** — selalu pakai apex
+  `piercingblow.ai.id`.
+- API backend (`/api/admin/*`, `/api/auth/*`, `/api/bot/*`) hidup di
+  Cloudflare Worker; situsnya di Vercel. Supaya tidak ketelan rewrite
+  `"/api/(.*)"` (yang bikin error `Missing target URL in query parameter
+  "url"`), repo ini sudah punya `web/api/[...path].js` sebagai forwarder ke
+  Worker — set env `WORKER_URL` di project Vercel, atau pasang route Worker
+  `piercingblow.ai.id/api*` di Cloudflare. Detailnya di
+  [`proxy/README.md`](proxy/README.md).
 
 ### Cross-Platform Abstraction
 

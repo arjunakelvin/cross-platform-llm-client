@@ -56,8 +56,8 @@ class ClusterService extends GetxService {
   /// iOS can't stop the worker without closing the app.
   static bool get workerStopsWithApp => !kIsWeb && Platform.isIOS;
 
-  /// QR codes a worker shows: privatelm://worker?host=…&port=…
-  static const _qrScheme = 'privatelm';
+  /// QR codes a worker shows: piercingblow://worker?host=…&port=…
+  static const _qrScheme = 'piercingblow';
 
   /// Speed assumed for workers paired before they reported one (GB/s).
   static const _unknownSpeed = 4.0;
@@ -116,7 +116,7 @@ class ClusterService extends GetxService {
       refreshWorkerStatus().then((_) {
         if (worker.value.running) _watchWorker();
       });
-      // A worker runs at full speed only while PrivateLM is on screen (it
+      // A worker runs at full speed only while PiercingBlow is on screen (it
       // borrows the app's priority), so keep the screen on while sharing.
       ever<ClusterWorkerStatus>(worker, (_) => _updateKeepScreenOn());
       ever<bool>(serving, (_) => _updateKeepScreenOn());
@@ -146,7 +146,8 @@ class ClusterService extends GetxService {
     if (next == role) return;
     if (next != ClusterRole.worker && role == ClusterRole.worker) {
       if (workerStopsWithApp) {
-        showToast('Still sharing', 'Close PrivateLM to stop sharing this device.');
+        showToast('Still sharing',
+            'Close AI-Agent PiercingBlow to stop sharing this device.');
         return;
       }
       await stopWorker();
@@ -242,7 +243,7 @@ class ClusterService extends GetxService {
     final host = params['host'];
     final port = int.tryParse(params['port'] ?? '');
     if (uri == null || uri.scheme != _qrScheme || host == null || port == null) {
-      return 'That isn\'t a PrivateLM worker code';
+      return 'That isn\'t an AI-Agent PiercingBlow worker code';
     }
     return _add(ClusterWorker(
       name: params['name'] ?? host,

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
@@ -51,7 +52,7 @@ class ModelController extends GetxController {
   final isImporting = false.obs;
   final customModels = <AiModel>[].obs;
   final fileSizes = <String, int>{}.obs;
-  final modelScope = 'local'.obs;
+  final modelScope = (kIsWeb ? 'online' : 'local').obs;
   final localFilter = ''.obs;
   final importFileName = ''.obs;
   final importStatus = ''.obs;
@@ -66,7 +67,8 @@ class ModelController extends GetxController {
   }
 
   /// Apple Neural Engine (Core ML) models are only usable on Apple devices.
-  static bool get supportsAppleNpu => Platform.isIOS || Platform.isMacOS;
+  static bool get supportsAppleNpu =>
+      !kIsWeb && (Platform.isIOS || Platform.isMacOS);
 
   static const localFilters = [
     'general',
@@ -406,6 +408,21 @@ class ModelController extends GetxController {
   }
 
   Future<void> downloadModel(AiModel model) async {
+    if (model.url.trim().isEmpty) {
+      showToast('Download Unavailable', 'This model has no download URL.',
+          tone: ToastTone.warning);
+      return;
+    }
+    if (kIsWeb) {
+      showToast(
+        'Not Available on Web',
+        'Local models can\'t run in the browser. Use the Cloud tab to chat '
+        'with an API model, or install the Android/iOS app for local models.',
+        tone: ToastTone.warning,
+        duration: const Duration(seconds: 6),
+      );
+      return;
+    }
     if (externalDownloadId.value != null &&
         importFileName.value == model.filename) {
       showToast('Already downloading',
@@ -421,10 +438,14 @@ class ModelController extends GetxController {
           !_download.activeDownloads.containsKey(model.mmprojFilename)) {
         unawaited(_downloadVisionFile(model));
       }
-      await _download.downloadModel(
+      final result = await _download.downloadModel(
         url: model.url,
         filename: model.filename,
       );
+      if (result.startsWith('ERROR')) {
+        showToast('Download Failed', result, tone: ToastTone.error);
+        return;
+      }
       await refreshDownloaded();
     } catch (e) {
       Get.find<AppLogService>().error('Model download failed', details: e);
@@ -484,7 +505,7 @@ class ModelController extends GetxController {
       return;
     }
 
-    if (!Platform.isAndroid) {
+    if (kIsWeb || !Platform.isAndroid) {
       showToast(
         'Android Only',
         'Use the app download button or import a local model on this platform.',
@@ -556,7 +577,7 @@ class ModelController extends GetxController {
 
   /// Android's DownloadManager offers no pause API, so stopping there cancels
   /// the download; elsewhere progress is kept and the next download resumes.
-  bool get canPauseDownloads => !Platform.isAndroid;
+  bool get canPauseDownloads => !kIsWeb && !Platform.isAndroid;
 
   void pauseDownload(String filename) {
     _download.pauseDownload(filename);
@@ -1125,7 +1146,7 @@ class ModelController extends GetxController {
       return;
     }
 
-    if (Platform.isAndroid) {
+    if (!kIsWeb && Platform.isAndroid) {
       await _importModelWithAndroidPicker();
       return;
     }
@@ -1278,7 +1299,7 @@ class ModelController extends GetxController {
   }
 
   /// Folder import is Android only (storage access framework tree picker).
-  bool get supportsFolderImport => Platform.isAndroid;
+  bool get supportsFolderImport => !kIsWeb && Platform.isAndroid;
 
   /// Opens the system folder picker and lists the model files inside.
   /// Returns null when the user cancels.
@@ -1511,9 +1532,9 @@ class ModelController extends GetxController {
                   padding: EdgeInsets.fromLTRB(0, 0, 0, 10)),
               if (isCluster) ...[
                 _buildTipRow(ctx, Icons.hub_outlined,
-                    'On each worker, open PrivateLM > Phone cluster and check that Worker is on and shows its QR code.'),
+                    'On each worker, open AI-Agent PiercingBlow > Phone cluster and check that Worker is on and shows its QR code.'),
                 _buildTipRow(ctx, Icons.wifi_rounded,
-                    'Keep every device on the same Wi-Fi. iPads must keep PrivateLM open.'),
+                    'Keep every device on the same Wi-Fi. iPads must keep AI-Agent PiercingBlow open.'),
               ] else ...[
                 _buildTipRow(ctx, Icons.delete_outline_rounded,
                     'Delete the model and try redownloading it completely.'),

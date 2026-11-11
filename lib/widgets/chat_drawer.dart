@@ -3,7 +3,10 @@ import 'package:get/get.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../controllers/chat_controller.dart';
 import '../controllers/home_controller.dart';
+import '../controllers/settings_controller.dart';
 import '../models/chat_session.dart';
+import '../services/discord_service.dart';
+import 'account_info_sheet.dart';
 import 'tonal_button.dart';
 import '../core/haptics.dart';
 
@@ -290,9 +293,104 @@ class _ChatDrawerState extends State<ChatDrawer> {
               ],
             );
           })),
+          // Account & Token profile bar
+          Obx(() {
+            final ds = Get.isRegistered<DiscordService>()
+                ? Get.find<DiscordService>()
+                : null;
+            final sc = Get.isRegistered<SettingsController>()
+                ? Get.find<SettingsController>()
+                : null;
+            final user = ds?.sessionUser.value;
+            final isLoggedIn = user != null;
+            final remaining = sc?.tokenRemaining ?? 10000000;
+            final remStr = remaining >= 1000000
+                ? '${(remaining / 1000000).toStringAsFixed(1)}M'
+                : (remaining >= 1000
+                    ? '${(remaining / 1000).toStringAsFixed(1)}k'
+                    : '$remaining');
+
+            return Container(
+              margin: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+              decoration: BoxDecoration(
+                color: field,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: isDark
+                      ? Colors.white.withValues(alpha: 0.08)
+                      : Colors.black.withValues(alpha: 0.06),
+                ),
+              ),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () {
+                    _close();
+                    showAccountInfoSheet(context);
+                  },
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 28,
+                          height: 28,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: isLoggedIn
+                                ? const Color(0xFF5865F2)
+                                : muted.withValues(alpha: 0.2),
+                          ),
+                          child: Center(
+                            child: Icon(
+                              isLoggedIn
+                                  ? Icons.discord_rounded
+                                  : Icons.person_outline_rounded,
+                              size: 16,
+                              color: isLoggedIn ? Colors.white : muted,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                isLoggedIn
+                                    ? '@${user.username}'
+                                    : 'Tamu (Guest)',
+                                style: GoogleFonts.inter(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: text,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              Text(
+                                '$remStr token · Info akun',
+                                style: GoogleFonts.inter(
+                                    fontSize: 11, color: muted),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Icon(Icons.chevron_right_rounded,
+                            size: 18, color: muted),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }),
           // Footer hint
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
             child: Text('Long-press a chat to delete it',
                 style: GoogleFonts.inter(
                     fontSize: 12, color: muted.withValues(alpha: 0.8))),

@@ -1,0 +1,45 @@
+{
+  "secretKey": "GANTI_DENGAN_KUNCI_PANJANG_DAN_ACAK_1234567890",
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 8788
+  },
+  "servers": [
+    {
+      "id": "ollama-main",
+      "name": "Ollama — Qwen3 8B",
+      "runtime": "ollama",
+      "model": "qwen3:8b",
+      "port": 11434,
+      "apiUrl": "https://api-ai.domainkamu.com/v1",
+      "models": ["qwen3:8b", "gemma3:12b"],
+      "startCommand": ["ollama", "serve"],
+      "stopCommand": ["pkill", "-f", "ollama serve"],
+      "logFile": "/var/log/pb/ollama-main.log"
+    },
+    {
+      "id": "llamacpp-7b",
+      "name": "llama.cpp — Qwen2.5 7B",
+      "runtime": "llama-cpp",
+      "model": "qwen2.5-7b-instruct-q4_k_m.gguf",
+      "port": 11435,
+      "apiUrl": "https://api-ai.domainkamu.com/llamacpp/v1",
+      "models": ["qwen2.5-7b-instruct-q4_k_m.gguf"],
+      "startCommand": [
+        "/opt/llama.cpp/llama-server",
+        "-m",
+        "/models/qwen2.5-7b-instruct-q4_k_m.gguf",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "11435",
+        "--alias",
+        "qwen2.5-7b"
+      ],
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "0"
+      },
+      "logFile": "/var/log/pb/llamacpp-7b.log"
+    }
+  ]
+}

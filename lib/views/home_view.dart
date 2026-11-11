@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -21,10 +22,11 @@ class HomeView extends GetView<HomeController> {
         icon: Icons.layers_outlined,
         activeIcon: Icons.layers_rounded,
         label: 'Models'),
-    _NavItem(
-        icon: Icons.lan_outlined,
-        activeIcon: Icons.lan_rounded,
-        label: 'Server'),
+    if (!kIsWeb)
+      _NavItem(
+          icon: Icons.lan_outlined,
+          activeIcon: Icons.lan_rounded,
+          label: 'Server'),
     _NavItem(
         icon: Icons.settings_outlined,
         activeIcon: Icons.settings,
@@ -50,12 +52,18 @@ class HomeView extends GetView<HomeController> {
           body: Obx(() {
             final content = IndexedStack(
               index: controller.currentTab.value,
-              children: const [
-                ChatView(),
-                ModelView(),
-                ServerView(),
-                SettingsView()
-              ],
+              children: kIsWeb
+                  ? const [
+                      ChatView(),
+                      ModelView(),
+                      SettingsView(),
+                    ]
+                  : const [
+                      ChatView(),
+                      ModelView(),
+                      ServerView(),
+                      SettingsView(),
+                    ],
             );
             if (_isWide) {
               return Row(children: [

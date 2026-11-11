@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io' if (dart.library.html) '../core/io_stub.dart';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -9,14 +11,17 @@ import '../core/constants.dart';
 import '../core/ui.dart';
 import '../services/app_log_service.dart';
 import '../services/hive_service.dart';
+import '../services/secure_key_store.dart';
 import '../services/inference_service.dart';
 import '../services/cluster_service.dart';
 import '../services/openai_server_service.dart';
 
 class ServerController extends GetxController {
   final HiveService _hive = Get.find<HiveService>();
+  final SecureKeyStore _secure = Get.find<SecureKeyStore>();
   final InferenceService inference = Get.find<InferenceService>();
   final OpenAiServerService _server = OpenAiServerService();
+  Process? _llamaProcess;
 
   final isRunning = false.obs;
   final isStarting = false.obs;
@@ -40,7 +45,7 @@ class ServerController extends GetxController {
     super.onInit();
     useApiKey.value =
         _hive.getSetting<bool>(AppConstants.keyServerUseApiKey) ?? false;
-    apiKey.value = _hive.getSetting<String>(AppConstants.keyServerApiKey) ?? '';
+    apiKey.value = _secure.read(AppConstants.keyServerApiKey);
     allowNetwork.value =
         _hive.getSetting<bool>(AppConstants.keyServerAllowNetwork) ?? false;
 
@@ -54,7 +59,18 @@ class ServerController extends GetxController {
     return requiresApiKey && key.isNotEmpty ? key : null;
   }
 
-  bool get hasLocalModel => inference.isModelLoaded.value;
+  bool get hasLocalModel {
+    if (inference.isModelLoaded.value) return true;
+    // On Windows, check if a model path is configured (llama-server will load it).
+    final savedPath = _hive.getSetting<String>(AppConstants.keyLocalModelPath);
+    if (savedPath != null && savedPath.isNotEmpty && File(savedPath).existsSync()) {
+      return true;
+    }
+    // Dev fallback.
+    const devModelPath =
+        r'C:\Users\Administrator\Desktop\web-llm-ai\ai-models\LFM3-1.7B-Uncensored-GGUF\LFM3-1.7B-Uncensored-AD-Q4_K_M.gguf';
+    return File(devModelPath).existsSync();
+  }
 
   String get modelName => inference.loadedModelName.value.isEmpty
       ? 'No model loaded'
@@ -68,13 +84,50 @@ class ServerController extends GetxController {
     }
   }
 
+  Future<void> startAI() async {
+    if (isRunning.value || isStarting.value) return;
+    lastError.value = null;
+
+    // On Windows, skip in-process model loading (llama-server handles it).
+    if (!Platform.isWindows) {
+      // Auto-load model if not already loaded.
+      if (!hasLocalModel) {
+        var savedPath = _hive.getSetting<String>(AppConstants.keyLocalModelPath);
+        if (savedPath == null || savedPath.isEmpty) {
+          const devModelPath =
+              r'C:\Users\Administrator\Desktop\web-llm-ai\ai-models\LFM3-1.7B-Uncensored-GGUF\LFM3-1.7B-Uncensored-AD-Q4_K_M.gguf';
+          if (File(devModelPath).existsSync()) {
+            savedPath = devModelPath;
+          }
+        }
+        if (savedPath == null || savedPath.isEmpty) {
+          lastError.value = 'No model configured. Load a GGUF model first.';
+          showToast('AI not started', lastError.value!, tone: ToastTone.warning);
+          return;
+        }
+        isStarting.value = true;
+        serverStatus.value = 'Loading model...';
+        final result = await inference.loadModel(savedPath);
+        if (result.startsWith('ERROR')) {
+          lastError.value = result;
+          serverStatus.value = 'Model load failed';
+          isStarting.value = false;
+          showToast('AI not started', result, tone: ToastTone.error);
+          return;
+        }
+        await _hive.setSetting(AppConstants.keyLocalModelPath, savedPath);
+      }
+    }
+
+    await startServer();
+  }
+
   Future<void> startServer() async {
     if (isRunning.value || isStarting.value) return;
     lastError.value = null;
     if (!hasLocalModel) {
       lastError.value = 'Load a local GGUF or LiteRT-LM model first.';
-      showToast('Server not started', lastError.value!,
-          tone: ToastTone.warning);
+      showToast('Server not started', lastError.value!, tone: ToastTone.warning);
       return;
     }
 
@@ -82,6 +135,68 @@ class ServerController extends GetxController {
     serverStatus.value = 'Starting server...';
     await saveSettings();
 
+    // On Windows, spawn llama-server.exe instead of in-process inference.
+    if (Platform.isWindows && !inference.isModelLoaded.value) {
+      final modelPath = _hive.getSetting<String>(AppConstants.keyLocalModelPath) ??
+          (File(r'C:\Users\Administrator\Desktop\web-llm-ai\ai-models\LFM3-1.7B-Uncensored-GGUF\LFM3-1.7B-Uncensored-AD-Q4_K_M.gguf').existsSync()
+              ? r'C:\Users\Administrator\Desktop\web-llm-ai\ai-models\LFM3-1.7B-Uncensored-GGUF\LFM3-1.7B-Uncensored-AD-Q4_K_M.gguf'
+              : '');
+      final llamaServer = _findLlamaServer();
+      if (llamaServer == null) {
+        lastError.value = 'llama-server.exe not found.';
+        serverStatus.value = 'Server failed';
+        isStarting.value = false;
+        showToast('Server failed', lastError.value!, tone: ToastTone.error);
+        return;
+      }
+      if (modelPath.isEmpty) {
+        lastError.value = 'No model file found.';
+        serverStatus.value = 'Server failed';
+        isStarting.value = false;
+        showToast('Server failed', lastError.value!, tone: ToastTone.error);
+        return;
+      }
+      try {
+        _llamaProcess = await Process.start(llamaServer, [
+          '--model', modelPath,
+          '--port', '$port',
+          '--host', '0.0.0.0',
+          '--ctx-size', '4096',
+        ]);
+        _llamaProcess!.stdout
+            .transform(utf8.decoder)
+            .listen((d) {
+          if (d.trim().isNotEmpty) serverStatus.value = d.trim();
+        });
+        _llamaProcess!.stderr
+            .transform(utf8.decoder)
+            .listen((d) {
+          if (d.trim().isNotEmpty) serverStatus.value = d.trim();
+        });
+        _llamaProcess!.exitCode.then((code) {
+          if (isRunning.value) {
+            lastError.value = 'llama-server exited with code $code';
+            isRunning.value = false;
+            serverStatus.value = 'Server stopped';
+          }
+        });
+        // Wait for server to start.
+        await Future.delayed(const Duration(seconds: 4));
+        localUrl.value = 'http://127.0.0.1:$port';
+        isRunning.value = true;
+        serverStatus.value = 'Server running (llama-server)';
+      } catch (e) {
+        lastError.value = '$e';
+        serverStatus.value = 'Server failed';
+        Get.find<AppLogService>().error('llama-server failed', details: e);
+        showToast('Server failed', '$e', tone: ToastTone.error);
+      } finally {
+        isStarting.value = false;
+      }
+      return;
+    }
+
+    // Original in-process path (Android/iOS).
     try {
       await _server.start(
         port: port,
@@ -107,6 +222,10 @@ class ServerController extends GetxController {
 
   Future<void> stopServer() async {
     isStarting.value = false;
+    if (_llamaProcess != null) {
+      _llamaProcess!.kill();
+      _llamaProcess = null;
+    }
     await _server.stop();
     isRunning.value = false;
     localUrl.value = null;
@@ -114,6 +233,21 @@ class ServerController extends GetxController {
     if (Get.isRegistered<ClusterService>()) {
       Get.find<ClusterService>().serving.value = false;
     }
+  }
+
+  String? _findLlamaServer() {
+    final candidates = <String>[];
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    candidates.add('$exeDir\\llama-server.exe');
+    candidates.add(
+        r'C:\Users\Administrator\Desktop\web-llm-ai\tools\llama-server\llama-server.exe');
+    for (final dir in (Platform.environment['PATH'] ?? '').split(';')) {
+      candidates.add('$dir\\llama-server.exe');
+    }
+    for (final c in candidates) {
+      if (File(c).existsSync()) return c;
+    }
+    return null;
   }
 
   /// Persists settings and applies the key to a running server. A required
@@ -124,7 +258,8 @@ class ServerController extends GetxController {
       _setApiKey(_newApiKey());
     }
     await _hive.setSetting(AppConstants.keyServerUseApiKey, useApiKey.value);
-    await _hive.setSetting(AppConstants.keyServerApiKey, apiKey.value.trim());
+    await _secure.write(
+        AppConstants.keyServerApiKey, apiKey.value.trim());
     await _hive.setSetting(
         AppConstants.keyServerAllowNetwork, allowNetwork.value);
     _server.updateApiKey(_effectiveApiKey);

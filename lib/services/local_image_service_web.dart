@@ -42,11 +42,14 @@ class LocalImageService extends GetxService {
   final isGenerating = false.obs;
   final progress = 0.0.obs;
   final loadedModelName = ''.obs;
+  final loadingModelName = ''.obs;
   final gpuVendor = 'webgpu'.obs;
   final isUsingGpu = true.obs;
   final latestLog = ''.obs;
   final currentBackend = Backend.cpu.obs;
   final currentQuantization = QuantizationType.q4_0.obs;
+
+  String? lastFailureReason;
 
   String? get lastModelPath => null;
   String? get lastModelName =>
@@ -93,6 +96,7 @@ class LocalImageService extends GetxService {
       isModelLoaded.value = r;
       isLoadingModel.value = false;
       if (r) {
+        loadingModelName.value = '';
         loadedModelName.value = 'dreamshaper-8-lcm (WebGPU)';
         gpuVendor.value = 'webgpu';
         isUsingGpu.value = true;
@@ -139,6 +143,7 @@ class LocalImageService extends GetxService {
       _generateCompleter = null;
       isLoadingModel.value = false;
       isGenerating.value = false;
+      loadingModelName.value = '';
       _initTimeout?.cancel();
     }).toJS;
   }
@@ -152,6 +157,7 @@ class LocalImageService extends GetxService {
     if (isModelLoaded.value) return 'WebGPU engine already ready.';
 
     isLoadingModel.value = true;
+    loadingModelName.value = modelName ?? modelPath.split('/').last;
     progress.value = 0.0;
     _loadCompleter = Completer<String>();
 
@@ -164,6 +170,7 @@ class LocalImageService extends GetxService {
     _initTimeout = Timer(const Duration(seconds: 120), () {
       if (!isModelLoaded.value && isLoadingModel.value) {
         isLoadingModel.value = false;
+        loadingModelName.value = '';
         _loadCompleter?.complete('ERROR: WebGPU engine init timed out.');
         _loadCompleter = null;
       }
@@ -174,6 +181,7 @@ class LocalImageService extends GetxService {
 
   Future<void> unloadModel() async {
     isModelLoaded.value = false;
+    loadingModelName.value = '';
     loadedModelName.value = '';
     gpuVendor.value = 'unknown';
     isUsingGpu.value = false;

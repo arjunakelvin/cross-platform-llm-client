@@ -20,7 +20,9 @@ class AppConstants {
   static const String keyOpenRouterKey = 'openrouter_api_key';
   static const String keyDeepSeekKey = 'deepseek_api_key';
   static const String keyCustomCloudName = 'custom_cloud_name';
+  static const String keyLocalCloudModel = 'local_cloud_model';
   static const String keyCustomCloudBaseUrl = 'custom_cloud_base_url';
+  static const String keyCustomCloudProxyUrl = 'custom_cloud_proxy_url';
   static const String keyCustomCloudKey = 'custom_cloud_api_key';
   static const String keyCustomCloudProfiles = 'custom_cloud_profiles';
   static const String keyCustomCloudProfileIndex = 'custom_cloud_profile_index';
@@ -64,6 +66,38 @@ class AppConstants {
   static const String keyServerApiKey = 'server_api_key';
   static const String keyServerUseApiKey = 'server_use_api_key';
   static const String keyServerAllowNetwork = 'server_allow_network';
+  static const String keyAdminToken = 'admin_token';
+
+  // ── Dashboard admin (sumber konfigurasi AI server) ──
+  /// Header yang dipakai untuk shared secret ke AI server & manager.
+  static const String serverSecretHeader = 'X-Secret-Key';
+
+  // ── Admin DB (accounts / token & credit management) ──
+  /// 'local' (device Hive DB) or 'remote' (REST server DB).
+  static const String keyAdminDbMode = 'admin_db_mode';
+  static const String keyAdminDbUrl = 'admin_db_url';
+  static const String keyAdminDbKey = 'admin_db_key';
+  static const String keyAdminDbAccounts = 'admin_db_accounts';
+  static const String keyAdminDbConfig = 'admin_db_config';
+
+  // ── Discord (DS) OAuth config (dikelola dari Admin Dashboard) ──
+  static const String keyDiscordEnabled = 'discord_oauth_enabled';
+  static const String keyDiscordClientId = 'discord_oauth_client_id';
+  static const String keyDiscordClientSecret = 'discord_oauth_client_secret';
+  static const String keyDiscordRedirectUri = 'discord_oauth_redirect_uri';
+  static const String keyDiscordSessionUser = 'discord_session_user';
+  static const String keyDiscordSessionToken = 'discord_session_token';
+  static const String keyDiscordSessionAccount = 'discord_session_account';
+  static const String keyDiscordOAuthState = 'discord_oauth_state';
+
+  /// SHA-256 (hex) dari token admin yang sudah dipublish (2026-11-10).
+  ///
+  /// Token plaintext tidak pernah disimpan di app — hanya hash-nya. Hash ini
+  /// sudah dipakai di produksi, jadi **jangan diganti** kalau build di-push
+  /// ulang; kalau token memang harus diganti, hash di sini ikut diperbarui
+  /// dan `ADMIN_KEY` di Worker disetel ke token baru.
+  static const String adminTokenHash =
+      '571831742422fe866cb965f4a560a692cbb05a53bf10c93b890fa718ce14779c';
   static const String keyClusterEnabled = 'cluster_enabled';
   static const String keyClusterWorkers = 'cluster_workers';
   static const String keyImageSteps = 'image_steps';
@@ -78,8 +112,27 @@ class AppConstants {
 
   // Default Model Config
   static const double defaultTemperature = 0.7;
-  static const int defaultMaxTokens = 1024;
+  static const int defaultMaxTokens = 4096;
   static const int defaultContextSize = 2048;
+
+  // ── Token quota (local AI server access) ──
+  static const String keyTokenBalance = 'token_balance';
+  static const String keyTokenUsed = 'token_used';
+  static const String keyLocalTokenUsed = 'local_token_used';
+  static const String keyTokenLastReset = 'token_last_reset';
+  static const String keyTokenResetDays = 'token_reset_days';
+  static const int defaultTokenBalance = 10000000; // 10M guest (tanpa login)
+  // Login Discord menambah 10M sehingga total 20M.
+  static const int defaultLoginTokenBalance = 20000000; // 20M
+  // Token quota resets every N days. 1 = daily reset.
+  static const int tokenResetDays = 1;
+  static const String keyLocalServerUrl = 'local_server_url';
+  static const String defaultLocalServerUrl = 'http://127.0.0.1:8080';
+  static const String keyLocalCloudKey = 'local_cloud_api_key';
+  // Gateway OpenAI-compatible untuk API key milik user.
+  static const String keyGatewayBaseUrl = 'gateway_base_url';
+  static const String keyUserApiKey = 'user_gateway_api_key';
+  static const String keyUserApiKeyPrefix = 'user_gateway_api_prefix';
   static const String defaultLiteRtPerformanceMode = 'auto_fast';
   static const int defaultImageSteps = 1;
   static const bool defaultImageGenForceCpu = true;
@@ -90,11 +143,11 @@ class AppConstants {
 
   // System Prompt (compact for small context models)
   static const String systemPrompt =
-      '''You are AI Chat, a helpful and friendly assistant. Be concise, accurate, and conversational. Answer questions directly without unnecessary preamble.''';
+      '''You are AI-Agent PiercingBlow, a helpful and friendly assistant. Be concise, accurate, and conversational. Answer questions directly without unnecessary preamble.''';
 
   // System Prompt for Uncensored Models
   static const String uncensoredSystemPrompt =
-      '''You are AI Chat running with an uncensored local model. Be direct, mature, and conversational. Avoid moralizing or unnecessary disclaimers, but keep answers accurate and do not help with real-world harm, abuse, or illegal activity.''';
+      '''You are AI-Agent PiercingBlow running with an uncensored local model. Be direct, mature, and conversational. Avoid moralizing or unnecessary disclaimers, but keep answers accurate and do not help with real-world harm, abuse, or illegal activity.''';
 
   static bool isUncensoredModelName(String value) {
     final lower = value.toLowerCase();
