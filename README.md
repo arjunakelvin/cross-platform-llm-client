@@ -38,8 +38,9 @@ user memakai AI server tersebut lewat **gateway** dengan **API key sendiri**.
 
 | Fitur | Penjelasan |
 | --- | --- |
-| **Server per VPS** | Tiap VPS punya daemon `manager.py` sendiri. Di dashboard cukup isi **Manager URL** + **secret key manager** — tidak ada lagi input IP/base URL atau secret inference. |
-| **Deteksi model otomatis** | Saat server disimpan, dashboard memanggil `GET <manager>/servers` dan membaca `apiUrl`, `runtime`, dan daftar `models` milik VPS itu. Model ID **tidak bisa ditambah manual**. |
+| **Server per VPS** | Tiap VPS punya daemon `manager.py` sendiri. Di dashboard cukup isi **IP + port daemon** + **secret key manager** — Manager URL dibuat otomatis, dan tidak ada lagi input IP/base URL inference atau secret inference. |
+| **Deteksi model otomatis** | Saat server disimpan, dashboard memanggil `GET <manager>/servers` dan membaca `apiUrl`, `runtime`, dan daftar model **yang sedang aktif** (AI-nya sudah di-load & jalan) milik VPS itu. Model ID **tidak bisa ditambah manual**. |
+| **Model aktif vs nonaktif** | Kalau AI-nya dimatikan, model ditandai **"AI mati"** — harga/tier admin tetap tersimpan, tapi modelnya tidak ditawarkan ke user sampai AI-nya jalan lagi. |
 | **Edit per model** | Admin hanya mengedit: nama, tier (free/pro/vip), **harga input/output** (`/req` atau `/1M`), **context size**, dan **max output**. |
 | **Monitoring per VPS** | CPU, RAM, Disk, Network (traffic up/down) tiap VPS, plus tombol **Start / Stop / Lihat log** untuk **setiap proses AI** di VPS tersebut. |
 | **Gateway OpenAI-compatible** | `POST https://piercingblow.ai.id/api/gateway/v1/chat/completions` dengan `Authorization: Bearer pb_...` (API key milik user). Mendukung streaming (SSE). |
@@ -95,8 +96,10 @@ Buka **https://piercingblow.ai.id/admin/** (butuh admin key).
 
 | Kolom | Isi |
 | --- | --- |
-| **Manager URL** | `https://api-ai.domainkamu.com/manager` (domain + `/manager`) |
+| **IP / host VPS** | alamat VPS tempat daemon `manager.py` jalan, mis. `203.0.113.10` |
+| **Port daemon** | port `manager.py` (default `8788`) |
 | **Secret key manager** | nilai `secretKey` di `server/servers.json` VPS itu |
+| Manager URL | opsional — **dibuat otomatis** dari IP + port (`http://IP:PORT/manager`); isi manual hanya kalau daemonnya di belakang nginx/path lain |
 | Nama / ID / Status / Catatan | opsional |
 
 Tekan **Tambah server & deteksi model**. Setelah tersimpan:
@@ -116,6 +119,11 @@ Klik **Edit** pada model → ubah:
 
 > Harga `$0` → pemakaian memotong **kuota token**.
 > Harga `>$0` → pemakaian memotong **kredit** akun.
+
+> Model yang AI-nya belum jalan ditandai **"AI mati"**: harga & tier tetap
+> disimpan, tapi modelnya tidak muncul di tab Model List pengguna. Nyalakan
+> AI-nya (tombol **Start AI** di kartu server), lalu tekan **Deteksi model**
+> supaya modelnya aktif lagi.
 
 ### Monitoring & log
 

@@ -275,11 +275,11 @@ async with aiohttp.ClientSession() as session:<br>
       <h2>Server manager &amp; model AI</h2>
       <p class="hint" style="margin:0 0 12px">
         Satu kartu server = satu VPS. Cukup isi <b>Manager URL</b> daemon
-        Python + <b>secret key manager</b>. Alamat inference, daftar model,
-        status CPU/RAM/disk/network, dan traffic dibaca langsung dari daemon
-        VPS tersebut — tidak perlu mengetik base URL atau secret inference
-        lagi. Model terdeteksi otomatis; admin hanya mengedit harga, tier,
-        context, dan max output.</p>
+        Python (sudah mencakup IP + port) + <b>secret key manager</b>. Base
+        URL AI, daftar model yang <b>aktif</b>, status CPU/RAM/disk/network,
+        dan traffic dibaca langsung dari daemon VPS tersebut — tidak perlu
+        mengetik base URL atau secret inference lagi. Admin hanya mengedit
+        harga, tier, context, dan max output.</p>
 
       <h3 id="srvFormTitle" style="margin-top:12px">Tambah server AI (VPS baru)</h3>
       <div class="hint" style="margin:0 0 8px">
@@ -292,14 +292,15 @@ async with aiohttp.ClientSession() as session:<br>
           <input type="text" id="srvManagerUrl"
                  placeholder="https://api-ai.domain.com/manager">
           <div class="hint">Alamat daemon Python <span class="mono">manager.py</span>
-            di VPS ini. Cukup domain + <span class="mono">/manager</span>.</div>
+            di VPS ini, sudah termasuk IP + port. Contoh:
+            <span class="mono">http://203.0.113.10:8788/manager</span>.</div>
         </div>
         <div>
           <label for="srvManagerKey">Secret key manager</label>
           <input type="password" id="srvManagerKey" autocomplete="new-password"
                  placeholder="secretKey di servers.json VPS ini">
-          <div class="hint">Dipakai untuk membaca daftar model, start/stop,
-            statistik, dan request chat ke inference di VPS ini.</div>
+          <div class="hint">Dipakai untuk membaca daftar model yang aktif,
+            start/stop, statistik, dan request chat ke inference di VPS ini.</div>
         </div>
       </div>
       <div class="row">
@@ -1084,9 +1085,13 @@ function modelRowHtml(model) {
   const backend = model.backendModelId && model.backendModelId !== model.modelId
     ? ' · backend <span class="mono">' + escapeHtml(model.backendModelId) + '</span>'
     : '';
+  // Model yang AI-nya belum jalan ditandai (harga/tier tetap tersimpan).
+  const activeTag = model.active === false
+    ? ' <span class="tag off">AI mati</span>'
+    : ' <span class="tag on">aktif</span>';
   return '<div class="model-row">' +
     '<div><b class="mono">' + escapeHtml(model.modelId) + '</b> ' +
-    '<span class="tag">' + escapeHtml(tiers) + '</span>' +
+    '<span class="tag">' + escapeHtml(tiers) + '</span>' + activeTag +
     '<div class="meta">' + escapeHtml(model.name || '') +
     ' · ctx ' + (model.contextSize || 0) +
     ' · max ' + (model.maxOutput || 0) + backend + '</div>' +

@@ -266,6 +266,7 @@ async function handleAuth(request, env, pathname) {
       const serverById = new Map(servers.map((s) => [s.id, s]));
       const models = serverModels
         .filter((m) => m && m.modelId)
+        .filter((m) => m.active !== false)
         .filter((m) => !m.serverId || serverById.has(String(m.serverId)))
         .map((m) => {
           const server = serverById.get(String(m.serverId || ''));
@@ -655,6 +656,18 @@ function cleanServerId(value) {
     .slice(0, 64);
 }
 
+/// Susun Manager URL dari IP + port daemon (dipakai kalau admin tidak
+/// mengisi Manager URL manual, mis. karena daemon ada di belakang nginx).
+function buildManagerUrl(body, base) {
+  const explicit = String(body.managerUrl ?? base.managerUrl ?? '').trim();
+  if (explicit) return explicit;
+  const host = String(body.ip ?? body.host ?? base.ip ?? base.host ?? '').trim();
+  const port = Number(body.port ?? base.port ?? 0);
+  if (!host || !port) return '';
+  const scheme = String(body.scheme ?? 'http').trim() || 'http';
+  return `${scheme}://${host}:${port}/manager`;
+}
+
 function cleanServerEntry(body, existing) {
   const now = Date.now();
   const base = existing || {};
@@ -665,10 +678,12 @@ function cleanServerEntry(body, existing) {
   return {
     id: cleanServerId(body.id ?? base.id),
     name: String(body.name ?? base.name ?? '').trim(),
-    // Satu entri = satu VPS/daemon. Alamat inference dan secret-nya
-    // didapat dari daemon manager (servers.json), jadi admin tidak perlu
-    // mengetik base URL / secret inference lagi.
-    managerUrl: String(body.managerUrl ?? base.managerUrl ?? '').trim(),
+    // Satu entri = satu VPS/daemon. Admin cukup mengisi IP + port daemon
+    // (+ secret key); Manager URL dibuat otomatis. Alamat inference dan
+    // secret-nya didapat dari daemon manager (servers.json).
+    ip: String(body.ip ?? body.host ?? base.ip ?? base.host ?? '').trim(),
+    port: Number(body.port ?? base.port ?? 0) || 0,
+    managerUrl: buildManagerUrl(body, base),
     managerKey: keepSecret('managerKey', body.managerKey),
     // Diisi otomatis dari daemon saat deteksi (kompatibilitas lama).
     baseUrl: String(body.baseUrl ?? base.baseUrl ?? '').trim(),
@@ -731,9 +746,19 @@ function detectedModelsFromManager(daemons) {
     const daemonId = String(daemon.id || '').trim();
     const apiUrl = String(daemon.apiUrl || '').trim();
     const runtime = String(daemon.runtime || '').trim();
-    let ids = Array.isArray(daemon.models) ? daemon.models : [];
+    // Hanya model yang AKTIF (AI-nya sudah di-load & prosesnya jalan).
+    // Kalau daemon melapor `activeModels`, itu yang dipakai.
+    const running = daemon.running === undefined ? true : !!daemon.running;
+    let ids = [];
+    if (Array.isArray(daemon.activeModels)) {
+      ids = daemon.activeModels;
+    } else if (running) {
+      ids = Array.isArray(daemon.models) ? daemon.models : [];
+    }
     ids = ids.map((id) => String(id || '').trim()).filter(Boolean);
-    if (!ids.length && daemon.model) ids = [String(daemon.model).trim()];
+    if (!ids.length && running && daemon.model) {
+      ids = [String(daemon.model).trim()];
+    }
     for (const backendId of [...new Set(ids)]) {
       const key = `${daemonId}::${backendId}`;
       if (seen.has(key)) continue;
@@ -744,7 +769,7 @@ function detectedModelsFromManager(daemons) {
   return detected;
 }
 
-async function syncDetectedModels(env, server, detected) {
+async function syncDetectedModels(env, server, detected, daemons = []) {
   const models = await getJson(env.PB_KV, 'server_models', []);
   const now = Date.now();
   const others = models.filter(
@@ -752,10 +777,17 @@ async function syncDetectedModels(env, server, detected) {
   const existingForServer = models.filter(
     (m) => String(m.serverId || '') === String(server.id));
   const byKey = new Map();
+  const byBackend = new Map();
   for (const model of existingForServer) {
     const key = `${model.daemonId || ''}::${model.backendModelId || model.modelId || ''}`;
     if (!byKey.has(key)) byKey.set(key, model);
+    const backend = String(model.backendModelId || model.modelId || '');
+    if (backend && !byBackend.has(backend)) byBackend.set(backend, model);
   }
+  // Daemon yang masih terdaftar di servers.json (proses ada, cuma mungkin
+  // belum jalan). Modelnya tetap disimpan, hanya ditandai tidak aktif.
+  const knownDaemons = new Set(
+    daemons.map((d) => String((d && d.id) || '')).filter(Boolean));
 
   const taken = new Set(others.map((m) => String(m.modelId)));
   const added = [];
@@ -765,7 +797,10 @@ async function syncDetectedModels(env, server, detected) {
   for (const item of detected) {
     const key = `${item.daemonId || ''}::${item.backendId}`;
     detectedKeys.add(key);
-    const existing = byKey.get(key);
+    const existing = byKey.get(key) ||
+      // Model yang dibuat manual (tanpa daemonId) tetap cocok lewat nama
+      // model backend, supaya harga/tier admin tidak hilang.
+      byBackend.get(String(item.backendId || ''));
     let modelId = existing ? existing.modelId : item.backendId;
     if (!existing && taken.has(modelId)) {
       // Nama model sama di VPS/proses lain: beri prefix server agar
@@ -794,6 +829,7 @@ async function syncDetectedModels(env, server, detected) {
       contextSize: existing ? (Number(existing.contextSize) || 0) : 0,
       maxOutput: existing ? (Number(existing.maxOutput) || 0) : 0,
       detected: true,
+      active: true,
       createdAt: (existing && existing.createdAt) || now,
       updatedAt: now,
     };
@@ -802,16 +838,27 @@ async function syncDetectedModels(env, server, detected) {
     kept.push(entry);
   }
 
-  // Model yang sudah tidak ada di daemon hanya dihapus kalau deteksi
-  // mengembalikan daftar (menghindari menghapus semua karena respons kosong).
-  const removed = detected.length ? existingForServer
-    .filter((m) => !detectedKeys.has(
-      `${m.daemonId || ''}::${m.backendModelId || m.modelId || ''}`))
+  // Model yang prosesnya masih terdaftar tapi AI-nya belum jalan: tetap
+  // disimpan (harga/tier admin tidak hilang), tapi ditandai nonaktif.
+  const inactive = [];
+  for (const model of existingForServer) {
+    const key = `${model.daemonId || ''}::${model.backendModelId || model.modelId || ''}`;
+    if (detectedKeys.has(key)) continue;
+    if (knownDaemons.has(String(model.daemonId || ''))) {
+      kept.push({ ...model, active: false, updatedAt: now });
+      inactive.push(model.modelId);
+    }
+  }
+
+  // Model dihapus hanya kalau prosesnya benar-benar dihapus dari
+  // servers.json (bukan cuma sedang mati).
+  const removed = daemons.length ? existingForServer
+    .filter((m) => !knownDaemons.has(String(m.daemonId || '')))
     .map((m) => m.modelId) : [];
 
   await env.PB_KV.put(
     'server_models', JSON.stringify([...others, ...kept]));
-  return { added, updated, removed, total: kept.length };
+  return { added, updated, removed, inactive, total: kept.length };
 }
 
 async function detectViaManager(env, server) {
@@ -820,12 +867,13 @@ async function detectViaManager(env, server) {
   const first = daemons.find((d) => d && (d.runtime || d.apiUrl)) || {};
   if (first.runtime) server.runtime = String(first.runtime);
   if (first.apiUrl) server.baseUrl = String(first.apiUrl);
-  const sync = await syncDetectedModels(env, server, detected);
+  const sync = await syncDetectedModels(env, server, detected, daemons);
   return {
     ok: true,
     count: detected.length,
     models: detected.map((d) => d.backendId),
     daemons: daemons.length,
+    activeDaemons: daemons.filter((d) => d && d.running).length,
     ...sync,
   };
 }
@@ -855,7 +903,9 @@ async function handleAdminServers(request, env, pathname) {
       return jsonResponse(request, 400, { error: 'Server ID wajib diisi.' });
     }
     if (!entry.managerUrl) {
-      return jsonResponse(request, 400, { error: 'Manager URL wajib diisi.' });
+      return jsonResponse(request, 400, {
+        error: 'IP + port daemon wajib diisi (atau isi Manager URL manual).',
+      });
     }
     // Deteksi model lewat daemon manager VPS ini (GET <manager>/servers).
     let detection = { ok: false, skipped: true, count: 0, models: [] };
@@ -1367,6 +1417,8 @@ async function handleGateway(request, env, pathname) {
           servers.map((s) => [String(s.id), s]));
         return serverModels
           .filter(m => {
+            // Model yang AI-nya belum dimuat tidak ditawarkan ke user.
+            if (m.active === false) return false;
             if (m.serverId && disabled.has(String(m.serverId))) return false;
             const tiers = m.tierAccess || ['free', 'pro', 'vip'];
             return tiers.includes(userTier);
