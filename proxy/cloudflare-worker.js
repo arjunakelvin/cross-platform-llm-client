@@ -1228,7 +1228,9 @@ async function chargeUsage(env, account, options) {
       modelId: options.modelId || '',
       modelName: options.modelName || options.modelId || '',
       tokens: totalTokens,
-      credits: Math.round(credits * 10000) / 10000,
+      // Kredit bisa sangat kecil (mis. $0.000014) — bulatkan dengan 8
+      // desimal supaya tidak jadi 0 di log.
+      credits: Math.round(credits * 1e8) / 1e8,
       mode: useCredits ? 'credit' : 'token',
       timestamp: Date.now(),
     });

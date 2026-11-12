@@ -627,10 +627,10 @@ function fmtInt(value) {
   return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-// Uang dengan pemisah ribuan (mis. 12,000.50).
+// Uang dengan pemisah ribuan (mis. 12,000.500000).
 function fmtMoney(value) {
   const n = Number(value || 0);
-  const parts = n.toFixed(4).split('.');
+  const parts = n.toFixed(6).split('.');
   return fmtInt(parts[0]) + '.' + parts[1];
 }
 
