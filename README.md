@@ -44,8 +44,9 @@ user memakai AI server tersebut lewat **gateway** dengan **API key sendiri**.
 | **Model aktif vs nonaktif** | Kalau AI-nya mati/tidak bisa dihubungi, model ditandai **"AI mati"** — harga/tier admin tetap tersimpan, tapi modelnya tidak ditawarkan ke user sampai AI-nya jalan lagi. |
 | **Edit per model** | Admin hanya mengedit: nama, tier (free/pro/vip), **harga input/output** (`/req` atau `/1M`), **context size**, dan **max output**. |
 | **Monitoring per VPS** | CPU, RAM, Disk, Network (traffic up/down) tiap VPS, plus tombol **Start / Stop / Lihat log** untuk **setiap proses AI** di VPS tersebut. |
-| **Gateway OpenAI-compatible** | `POST https://piercingblow.ai.id/api/gateway/v1/chat/completions` dengan `Authorization: Bearer pb_...` (API key milik user). Mendukung streaming (SSE). |
-| **API key per akun** | User buat key sendiri di aplikasi (Settings → AI API key). Nilai penuhnya hanya ditampilkan sekali, disimpan terenkripsi di perangkat. |
+| **Gateway OpenAI-compatible** | `POST https://piercingblow.ai.id/api/gateway/v1/chat/completions` dengan `Authorization: Bearer pb_...` (API key milik user) **atau** session token login. Mendukung streaming (SSE). |
+| **API key per akun** | User buat key sendiri di aplikasi (Settings → AI API key). Nilai penuhnya hanya ditampilkan sekali, disimpan terenkripsi di perangkat. **Belum punya AI API key pun chat Local AI tetap jalan** — aplikasi memakai session login ke gateway, jadi secret AI server tidak pernah menyentuh perangkat. |
+| **Nama model rapi** | Nama file model (`qwen2.5-coder-1.5b-instruct-q4_k_m.gguf`) otomatis diubah jadi nama tampilan (`Qwen2.5 Coder 1.5B`) — nama file tidak muncul di chat maupun Model List. |
 | **Token & kredit** | Model berlabel **FREE** memotong kuota token; model berlabel **PRO/VIP** memotong kredit (tidak tercampur). Sisa & terpakai tampil real-time di aplikasi. |
 | **Log pemakaian** | Tiap request tercatat (akun, model, token, kredit, mode) → tabel **Log pemakaian AI** di dashboard. |
 | **Log API key** | Siapa membuat API key tercatat di dashboard (**API Key Logs**). |
@@ -82,9 +83,10 @@ user memakai AI server tersebut lewat **gateway** dengan **API key sendiri**.
    lewat nginx sebagai gerbang secret key.)
 2. Di dashboard admin: tempel **base URL AI server** + **secret key** → model
    aktif terdeteksi otomatis.
-3. Di aplikasi: user login Discord → buat **AI API key** → pilih model di tab
-   **Model List** → chat. Semua request lewat gateway, jadi user tidak pernah
-   memegang secret backend.
+3. Di aplikasi: user login Discord → pilih model di tab **Model List** → chat.
+   Semua request lewat gateway, jadi user tidak pernah memegang secret
+   backend. **AI API key opsional** — kalau belum dibuat, aplikasi tetap
+   chat lewat gateway pakai session login.
 
 Detail tool Python & nginx: [`server/README.md`](server/README.md).
 
@@ -200,6 +202,12 @@ Key disimpan terenkripsi di perangkat (SecureKeyStore / keystore), tidak
 pernah ikut ke server kecuali sebagai hash, dan tidak pernah ditampilkan lagi
 setelah ditutup.
 
+> API key **opsional** untuk chat di aplikasi. Kalau belum dibuat, chat Local
+> AI tetap jalan: aplikasi memakai **session token login** sebagai
+> autentikasi gateway (Worker menerimanya untuk endpoint yang sama). API key
+> tetap berguna kalau mau memakai gateway dari program lain (OpenAI SDK,
+> curl, dsb).
+
 ---
 
 ## Gateway AI (OpenAI-compatible)
@@ -224,6 +232,8 @@ curl https://piercingblow.ai.id/api/gateway/v1/chat/completions \
 
 - `model` = **model ID publik** (yang tampil di Model List). Kalau nama model
   sama di dua VPS, dashboard memberi prefix: `vps-2/qwen3:8b`.
+- Autentikasi: **AI API key user** (`pb_...`) **atau session token login**
+  (dipakai aplikasi web secara otomatis). Token ngaco → `401 Invalid API key`.
 - Worker memetakan model ID publik → nama model asli di daemon
   (`backendModelId`), lalu meneruskan request ke `apiUrl` VPS tsb dengan
   `X-Secret-Key` backend.

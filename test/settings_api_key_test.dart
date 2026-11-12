@@ -178,13 +178,21 @@ void main() {
     expect(controller.userApiKeyPrefix.value, 'pb_gen');
   });
 
-  test('Local AI lewat gateway aktif hanya kalau key + base URL ada', () async {
-    expect(controller.localAiViaGateway, isFalse);
+  test('Local AI lewat gateway: cukup AI API key ATAU session login', () async {
+    // Session login + base URL gateway → sudah cukup, user belum perlu
+    // membuat AI API key sendiri.
+    expect(controller.localAiViaGateway, isTrue);
 
     await controller.createUserApiKey();
     expect(controller.localAiViaGateway, isTrue);
 
     await controller.deleteUserApiKey();
+    // Session login masih aktif → gateway tetap dipakai.
+    expect(controller.localAiViaGateway, isTrue);
+  });
+
+  test('tanpa base URL gateway, Local AI tidak lewat gateway', () async {
+    await hive.setSetting(AppConstants.keyGatewayBaseUrl, '');
     expect(controller.localAiViaGateway, isFalse);
   });
 }

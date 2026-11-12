@@ -5,6 +5,7 @@ import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import '../core/constants.dart';
 import 'dashboard_config_service.dart';
+import 'discord_service.dart';
 import 'hive_service.dart';
 import 'app_log_service.dart';
 import 'secure_key_store.dart';
@@ -31,9 +32,14 @@ class CloudService extends GetxService {
         // API key user (gateway) diutamakan; secret inference lama tetap
         // dipakai sebagai fallback untuk server lokal.
         final user = _secure.read(AppConstants.keyUserApiKey).trim();
-        return user.isNotEmpty
-            ? user
-            : _secure.read(AppConstants.keyLocalCloudKey);
+        if (user.isNotEmpty) return user;
+        // Belum punya AI API key → pakai session login supaya request tetap
+        // lewat gateway (secret inference hanya diketahui server).
+        if (_gatewayBaseUrl.isNotEmpty) {
+          final session = _sessionToken;
+          if (session.isNotEmpty) return session;
+        }
+        return _secure.read(AppConstants.keyLocalCloudKey);
       case 'anthropic':
         return _secure.read(AppConstants.keyAnthropicKey);
       case 'google':
@@ -288,9 +294,18 @@ class CloudService extends GetxService {
   String get _userApiKey =>
       _secure.read(AppConstants.keyUserApiKey).trim();
 
-  /// True kalau chat Local AI lewat gateway memakai API key user.
+  /// Session token login (dipakai untuk authenticate ke gateway kalau user
+  /// belum membuat AI API key sendiri).
+  String get _sessionToken {
+    if (!Get.isRegistered<DiscordService>()) return '';
+    return Get.find<DiscordService>().sessionToken.trim();
+  }
+
+  /// True kalau chat Local AI lewat gateway memakai API key user (atau
+  /// session login kalau API key belum dibuat).
   bool get _localViaGateway =>
-      _userApiKey.isNotEmpty && _gatewayBaseUrl.isNotEmpty;
+      _gatewayBaseUrl.isNotEmpty &&
+      (_userApiKey.isNotEmpty || _sessionToken.isNotEmpty);
 
   /// Nama model asli di daemon, dipakai saat memanggil server inference
   /// langsung (tanpa gateway). Gateway menerima modelId publik.
@@ -821,7 +836,15 @@ class CloudService extends GetxService {
     if (statusCode == 402 || lower.contains('insufficient')) {
       hint = ' This API key has no credits left — top up or use another key.';
     } else if (statusCode == 401 || statusCode == 403) {
-      hint = ' Check that the API key is correct.';
+      // Local AI yang tidak lewat gateway = secret inference tidak cocok
+      // dengan AI server. Beri petunjuk yang bisa langsung dikerjakan.
+      if (_provider == 'local' && !_localViaGateway) {
+        hint = ' AI server menolak secret key. Buat AI API key di '
+            'Settings → AI API key (request lalu lewat gateway), atau isi '
+            '"Secret key AI server" dengan nilai --api-key milik llama-server.';
+      } else {
+        hint = ' Check that the API key is correct.';
+      }
     } else if (statusCode == 404 || lower.contains('model_not_found')) {
       hint = ' Check that the model ID exists on this provider.';
     } else if (statusCode == 429) {

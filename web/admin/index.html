@@ -1097,10 +1097,10 @@ function modelRowHtml(model) {
     ? ' <span class="tag off">AI mati</span>'
     : ' <span class="tag on">aktif</span>';
   return '<div class="model-row">' +
-    '<div><b class="mono">' + escapeHtml(model.modelId) + '</b> ' +
+    '<div><b>' + escapeHtml(model.name || model.modelId) + '</b> ' +
     '<span class="tag">' + escapeHtml(tiers) + '</span>' + activeTag +
-    '<div class="meta">' + escapeHtml(model.name || '') +
-    ' · ctx ' + (model.contextSize || 0) +
+    '<div class="meta"><span class="mono">' + escapeHtml(model.modelId) +
+    '</span> · ctx ' + (model.contextSize || 0) +
     ' · max ' + (model.maxOutput || 0) + backend + '</div>' +
     '<div class="price">' + escapeHtml(pricingLabel(model)) + '</div></div>' +
     '<div class="actions">' +

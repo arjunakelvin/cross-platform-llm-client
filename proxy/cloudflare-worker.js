@@ -775,6 +775,34 @@ function detectedModelsFromManager(daemons) {
   return detected;
 }
 
+/// Ubah nama file model (`qwen2.5-coder-1.5b-instruct-q4_k_m.gguf`) menjadi
+/// nama tampilan yang enak dibaca (`Qwen2.5 Coder 1.5B`), supaya nama file
+/// mentah tidak muncul di aplikasi.
+function friendlyModelName(raw) {
+  const original = String(raw || '').trim();
+  if (!original) return '';
+  let name = original.split(/[/\\]/).pop() || original;
+  name = name.replace(
+    /\.(gguf|ggml|litertlm|task|bin|safetensors|onnx|pt|pth)$/i, '');
+  name = name.replace(/[-_.](i?q\d+(_[a-z0-9]+)*|f16|f32|bf16)$/i, '');
+  name = name.replace(/[-_.](instruct|chat|it|hf)$/i, '');
+  // Pemisah kata: dash & underscore. Titik dipertahankan supaya nomor
+  // versi tetap utuh ("qwen2.5", "v0.2").
+  name = name.replace(/[-_]+/g, ' ').trim();
+  if (!name) return original;
+  return name
+      .split(' ')
+      .map((word) => {
+        if (!word) return word;
+        // "1.5b" → "1.5B", "8b" → "8B"
+        if (/^\d/.test(word)) {
+          return word.replace(/b$/i, 'B').replace(/m$/i, 'M');
+        }
+        return word.charAt(0).toUpperCase() + word.slice(1);
+      })
+      .join(' ');
+}
+
 async function syncDetectedModels(env, server, detected, daemons = []) {
   const models = await getJson(env.PB_KV, 'server_models', []);
   const now = Date.now();
@@ -819,11 +847,21 @@ async function syncDetectedModels(env, server, detected, daemons = []) {
       modelId = candidate;
     }
     taken.add(modelId);
+    // Nama tampilan: pakai yang sudah dikustom admin; kalau belum, turunkan
+    // dari nama file model supaya `qwen2.5-coder-1.5b-...gguf` tidak muncul
+    // mentah-mentah di aplikasi.
+    const existingName = String((existing && existing.name) || '').trim();
+    const isAutoName = !existingName ||
+      existingName === item.backendId ||
+      (existing && existing.modelId === existingName);
+    const displayName = isAutoName
+      ? friendlyModelName(item.backendId)
+      : existingName;
     const entry = {
       modelId,
       backendModelId: item.backendId,
       daemonId: item.daemonId || '',
-      name: existing ? (existing.name || item.backendId) : item.backendId,
+      name: displayName || item.backendId,
       serverId: String(server.id),
       serverUrl: item.apiUrl || server.baseUrl || '',
       apiUrl: item.apiUrl || '',
@@ -1480,29 +1518,37 @@ async function handleGateway(request, env, pathname) {
     pathname = '/api/gateway' + pathname.slice('/api/gateway/v1'.length);
   }
 
-  // Authenticate via API key in Authorization: Bearer header
+  // Authenticate via API key in Authorization: Bearer header.
+  // Fallback: session token login (dipakai aplikasi web supaya Local AI
+  // tetap bisa lewat gateway sebelum user membuat AI API key sendiri).
   const authHeader = request.headers.get('authorization') || '';
-  const apiKey = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-  if (!apiKey) {
+  const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  if (!bearer) {
     return jsonResponse(request, 401, { error: 'Missing API key. Use Authorization: Bearer <your-api-key>' });
   }
 
-  const keyHash = await hashApiKey(apiKey);
+  let account = null;
+  const keyHash = await hashApiKey(bearer);
   const keyData = await getJson(env.PB_KV, `apikey:${keyHash}`, null);
-  if (!keyData) {
-    return jsonResponse(request, 401, { error: 'Invalid API key.' });
+  if (keyData) {
+    if (keyData.deleteAt && Date.now() >= keyData.deleteAt) {
+      await env.PB_KV.delete(`apikey:${keyHash}`);
+      return jsonResponse(request, 401, { error: 'API key has been deleted.' });
+    }
+    if (keyData.deleteAt) {
+      return jsonResponse(request, 403, { error: 'API key is pending deletion.', deleteAt: keyData.deleteAt });
+    }
+    account = await getJson(env.PB_KV, `account:${keyData.accountId}`, null);
+  } else {
+    // Bukan API key → coba session token.
+    // Nilai session di KV disimpan sebagai string accountId (bukan JSON).
+    const sessionAccountId = await env.PB_KV.get(`session:${bearer}`);
+    if (sessionAccountId) {
+      account = await getJson(env.PB_KV, `account:${sessionAccountId}`, null);
+    }
   }
-  if (keyData.deleteAt && Date.now() >= keyData.deleteAt) {
-    await env.PB_KV.delete(`apikey:${keyHash}`);
-    return jsonResponse(request, 401, { error: 'API key has been deleted.' });
-  }
-  if (keyData.deleteAt) {
-    return jsonResponse(request, 403, { error: 'API key is pending deletion.', deleteAt: keyData.deleteAt });
-  }
-
-  const account = await getJson(env.PB_KV, `account:${keyData.accountId}`, null);
   if (!account) {
-    return jsonResponse(request, 401, { error: 'Account not found.' });
+    return jsonResponse(request, 401, { error: 'Invalid API key.' });
   }
   if (account.status === 'banned') {
     return jsonResponse(request, 403, { error: 'Account is banned.' });

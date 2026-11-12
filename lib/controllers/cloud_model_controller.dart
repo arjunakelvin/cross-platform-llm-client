@@ -167,7 +167,8 @@ class CloudModelController extends GetxController {
   String activeModelFor(String provider) {
     switch (provider) {
       case 'local':
-        return _settings.localCloudModel.value;
+        // Nama tampilan model (dari dashboard admin), bukan nama file .gguf.
+        return _settings.localCloudModelDisplayName;
       case 'openrouter':
         return _settings.openRouterModel.value;
       case 'deepseek':

@@ -390,8 +390,9 @@ class SettingsController extends GetxController {
   String get selectedCloudModelName {
     switch (cloudProvider.value) {
       case 'local':
-        // Model AI server yang dipilih di tab Model List (model ID).
-        return localCloudModel.value;
+        // Nama tampilan model AI server (dari dashboard admin) — bukan nama
+        // file `.gguf` dari server.
+        return localCloudModelDisplayName;
       case 'anthropic':
         return anthropicModel.value;
       case 'google':
@@ -941,13 +942,33 @@ class SettingsController extends GetxController {
           ? Get.find<DiscordService>().sessionToken
           : '';
 
+  /// Nama tampilan model AI server yang dipilih (mis. "Qwen2.5 Coder 1.5B").
+  ///
+  /// Diambil dari dashboard admin. Kalau belum ada datanya, pakai model ID
+  /// sebagai cadangan.
+  String get localCloudModelDisplayName {
+    final id = localCloudModel.value.trim();
+    if (id.isEmpty) return id;
+    if (Get.isRegistered<DashboardConfigService>()) {
+      for (final model in Get.find<DashboardConfigService>().models) {
+        if (model.modelId == id) {
+          return model.name.trim().isEmpty ? id : model.name.trim();
+        }
+      }
+    }
+    return id;
+  }
+
   /// True kalau Local AI dijalankan lewat gateway pakai API key user.
   /// Kalau iya, pemakaian token tercatat di server (bukan di perangkat).
   bool get localAiViaGateway {
     final key = _secure.read(AppConstants.keyUserApiKey).trim();
     final base =
         (_hive.getSetting<String>(AppConstants.keyGatewayBaseUrl) ?? '').trim();
-    return key.isNotEmpty && base.isNotEmpty;
+    if (base.isEmpty) return false;
+    if (key.isNotEmpty) return true;
+    // Belum punya AI API key → session login juga bisa dipakai ke gateway.
+    return _sessionTokenForApiKey.isNotEmpty;
   }
 
   bool get isLoggedInForApiKey => _sessionTokenForApiKey.isNotEmpty;
