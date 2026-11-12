@@ -932,8 +932,8 @@ async function handleAdminServers(request, env, pathname) {
 async function handleBotApi(request, env, pathname) {
   const config = await getConfig(env);
 
-  // Optional bot authentication: if botSecretKey is configured in the admin dashboard,
-  // verify X-Bot-Key, X-Admin-Key, Authorization: Bearer, or ?key=
+  // Autentikasi bot WAJIB. Kalau "Bot API Key" belum diisi di dashboard,
+  // endpoint bot ditutup (fail-closed) supaya tidak bisa dibuka tanpa auth.
   const url = new URL(request.url);
   const providedKey = (
     request.headers.get('x-bot-key') ||
@@ -942,11 +942,15 @@ async function handleBotApi(request, env, pathname) {
     bearerToken(request) ||
     ''
   ).trim();
-
-  if (config.botSecretKey && providedKey !== config.botSecretKey && providedKey !== env.ADMIN_KEY) {
+  const botKey = String(config.botSecretKey || '').trim();
+  const adminKey = String(env.ADMIN_KEY || '').trim();
+  const allowedByBot = botKey.length > 0 && providedKey === botKey;
+  const allowedByAdmin = adminKey.length > 0 && providedKey === adminKey;
+  if (!allowedByBot && !allowedByAdmin) {
     return jsonResponse(request, 401, {
       error: 'Invalid or missing Bot API key.',
-      hint: 'Set X-Bot-Key header or key query param matching the Bot API Key in the admin dashboard.',
+      hint: 'Isi "Bot API Key" di dashboard admin, lalu kirim header '
+        + 'X-Bot-Key (atau Authorization: Bearer / ?key=) dengan nilai itu.',
     });
   }
 
@@ -1076,6 +1080,28 @@ async function handleBotApi(request, env, pathname) {
   return jsonResponse(request, 404, { error: 'Unknown bot endpoint.' });
 }
 
+/// Host yang tidak boleh dipakai sebagai target proxy (SSRF): jaringan
+/// internal, link-local, metadata cloud, dan loopback selain dev lokal.
+function isBlockedProxyHost(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host) return true;
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host === 'metadata.google.internal' || host.endsWith('.internal')) {
+    return true;
+  }
+  if (host === '::1' || host === '0.0.0.0') return true;
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 10 || a === 127 || a === 0) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+  }
+  return false;
+}
+
 async function handleCorsProxy(request) {
   const url = new URL(request.url);
   const target = url.searchParams.get('url');
@@ -1095,6 +1121,10 @@ async function handleCorsProxy(request) {
   if (targetUrl.protocol !== 'https:' && !isLocal) {
     return textResponse(request, 400, 'Only HTTPS targets are allowed.');
   }
+  // Jangan pernah dipakai untuk menembak jaringan internal / metadata.
+  if (isBlockedProxyHost(targetUrl.hostname)) {
+    return textResponse(request, 400, 'Target host is not allowed.');
+  }
   if (request.method !== 'GET' && request.method !== 'POST') {
     return textResponse(request, 405, 'Method not allowed.');
   }
@@ -1107,7 +1137,13 @@ async function handleCorsProxy(request) {
     if (value) headers.set(name, value);
   }
 
-  const init = { method: request.method, headers, redirect: 'follow' };
+  const init = {
+    method: request.method,
+    headers,
+    redirect: 'follow',
+    // Batas waktu supaya proxy tidak menggantung.
+    signal: AbortSignal.timeout(120000),
+  };
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     init.body = request.body;
   }

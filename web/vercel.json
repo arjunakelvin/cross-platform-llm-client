@@ -19,7 +19,11 @@
       "destination": "/api/worker?kind=discord&path=:path*"
     },
     {
-      "source": "/api/((?!admin|auth|bot|discord).*)",
+      "source": "/api/gateway/:path*",
+      "destination": "/api/worker?kind=gateway&path=:path*"
+    },
+    {
+      "source": "/api/((?!admin|auth|bot|discord|gateway).*)",
       "destination": "/api/index.js"
     },
     {

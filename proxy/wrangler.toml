@@ -39,5 +39,9 @@ kv_namespaces = [
 # Cloudflare yang dipakai), biarkan file `web/api/[...path].js` yang
 # meneruskan ke Worker â€” set env WORKER_URL di project Vercel.
 routes = [
-  { pattern = "piercingblow.ai.id/api*", zone_name = "piercingblow.ai.id" }
+  { pattern = "piercingblow.ai.id/api*", zone_name = "piercingblow.ai.id" },
+  # Route eksplisit untuk "/api" polos (proxy CORS). Tanpa ini path "/api"
+  # bocor ke Vercel dan jadi open proxy.
+  { pattern = "piercingblow.ai.id/api", zone_name = "piercingblow.ai.id" },
+  { pattern = "piercingblow.ai.id/api/", zone_name = "piercingblow.ai.id" }
 ]
