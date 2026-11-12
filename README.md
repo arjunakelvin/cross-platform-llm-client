@@ -86,6 +86,18 @@ Idle detection (5s) and hard timeouts (180s) keep the UX responsive even on unde
 
 API keys are stored in Hive and never transmitted anywhere except to the provider's endpoint.
 
+### Backend Worker (API + dashboard admin)
+
+`proxy/cloudflare-worker.js` (Cloudflare Worker) melayani:
+
+| Path | Untuk siapa | Auth |
+| --- | --- | --- |
+| `/api/admin/*` | dashboard admin | header `X-Admin-Key` |
+| `/api/bot/*` | Discord bot | header `X-Bot-Key` (**wajib**; kalau "Bot API Key" kosong di dashboard, endpoint-nya ditutup) |
+| `/api/auth/*` | aplikasi | sesi Discord (token), kecuali `/api/auth/config` yang publik |
+| `/api/gateway/v1/*` | aplikasi (API key user) | `Authorization: Bearer pb_...` |
+| `/api?url=` | proxy CORS untuk provider | hanya target HTTPS publik (jaringan internal/metadata ditolak) |
+
 ### Server Manager (AI server remote)
 
 Semua AI server dikelola dari **dashboard admin privat**

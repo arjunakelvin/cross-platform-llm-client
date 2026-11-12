@@ -1121,7 +1121,8 @@ async function handleCorsProxy(request) {
   if (targetUrl.protocol !== 'https:' && !isLocal) {
     return textResponse(request, 400, 'Only HTTPS targets are allowed.');
   }
-  // Jangan pernah dipakai untuk menembak jaringan internal / metadata.
+  // Jangan pernah dipakai untuk menembak jaringan internal / metadata
+  // (loopback, link-local, dan LAN ikut ditolak).
   if (isBlockedProxyHost(targetUrl.hostname)) {
     return textResponse(request, 400, 'Target host is not allowed.');
   }
