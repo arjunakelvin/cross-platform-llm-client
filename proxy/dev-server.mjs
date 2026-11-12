@@ -175,6 +175,11 @@ const server = createServer(async (req, res) => {
     });
     res.end(data);
   } catch (error) {
+    console.error('[dev-server]', error);
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
     res.writeHead(500, { 'Content-Type': 'text/plain' });
     res.end(String(error));
   }

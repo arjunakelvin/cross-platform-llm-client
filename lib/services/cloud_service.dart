@@ -1170,8 +1170,10 @@ class CloudService extends GetxService {
 
         final payload = trimmed.substring(5).trim();
         if (payload == '[DONE]') {
+          // Jangan berhenti di sini: gateway masih mengirim event usage
+          // (token & kredit terpakai) tepat setelah [DONE].
           finished = true;
-          break;
+          continue;
         }
 
         Map? data;
@@ -1182,6 +1184,19 @@ class CloudService extends GetxService {
           continue; // Malformed keep-alive chunk.
         }
         if (data == null) continue;
+
+        // Event usage dari gateway (dikirim di akhir stream) supaya saldo
+        // token/kredit bisa langsung turun di UI.
+        if (data['piercingblow_usage'] == true) {
+          final rawUsage = data['usage'];
+          if (rawUsage is Map) {
+            lastGatewayTokens =
+                (rawUsage['total_tokens'] as num?)?.toInt() ?? lastGatewayTokens;
+          }
+          lastGatewayCredits =
+              (data['credits'] as num?)?.toDouble() ?? lastGatewayCredits;
+          continue;
+        }
 
         final error = data['error'];
         if (error != null) {

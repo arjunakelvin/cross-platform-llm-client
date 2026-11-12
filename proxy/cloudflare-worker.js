@@ -1553,13 +1553,14 @@ async function handleGateway(request, env, pathname) {
             }
           }
         },
-        async flush() {
+        async flush(controller) {
           const promptTokens = Number(usage.prompt_tokens) || 0;
           const completionTokens = Number(usage.completion_tokens) ||
             Math.ceil(contentChars / 4);
           if (!promptTokens && !completionTokens) return;
+          let credits = 0;
           try {
-            await chargeUsage(env, account, {
+            const charged = await chargeUsage(env, account, {
               pricing,
               modelId,
               modelName: modelConfig.name || modelId,
@@ -1567,8 +1568,35 @@ async function handleGateway(request, env, pathname) {
               completionTokens,
               useCredits,
             });
+            credits = useCredits
+              ? Math.max(
+                  0,
+                  (Number(account.creditBalance) || 0) -
+                    (Number(charged.creditBalance) || 0),
+                )
+              : 0;
           } catch (_) {
             // Jangan gagalkan stream hanya karena pencatatan kuota.
+          }
+          // Header tidak bisa dikirim setelah stream mulai, jadi usage
+          // dikirim sebagai satu event SSE terakhir supaya aplikasi bisa
+          // langsung menurunkan saldo token/kredit di UI.
+          try {
+            controller.enqueue(
+              new TextEncoder().encode(
+                'data: ' + JSON.stringify({
+                  piercingblow_usage: true,
+                  usage: {
+                    prompt_tokens: promptTokens,
+                    completion_tokens: completionTokens,
+                    total_tokens: promptTokens + completionTokens,
+                  },
+                  credits: Math.round(credits * 1e8) / 1e8,
+                }) + '\n\n',
+              ),
+            );
+          } catch (_) {
+            // Stream sudah tertutup — abaikan.
           }
         },
       });
