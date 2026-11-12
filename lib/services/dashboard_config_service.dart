@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/constants.dart';
+import '../core/format.dart';
 import 'hive_service.dart';
 
 /// Nama tampilan model AI server (dari dashboard admin).
@@ -70,17 +71,17 @@ class AdminModelInfo {
   double get inputPer1M => _num(pricing['inputPer1M']);
   double get outputPer1M => _num(pricing['outputPer1M']);
 
-  /// Label harga input, contoh: `$0.0023/req` atau `$2/1M`.
+  /// Label harga input, contoh: `$0.50/req` atau `$2/1M`.
   String get inputPriceLabel {
-    if (inputPerReq > 0) return '\$$inputPerReq/req';
-    if (inputPer1M > 0) return '\$$inputPer1M/1M';
+    if (inputPerReq > 0) return '${formatPrice(inputPerReq)}/req';
+    if (inputPer1M > 0) return '${formatPrice(inputPer1M)}/1M';
     return '\$0';
   }
 
-  /// Label harga output, contoh: `$0.004/req` atau `$4/1M`.
+  /// Label harga output, contoh: `$0.40/req` atau `$4/1M`.
   String get outputPriceLabel {
-    if (outputPerReq > 0) return '\$$outputPerReq/req';
-    if (outputPer1M > 0) return '\$$outputPer1M/1M';
+    if (outputPerReq > 0) return '${formatPrice(outputPerReq)}/req';
+    if (outputPer1M > 0) return '${formatPrice(outputPer1M)}/1M';
     return '\$0';
   }
 

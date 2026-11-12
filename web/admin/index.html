@@ -418,15 +418,20 @@ async with aiohttp.ClientSession() as session:<br>
     <div class="card">
       <h2>API Key Logs</h2>
       <p style="color:var(--muted);font-size:12px;margin:0 0 8px">
-        Log siapa yang membuat API key untuk gateway.</p>
-      <button id="refreshApiKeyLogs">Refresh log</button>
+        Log siapa yang membuat API key untuk gateway. Bisa dicari &amp; dihapus.</p>
+      <div class="row" style="align-items:center;gap:8px;margin-bottom:8px">
+        <input type="search" id="apiKeyLogSearch" placeholder="Cari akun, aksi, atau prefix key…"
+               style="flex:1;min-width:180px">
+        <button id="refreshApiKeyLogs">Refresh log</button>
+        <button id="clearApiKeyLogs" class="danger">Hapus semua</button>
+      </div>
       <div class="status" id="apiKeyLogStatus"></div>
       <table>
         <thead>
-          <tr><th>Waktu</th><th>Akun</th><th>Aksi</th><th>Prefix Key</th></tr>
+          <tr><th>Waktu</th><th>Akun</th><th>Aksi</th><th>Prefix Key</th><th></th></tr>
         </thead>
         <tbody id="apiKeyLogRows">
-          <tr><td colspan="4" style="color:var(--muted)">Belum ada log.</td></tr>
+          <tr><td colspan="5" style="color:var(--muted)">Belum ada log.</td></tr>
         </tbody>
       </table>
     </div>
@@ -434,19 +439,23 @@ async with aiohttp.ClientSession() as session:<br>
     <div class="card">
       <h2>Log pemakaian AI (token &amp; kredit)</h2>
       <p style="color:var(--muted);font-size:12px;margin:0 0 8px">
-        Setiap request ke AI server manager yang tercatat: token terpakai
-        (mode token) atau kredit terpakai (mode kredit).</p>
-      <button id="refreshUsageLogs">Refresh log</button>
+        Setiap request yang tercatat: <b>token</b> (mode token) atau
+        <b>kredit</b> (mode kredit) — tidak pernah dicampur.</p>
+      <div class="row" style="align-items:center;gap:8px;margin-bottom:8px">
+        <input type="search" id="usageLogSearch" placeholder="Cari akun atau model…"
+               style="flex:1;min-width:180px">
+        <button id="refreshUsageLogs">Refresh log</button>
+      </div>
       <div class="status" id="usageLogStatus"></div>
       <table>
         <thead>
           <tr>
             <th>Waktu</th><th>Akun</th><th>Model</th>
-            <th>Token</th><th>Kredit</th><th>Mode</th>
+            <th>Pemakaian</th><th>Mode</th>
           </tr>
         </thead>
         <tbody id="usageLogRows">
-          <tr><td colspan="6" style="color:var(--muted)">Belum ada pemakaian.</td></tr>
+          <tr><td colspan="5" style="color:var(--muted)">Belum ada pemakaian.</td></tr>
         </tbody>
       </table>
     </div>
@@ -635,11 +644,36 @@ function fmtInt(value) {
   return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-// Uang dengan pemisah ribuan (mis. 12,000.500000).
+// Uang: 2 desimal + pemisah ribuan ($1,999.99 / $200.00).
+// Nilai < $0.01 tetap menampilkan desimalnya ($0.000039) agar tidak
+// terlihat seperti nol.
 function fmtMoney(value) {
   const n = Number(value || 0);
-  const parts = n.toFixed(6).split('.');
-  return fmtInt(parts[0]) + '.' + parts[1];
+  if (!isFinite(n)) return '$0.00';
+  const negative = n < 0;
+  const abs = Math.abs(n);
+  let text;
+  if (abs === 0) {
+    text = '0.00';
+  } else if (abs < 0.01) {
+    text = abs.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+  } else {
+    text = abs.toFixed(2);
+  }
+  const parts = text.split('.');
+  const head = fmtInt(parts[0]);
+  const tail = parts.length > 1 ? '.' + parts[1] : '';
+  return (negative ? '-' : '') + '$' + head + tail;
+}
+
+// Harga model: 2 desimal, tapi harga kecil (< $0.01) tetap dibaca.
+function fmtPrice(value) {
+  const n = Number(value || 0);
+  if (!isFinite(n)) return '$0';
+  const abs = Math.abs(n);
+  if (abs === 0) return '$0';
+  if (abs < 0.01) return '$' + abs.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+  return fmtMoney(abs);
 }
 
 function statTile(label, value, ratio) {
@@ -813,8 +847,9 @@ function renderAccounts() {
       '<td><select data-f="tier">' + tierOptions(a.tier || config.defaultTier) + '</select></td>' +
       '<td><input type="number" data-f="tokenBalance" min="0" value="' + (a.tokenBalance ?? 0) + '"></td>' +
       '<td class="mono">' + fmtInt(a.tokenUsed ?? 0) + '</td>' +
-      '<td><input type="number" data-f="creditBalance" min="0" step="0.01" value="' + (a.creditBalance ?? 0) + '"></td>' +
-      '<td class="mono">$' + fmtMoney(a.creditUsed ?? 0) + '</td>' +
+      '<td><input type="number" data-f="creditBalance" min="0" step="0.01" value="' +
+        (Number(a.creditBalance ?? 0)).toFixed(2) + '"></td>' +
+      '<td class="mono">' + fmtMoney(a.creditUsed ?? 0) + '</td>' +
       '<td><span class="pill ' + (a.status === 'banned' ? 'banned' : 'active') + '">' +
         (a.status === 'banned' ? 'banned' : 'active') + '</span></td>' +
       '<td><div class="actions">' +
@@ -1083,8 +1118,8 @@ function pricingLabel(model) {
   const outReq = Number(p.outputPerReq) || 0;
   const out1M = Number(p.outputPer1M) || 0;
   if (!inReq && !in1M && !outReq && !out1M) return '$0 · pakai token';
-  return 'In $' + inReq + '/req · $' + in1M + '/1M — ' +
-    'Out $' + outReq + '/req · $' + out1M + '/1M';
+  return 'In ' + fmtPrice(inReq) + '/req · ' + fmtPrice(in1M) + '/1M — ' +
+    'Out ' + fmtPrice(outReq) + '/req · ' + fmtPrice(out1M) + '/1M';
 }
 
 /// Nama file model (`qwen2.5-coder-1.5b-instruct-q4_k_m.gguf`) → nama model
@@ -1569,59 +1604,116 @@ $('gatewayServerList').addEventListener('click', async (ev) => {
 async function loadApiKeyLogs() {
   try {
     const data = await api('GET', '/api/admin/api-key-logs');
-    const logs = data.logs || [];
+    const all = data.logs || [];
+    const q = ($('apiKeyLogSearch').value || '').trim().toLowerCase();
+    const logs = q
+      ? all.filter((l) => [l.accountId, l.accountName, l.action, l.keyPrefix]
+          .map((v) => String(v || '').toLowerCase())
+          .some((v) => v.includes(q)))
+      : all;
     if (!logs.length) {
       $('apiKeyLogRows').innerHTML =
-        '<tr><td colspan="4" style="color:var(--muted)">Belum ada log.</td></tr>';
+        '<tr><td colspan="5" style="color:var(--muted)">' +
+        (all.length ? 'Tidak ada log yang cocok.' : 'Belum ada log.') +
+        '</td></tr>';
       return;
     }
-    $('apiKeyLogRows').innerHTML = logs.slice(0, 50).map((l) => {
+    $('apiKeyLogRows').innerHTML = logs.slice(0, 100).map((l) => {
       const d = new Date(l.timestamp);
       const ts = d.toLocaleString('id-ID');
       return '<tr>' +
         '<td>' + escapeHtml(ts) + '</td>' +
-        '<td>' + escapeHtml(l.accountId || '') + '</td>' +
+        '<td>' + escapeHtml(l.accountName || l.accountId || '') + '</td>' +
         '<td>' + escapeHtml(l.action || '') + '</td>' +
         '<td><code>' + escapeHtml(l.keyPrefix || '') + '</code></td>' +
+        '<td class="actions">' +
+        '<button class="danger" data-log-del="' + escapeAttr(l.id || '') +
+        '"' + (l.id ? '' : ' disabled') + '>Hapus</button></td>' +
       '</tr>';
     }).join('');
+    setStatus($('apiKeyLogStatus'), logs.length + ' log' +
+      (q ? ' (difilter "' + escapeHtml(q) + '")' : ''), null);
   } catch (e) {
     setStatus($('apiKeyLogStatus'), String(e.message || e), false);
   }
 }
 
 $('refreshApiKeyLogs').addEventListener('click', loadApiKeyLogs);
+$('apiKeyLogSearch').addEventListener('input', () => loadApiKeyLogs());
+
+// Hapus satu baris log API key.
+document.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('[data-log-del]');
+  if (!btn) return;
+  const id = btn.getAttribute('data-log-del');
+  if (!id) return;
+  ev.preventDefault();
+  try {
+    await api('DELETE', '/api/admin/api-key-logs', { id });
+    setStatus($('apiKeyLogStatus'), 'Log dihapus.', true);
+    await loadApiKeyLogs();
+  } catch (e) {
+    setStatus($('apiKeyLogStatus'), String(e.message || e), false);
+  }
+});
+
+// Hapus semua log API key.
+$('clearApiKeyLogs').addEventListener('click', async () => {
+  if (!confirm('Hapus semua log API key?')) return;
+  try {
+    await api('DELETE', '/api/admin/api-key-logs', { all: true });
+    setStatus($('apiKeyLogStatus'), 'Semua log dihapus.', true);
+    await loadApiKeyLogs();
+  } catch (e) {
+    setStatus($('apiKeyLogStatus'), String(e.message || e), false);
+  }
+});
 
 // ── Usage Logs (token & kredit) ──────────────────────────────────────────
 
 async function loadUsageLogs() {
   try {
     const data = await api('GET', '/api/admin/usage-logs');
-    const logs = data.logs || [];
+    const all = data.logs || [];
+    const q = ($('usageLogSearch').value || '').trim().toLowerCase();
+    const logs = q
+      ? all.filter((l) => [l.accountName, l.accountId, l.modelName, l.modelId]
+          .map((v) => String(v || '').toLowerCase())
+          .some((v) => v.includes(q)))
+      : all;
     if (!logs.length) {
       $('usageLogRows').innerHTML =
-        '<tr><td colspan="6" style="color:var(--muted)">Belum ada pemakaian.</td></tr>';
+        '<tr><td colspan="5" style="color:var(--muted)">' +
+        (all.length ? 'Tidak ada pemakaian yang cocok.' : 'Belum ada pemakaian.') +
+        '</td></tr>';
       return;
     }
-    $('usageLogRows').innerHTML = logs.slice(0, 50).map((l) => {
+    $('usageLogRows').innerHTML = logs.slice(0, 100).map((l) => {
       const d = new Date(l.timestamp);
       const ts = d.toLocaleString('id-ID');
+      // Tampilkan SATU jenis pemakaian sesuai mode: token ATAU kredit.
+      const isCredit = l.mode === 'credit';
+      const usage = isCredit
+        ? fmtMoney(l.credits || 0)
+        : fmtInt(l.tokens || 0) + ' token';
       return '<tr>' +
         '<td>' + escapeHtml(ts) + '</td>' +
         '<td>' + escapeHtml(l.accountName || l.accountId || '') + '</td>' +
         '<td><code>' + escapeHtml(l.modelName || l.modelId || '') + '</code></td>' +
-        '<td class="mono">' + fmtInt(l.tokens || 0) + '</td>' +
-        '<td class="mono">$' + fmtMoney(l.credits || 0) + '</td>' +
-        '<td><span class="pill ' + (l.mode === 'credit' ? 'info' : 'active') +
+        '<td class="mono">' + usage + '</td>' +
+        '<td><span class="pill ' + (isCredit ? 'info' : 'active') +
           '">' + escapeHtml(l.mode || 'token') + '</span></td>' +
       '</tr>';
     }).join('');
+    setStatus($('usageLogStatus'), logs.length + ' pemakaian' +
+      (q ? ' (difilter "' + escapeHtml(q) + '")' : ''), null);
   } catch (e) {
     setStatus($('usageLogStatus'), String(e.message || e), false);
   }
 }
 
 $('refreshUsageLogs').addEventListener('click', loadUsageLogs);
+$('usageLogSearch').addEventListener('input', () => loadUsageLogs());
 </script>
 </body>
 </html>

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import '../core/constants.dart';
+import '../core/format.dart';
 import 'dashboard_config_service.dart';
 import 'discord_service.dart';
 import 'hive_service.dart';
@@ -132,7 +133,7 @@ class CloudService extends GetxService {
     if (tokens == null && credits == null) return '';
     final parts = <String>[];
     if (tokens != null) parts.add('$tokens token');
-    if (credits != null && credits > 0) parts.add('\$${credits.toStringAsFixed(6)}');
+    if (credits != null && credits > 0) parts.add(formatMoney(credits));
     return parts.join(' · ');
   }
 
@@ -937,6 +938,12 @@ class CloudService extends GetxService {
         text.contains('page could not be found');
   }
 
+  /// True kalau server menolak autentikasi (API key invalid/expired).
+  bool _looksLikeAuthRejected(String result) {
+    if (!result.startsWith('ERROR:')) return false;
+    return result.contains('returned 401') || result.contains('returned 403');
+  }
+
   Future<String> _sendLocalOpenAICompatible(
     List<Map<String, String>> messages,
     String? imageBase64,
@@ -951,32 +958,52 @@ class CloudService extends GetxService {
     final modelOverride = proxyMode ? null : _localBackendModel;
     Object? lastError;
 
+    // API key user bisa saja sudah dihapus/kedaluwarsa → coba lagi dengan
+    // session login supaya chat tetap jalan.
+    final sessionFallback = _sessionToken;
+    final usedKey = _apiKey;
+    var retriedWithSession = false;
+
+    Future<String> call(String endpoint, {String? auth}) {
+      if (onToken != null) {
+        return _streamOpenAICompatible(
+          endpoint: endpoint,
+          providerLabel: label,
+          messages: messages,
+          imageBase64: imageBase64,
+          temperature: temperature,
+          maxTokens: maxTokens,
+          extraHeaders: headers,
+          modelOverride: modelOverride,
+          onToken: onToken,
+          authOverride: auth,
+        );
+      }
+      return _sendOpenAICompatible(
+        endpoint: endpoint,
+        providerLabel: label,
+        messages: messages,
+        imageBase64: imageBase64,
+        temperature: temperature,
+        maxTokens: maxTokens,
+        extraHeaders: headers,
+        modelOverride: modelOverride,
+        authOverride: auth,
+      );
+    }
+
     for (var i = 0; i < endpoints.length; i++) {
       final endpoint = endpoints[i];
       final isLast = i == endpoints.length - 1;
       try {
-        final result = onToken != null
-            ? await _streamOpenAICompatible(
-                endpoint: endpoint,
-                providerLabel: label,
-                messages: messages,
-                imageBase64: imageBase64,
-                temperature: temperature,
-                maxTokens: maxTokens,
-                extraHeaders: headers,
-                modelOverride: modelOverride,
-                onToken: onToken,
-              )
-            : await _sendOpenAICompatible(
-                endpoint: endpoint,
-                providerLabel: label,
-                messages: messages,
-                imageBase64: imageBase64,
-                temperature: temperature,
-                maxTokens: maxTokens,
-                extraHeaders: headers,
-                modelOverride: modelOverride,
-              );
+        var result = await call(endpoint);
+        if (_looksLikeAuthRejected(result) &&
+            !retriedWithSession &&
+            sessionFallback.isNotEmpty &&
+            sessionFallback != usedKey) {
+          retriedWithSession = true;
+          result = await call(endpoint, auth: sessionFallback);
+        }
         if (!isLast && _looksLikeCorsError(result)) {
           continue;
         }
@@ -1066,6 +1093,7 @@ class CloudService extends GetxService {
     required int? maxTokens,
     Map<String, String> extraHeaders = const {},
     String? modelOverride,
+    String? authOverride,
   }) async {
     final apiMessages = <Map<String, dynamic>>[];
 
@@ -1074,7 +1102,7 @@ class CloudService extends GetxService {
     final response = await _post(
       Uri.parse(endpoint),
       headers: {
-        'Authorization': 'Bearer $_apiKey',
+        'Authorization': 'Bearer ${authOverride ?? _apiKey}',
         'Content-Type': 'application/json',
         ...extraHeaders,
       },
@@ -1141,10 +1169,11 @@ class CloudService extends GetxService {
     required void Function(String token) onToken,
     Map<String, String> extraHeaders = const {},
     String? modelOverride,
+    String? authOverride,
   }) async {
     final request = http.Request('POST', Uri.parse(endpoint));
     request.headers.addAll({
-      'Authorization': 'Bearer $_apiKey',
+      'Authorization': 'Bearer ${authOverride ?? _apiKey}',
       'Content-Type': 'application/json',
       'Accept': 'text/event-stream',
       ...extraHeaders,

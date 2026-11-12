@@ -5,6 +5,7 @@ import 'package:get/get.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../controllers/settings_controller.dart';
+import '../core/format.dart';
 import '../core/ui.dart';
 import '../services/discord_service.dart';
 
@@ -21,22 +22,11 @@ String _fmtComma(num v) {
   return buf.toString().split('').reversed.join();
 }
 
-/// Uang dengan pemisah ribuan + desimal (kredit bisa pecahan, mis. $11.90).
-String _fmtMoney(num v) {
-  var text = v.toStringAsFixed(6);
-  if (text.contains('.')) {
-    text = text.replaceAll(RegExp(r'0+$'), '');
-    if (text.endsWith('.')) {
-      text = text.substring(0, text.length - 1);
-    }
-  }
-  final negative = text.startsWith('-');
-  if (negative) text = text.substring(1);
-  final parts = text.split('.');
-  final head = _fmtComma(int.tryParse(parts[0]) ?? 0);
-  final tail = parts.length > 1 ? '.${parts[1]}' : '';
-  return '${negative ? '-' : ''}\$$head$tail';
-}
+/// Uang dengan pemisah ribuan + 2 desimal (mis. $1,999.99).
+///
+/// Nilai sangat kecil (< $0.01) tetap menampilkan desimalnya supaya kredit
+/// kecil tidak terlihat seperti nol.
+String _fmtMoney(num v) => formatMoney(v);
 
 /// Kartu kuota token: bar menampilkan SISA kuota (memendek saat terpakai),
 /// persentase, dan peringatan saat habis.

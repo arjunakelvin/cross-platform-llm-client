@@ -7,6 +7,7 @@ import 'package:hive/hive.dart';
 import 'package:privatelm/core/constants.dart';
 import 'package:privatelm/services/app_log_service.dart';
 import 'package:privatelm/services/cloud_service.dart';
+import 'package:privatelm/services/discord_service.dart';
 import 'package:privatelm/services/hive_service.dart';
 import 'package:privatelm/services/secure_key_store.dart';
 
@@ -20,8 +21,19 @@ class _FakeWorker {
   String? listAuth;
   String? chatAuth;
   String? chatBody;
+  // Kalau true: API key ditolak (401), session token diterima.
+  bool rejectApiKey = false;
+  bool acceptSession = false;
 
   String get origin => 'http://127.0.0.1:${server.port}';
+
+  bool _authOk(String auth) {
+    if (rejectApiKey) {
+      if (acceptSession && auth == 'Bearer session-token-abc') return true;
+      return false;
+    }
+    return true;
+  }
 
   Future<void> _handle(HttpRequest req) async {
     final path = req.uri.path;
@@ -73,6 +85,14 @@ class _FakeWorker {
     if (path == '/api/gateway/v1/chat/completions') {
       chatAuth = auth;
       chatBody = await utf8.decoder.bind(req).join();
+      if (!_authOk(auth)) {
+        req.response
+          ..statusCode = 401
+          ..headers.contentType = ContentType.json
+          ..write(jsonEncode({'error': {'message': 'Invalid API key.'}}));
+        await req.response.close();
+        return;
+      }
       req.response
         ..statusCode = 200
         ..headers.contentType = ContentType.json
@@ -114,6 +134,9 @@ void main() {
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     worker = _FakeWorker(server);
     server.listen(worker._handle);
+
+    // Session login dipakai sebagai fallback kalau API key ditolak.
+    Get.put(DiscordService());
 
     await hive.setSetting(
         AppConstants.keyGatewayBaseUrl, '${worker.origin}/api/gateway/v1');
@@ -177,5 +200,29 @@ void main() {
     expect(cloud.isConfigured, isTrue);
 
     await secure.write(AppConstants.keyUserApiKey, '');
+  });
+
+  test('API key ditolak → fallback ke session login', () async {
+    // Gateway membalas 401 untuk API key lama, tapi menerima session token.
+    worker.rejectApiKey = true;
+    worker.acceptSession = true;
+
+    await hive.setSetting(AppConstants.keyCloudProvider, 'local');
+    await hive.setSetting(AppConstants.keyLocalCloudModel, 'qwen3:8b');
+    await hive.setSetting(
+        AppConstants.keyGatewayBaseUrl, '${worker.origin}/api/gateway/v1');
+    await secure.write(AppConstants.keyUserApiKey, 'pb_stale_key');
+    await hive.setSetting(
+        AppConstants.keyDiscordSessionToken, 'session-token-abc');
+
+    final cloud = CloudService();
+    final reply = await cloud.sendMessage(
+      messages: [
+        {'role': 'user', 'content': 'ping'}
+      ],
+    );
+
+    expect(reply, 'pong');
+    expect(worker.chatAuth, 'Bearer session-token-abc');
   });
 }
