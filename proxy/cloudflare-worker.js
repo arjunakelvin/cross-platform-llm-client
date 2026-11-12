@@ -1423,10 +1423,12 @@ async function chargeUsage(env, account, options) {
       accountName: account.name || '',
       modelId: options.modelId || '',
       modelName: options.modelName || options.modelId || '',
-      tokens: totalTokens,
-      // Kredit bisa sangat kecil (mis. $0.000014) — bulatkan dengan 8
-      // desimal supaya tidak jadi 0 di log.
-      credits: Math.round(credits * 1e8) / 1e8,
+      // Hanya SATU yang terisi, sesuai mode pakai:
+      //   mode token  → jumlah token
+      //   mode credit → jumlah kredit
+      // Jadi kolom log tidak pernah mencampur token & kredit.
+      tokens: useCredits ? 0 : totalTokens,
+      credits: useCredits ? Math.round(credits * 1e8) / 1e8 : 0,
       mode: useCredits ? 'credit' : 'token',
       timestamp: Date.now(),
     });
@@ -1467,7 +1469,14 @@ async function handleApiKey(request, env, pathname) {
     };
     await env.PB_KV.put(`apikey:${keyHash}`, JSON.stringify(keyData));
     // Log creation for admin audit
-    const logEntry = { accountId, action: 'create', keyPrefix: rawKey.slice(0, 8), timestamp: now };
+    const logEntry = {
+      id: crypto.randomUUID(),
+      accountId,
+      accountName: account.name || '',
+      action: 'create',
+      keyPrefix: rawKey.slice(0, 8),
+      timestamp: now,
+    };
     const existingLogs = await getJson(env.PB_KV, 'apikey_logs', []);
     existingLogs.push(logEntry);
     if (existingLogs.length > 200) existingLogs.splice(0, existingLogs.length - 200);
@@ -1623,9 +1632,15 @@ async function handleGateway(request, env, pathname) {
     }
 
     // Check tier access
+    // FREE model → bisa dipakai siapa saja (token/credit sesuai label model),
+    // tanpa restriction tier. MODEL PRO/VIP → cek tier user.
     const userTier = account.tier || config.defaultTier || 'free';
     const allowedTiers = modelConfig.tierAccess || ['free', 'pro', 'vip'];
-    if (!allowedTiers.includes(userTier)) {
+    const isFreeModel = allowedTiers.includes('free');
+    if (isFreeModel) {
+      // Model FREE → semua tier boleh gunakan (tanpa restriction).
+      // Pembagian token/credit akan diatur berdasarkan label model di bawah.
+    } else if (!allowedTiers.includes(userTier)) {
       return jsonResponse(request, 403, {
         error: `Model "${modelId}" requires tier: ${allowedTiers.join(', ')}. Your tier: ${userTier}`,
       });
@@ -1651,7 +1666,12 @@ async function handleGateway(request, env, pathname) {
     const isFreeModel = tierAccess.includes('free');
     const hasPrice = inputPerReq > 0 || outputPerReq > 0 ||
       inputPer1M > 0 || outputPer1M > 0;
-    const useCredits = !isFreeModel && hasPrice;
+    // Gunakan kredit jika model PRO/VIP (tidak ada "free" di tierAccess).
+// MODEL FREE → selalu pakai token (harga $0 atau >$0 tidak mengubah mode).
+// MODEL PRO/VIP → selalu pakai kredit (harga $0 atau >$0 tidak mengubah mode).
+// Ini sesuai aturan: FREE → token, PRO/VIP → kredit, tidak dicampur.
+const isFreeModel = tierAccess.includes('free');
+const useCredits = !isFreeModel;
 
     if (useCredits) {
       // Estimasi minimum: harga per-request kalau ada, selain itu cukup
@@ -1945,7 +1965,35 @@ async function handleServerModels(request, env, pathname) {
   // GET /api/admin/api-key-logs
   if (pathname === '/api/admin/api-key-logs' && request.method === 'GET') {
     const logs = await getJson(env.PB_KV, 'apikey_logs', []);
-    return jsonResponse(request, 200, { logs: logs.reverse() });
+    return jsonResponse(request, 200, { logs: logs.slice().reverse() });
+  }
+
+  // DELETE /api/admin/api-key-logs — hapus satu entri (body {id}) atau
+  // semua entri kalau body {all: true} / tanpa id.
+  if (pathname === '/api/admin/api-key-logs' && request.method === 'DELETE') {
+    let body = {};
+    try {
+      body = await request.json();
+    } catch {
+      body = {};
+    }
+    const logs = await getJson(env.PB_KV, 'apikey_logs', []);
+    const id = body && body.id ? String(body.id) : '';
+    let next = logs;
+    if (id) {
+      next = logs.filter((l) => String(l.id || '') !== id);
+    } else if (body && body.all) {
+      next = [];
+    } else {
+      return jsonResponse(request, 400, {
+        error: 'Sebutkan id log yang mau dihapus (atau all: true).',
+      });
+    }
+    await env.PB_KV.put('apikey_logs', JSON.stringify(next));
+    return jsonResponse(request, 200, {
+      ok: true,
+      removed: logs.length - next.length,
+    });
   }
 
   // GET /api/admin/usage-logs — pemakaian token & credit per request.
