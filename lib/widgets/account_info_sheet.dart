@@ -8,6 +8,294 @@ import '../controllers/settings_controller.dart';
 import '../core/ui.dart';
 import '../services/discord_service.dart';
 
+/// Angka dengan pemisah ribuan (mis. 12,000).
+String _fmtComma(num v) {
+  final s = v is int ? v.toString() : v.toStringAsFixed(0);
+  final buf = StringBuffer();
+  var count = 0;
+  for (var i = s.length - 1; i >= 0; i--) {
+    if (count > 0 && count % 3 == 0) buf.write(',');
+    buf.write(s[i]);
+    count++;
+  }
+  return buf.toString().split('').reversed.join();
+}
+
+/// Uang dengan pemisah ribuan + desimal (kredit bisa pecahan, mis. $11.90).
+String _fmtMoney(num v) {
+  var text = v.toStringAsFixed(6);
+  if (text.contains('.')) {
+    text = text.replaceAll(RegExp(r'0+$'), '');
+    if (text.endsWith('.')) {
+      text = text.substring(0, text.length - 1);
+    }
+  }
+  final negative = text.startsWith('-');
+  if (negative) text = text.substring(1);
+  final parts = text.split('.');
+  final head = _fmtComma(int.tryParse(parts[0]) ?? 0);
+  final tail = parts.length > 1 ? '.${parts[1]}' : '';
+  return '${negative ? '-' : ''}\$$head$tail';
+}
+
+/// Kartu kuota token: bar menampilkan SISA kuota (memendek saat terpakai),
+/// persentase, dan peringatan saat habis.
+class TokenQuotaCard extends StatelessWidget {
+  final int maxTokens;
+  final int used;
+  final int remaining;
+  final double ratio;
+  final int resetDays;
+  final String countdown;
+  final bool isLoggedIn;
+  final Color? limitLabelColor;
+
+  const TokenQuotaCard({
+    super.key,
+    required this.maxTokens,
+    required this.used,
+    required this.remaining,
+    required this.ratio,
+    required this.resetDays,
+    required this.countdown,
+    required this.isLoggedIn,
+    this.limitLabelColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: t.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: t.hairline),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Flexible(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.token_rounded, size: 18, color: t.accent),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text('Kuota Token AI',
+                          style: t.bodyStrong,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  isLoggedIn
+                      ? '${_fmtComma(maxTokens)} Limit (Login)'
+                      : '${_fmtComma(maxTokens)} Limit (Guest)',
+                  style: t.small.copyWith(
+                    color: limitLabelColor ?? t.muted,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  textAlign: TextAlign.right,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          QuotaProgressBar(
+            remaining: (1 - ratio).clamp(0.0, 1.0),
+            color: ratio >= 0.8
+                ? t.red
+                : (ratio >= 0.5 ? t.orange : t.green),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Flexible(
+                child: Text(
+                  '${(ratio * 100).round()}% terpakai · ${_fmtComma(used)} token',
+                  style: t.small.copyWith(
+                    color: ratio >= 0.5 ? t.orange : t.muted,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  '${_fmtComma(remaining)} / ${_fmtComma(maxTokens)} tersisa',
+                  style: t.small.copyWith(
+                    color: remaining <= 0 ? t.red : t.text,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  textAlign: TextAlign.right,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Icon(Icons.update_rounded, size: 14, color: t.muted),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Reset setiap $resetDays hari · $countdown',
+                  style: t.small.copyWith(color: t.muted),
+                ),
+              ),
+            ],
+          ),
+          if (remaining <= 0) ...[
+            const SizedBox(height: 10),
+            AppNotice(
+              'Kuota token sudah habis. Kuota akan reset otomatis sesuai '
+              'jadwal di atas.',
+              icon: Icons.warning_amber_rounded,
+              color: t.red,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Kartu kredit: sisa kredit (memendek saat terpakai), persentase, dan
+/// peringatan saat kredit habis.
+class CreditQuotaCard extends StatelessWidget {
+  final double creditBalance;
+  final double creditUsed;
+
+  const CreditQuotaCard({
+    super.key,
+    required this.creditBalance,
+    required this.creditUsed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final total = creditBalance + creditUsed;
+    final ratio =
+        total <= 0 ? 0.0 : (creditUsed / total).clamp(0.0, 1.0).toDouble();
+    final left = (1 - ratio).clamp(0.0, 1.0).toDouble();
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: t.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: t.hairline),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.payments_outlined, size: 18, color: t.green),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text('Kredit AI',
+                    style: t.bodyStrong,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Flexible(
+                child: Text(
+                  _fmtMoney(creditBalance),
+                  style: t.bodyStrong,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  '${_fmtMoney(creditUsed)} terpakai',
+                  style: t.small.copyWith(color: t.muted),
+                  textAlign: TextAlign.right,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          QuotaProgressBar(
+            remaining: left,
+            color: ratio >= 0.8
+                ? t.red
+                : (ratio >= 0.5 ? t.orange : t.green),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Flexible(
+                child: Text(
+                  '${(ratio * 100).round()}% terpakai',
+                  style: t.small.copyWith(
+                    color: ratio >= 0.5 ? t.orange : t.muted,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  '${_fmtMoney(creditBalance)} tersisa',
+                  style: t.small.copyWith(
+                    color: creditBalance <= 0 ? t.red : t.text,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  textAlign: TextAlign.right,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          if (creditBalance <= 0) ...[
+            const SizedBox(height: 10),
+            AppNotice(
+              'Kredit sudah habis. Isi kredit di dashboard admin atau pakai '
+              'model berbiaya \$0 yang memakai kuota token.',
+              icon: Icons.warning_amber_rounded,
+              color: t.red,
+            ),
+          ],
+          const SizedBox(height: 4),
+          Text(
+            'Kredit dipakai untuk model dengan harga di atas \$0. '
+            'Model \$0 memakai kuota token.',
+            style: t.small.copyWith(color: t.muted),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Modal bottom sheet untuk menampilkan informasi akun user secara lengkap di web.
 Future<void> showAccountInfoSheet(BuildContext context) {
   final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -24,35 +312,6 @@ Future<void> showAccountInfoSheet(BuildContext context) {
 
 class AccountInfoSheet extends StatelessWidget {
   const AccountInfoSheet({super.key});
-
-  static String _fmtComma(num v) {
-    final s = v is int ? v.toString() : v.toStringAsFixed(0);
-    final buf = StringBuffer();
-    var count = 0;
-    for (var i = s.length - 1; i >= 0; i--) {
-      if (count > 0 && count % 3 == 0) buf.write(',');
-      buf.write(s[i]);
-      count++;
-    }
-    return buf.toString().split('').reversed.join();
-  }
-
-  /// Uang dengan pemisah ribuan + desimal (kredit bisa pecahan, mis. $11.90).
-  static String _fmtMoney(num v) {
-    var text = v.toStringAsFixed(6);
-    if (text.contains('.')) {
-      text = text.replaceAll(RegExp(r'0+$'), '');
-      if (text.endsWith('.')) {
-        text = text.substring(0, text.length - 1);
-      }
-    }
-    final negative = text.startsWith('-');
-    if (negative) text = text.substring(1);
-    final parts = text.split('.');
-    final head = _fmtComma(int.tryParse(parts[0]) ?? 0);
-    final tail = parts.length > 1 ? '.${parts[1]}' : '';
-    return '${negative ? '-' : ''}\$$head$tail';
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -184,203 +443,23 @@ class AccountInfoSheet extends StatelessWidget {
                 const SizedBox(height: 16),
 
                 // Card Kuota Token
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: t.surface,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: t.hairline),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Row(
-                            children: [
-                              Icon(Icons.token_rounded, size: 18, color: t.accent),
-                              const SizedBox(width: 8),
-                              Flexible(
-                                child: Text('Kuota Token AI',
-                                    style: t.bodyStrong,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(width: 8),
-                          Flexible(
-                            child: Text(
-                              isLoggedIn
-                                  ? '${_fmtComma(maxTokens)} Limit (Login)'
-                                  : '${_fmtComma(maxTokens)} Limit (Guest)',
-                              style: t.small.copyWith(
-                                color: isLoggedIn ? discordPurple : t.muted,
-                                fontWeight: FontWeight.w600,
-                              ),
-                              textAlign: TextAlign.right,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      // Bar menampilkan SISA kuota (memendek saat terpakai).
-                      QuotaProgressBar(
-                        remaining: (1 - ratio).clamp(0.0, 1.0),
-                        color: ratio >= 0.8
-                            ? t.red
-                            : (ratio >= 0.5 ? t.orange : t.green),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Flexible(
-                            child: Text(
-                              '${(ratio * 100).round()}% terpakai · '
-                              '${_fmtComma(used)} token',
-                              style: t.small.copyWith(
-                                color: ratio >= 0.5 ? t.orange : t.muted,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Flexible(
-                            child: Text(
-                              '${_fmtComma(remaining)} / ${_fmtComma(maxTokens)} tersisa',
-                              style: t.small.copyWith(
-                                color: remaining <= 0 ? t.red : t.text,
-                                fontWeight: FontWeight.w600,
-                              ),
-                              textAlign: TextAlign.right,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Icon(Icons.update_rounded, size: 14, color: t.muted),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              'Reset setiap $resetDays hari · $countdown',
-                              style: t.small.copyWith(color: t.muted),
-                            ),
-                          ),
-                        ],
-                      ),
-                      if (remaining <= 0) ...[
-                        const SizedBox(height: 10),
-                        AppNotice(
-                          'Kuota token sudah habis. Kuota akan reset otomatis '
-                          'sesuai jadwal di atas.',
-                          icon: Icons.warning_amber_rounded,
-                          color: t.red,
-                        ),
-                      ],
-                    ],
-                  ),
+                TokenQuotaCard(
+                  maxTokens: maxTokens,
+                  used: used,
+                  remaining: remaining,
+                  ratio: ratio,
+                  resetDays: resetDays,
+                  countdown: countdown,
+                  isLoggedIn: isLoggedIn,
+                  limitLabelColor: isLoggedIn ? discordPurple : t.muted,
                 ),
 
                 const SizedBox(height: 14),
 
                 // Card Kredit
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: t.surface,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: t.hairline),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(Icons.payments_outlined, size: 18, color: t.green),
-                          const SizedBox(width: 8),
-                          Text('Kredit AI', style: t.bodyStrong),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            _fmtMoney(settings.creditBalance.value),
-                            style: t.bodyStrong,
-                          ),
-                          Text(
-                            '${_fmtMoney(settings.creditUsed.value)} terpakai',
-                            style: t.small.copyWith(color: t.muted),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      // Bar sisa kredit (memendek saat terpakai).
-                      QuotaProgressBar(
-                        remaining: creditLeft,
-                        color: creditRatio >= 0.8
-                            ? t.red
-                            : (creditRatio >= 0.5 ? t.orange : t.green),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Flexible(
-                            child: Text(
-                              '${(creditRatio * 100).round()}% terpakai',
-                              style: t.small.copyWith(
-                                color:
-                                    creditRatio >= 0.5 ? t.orange : t.muted,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Flexible(
-                            child: Text(
-                              '${_fmtMoney(settings.creditBalance.value)} tersisa',
-                              style: t.small.copyWith(
-                                color: settings.creditBalance.value <= 0
-                                    ? t.red
-                                    : t.text,
-                                fontWeight: FontWeight.w600,
-                              ),
-                              textAlign: TextAlign.right,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                      if (settings.creditBalance.value <= 0) ...[
-                        const SizedBox(height: 10),
-                        AppNotice(
-                          'Kredit sudah habis. Isi kredit di dashboard admin '
-                          'atau pakai model berbiaya \$0 yang memakai kuota token.',
-                          icon: Icons.warning_amber_rounded,
-                          color: t.red,
-                        ),
-                      ],
-                      const SizedBox(height: 4),
-                      Text(
-                        'Kredit dipakai untuk model dengan harga di atas \$0. '
-                        'Model \$0 memakai kuota token.',
-                        style: t.small.copyWith(color: t.muted),
-                      ),
-                    ],
-                  ),
+                CreditQuotaCard(
+                  creditBalance: settings.creditBalance.value,
+                  creditUsed: settings.creditUsed.value,
                 ),
 
                 const SizedBox(height: 14),
