@@ -318,48 +318,7 @@ class AccountInfoSheet extends StatelessWidget {
                         ),
                         if (user.email.isNotEmpty)
                           _infoItem(context, label: 'Email', value: user.email),
-                        _infoItem(
-                          context,
-                          label: 'API Gateway',
-                          value: settings.gatewayBaseUrl,
-                          trailing: InkWell(
-                            borderRadius: BorderRadius.circular(6),
-                            onTap: () {
-                              Clipboard.setData(
-                                  ClipboardData(text: settings.gatewayBaseUrl));
-                              showToast(
-                                'Base URL disalin',
-                                'Base URL gateway disalin ke clipboard.',
-                                tone: ToastTone.success,
-                              );
-                            },
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 8, vertical: 4),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.copy_rounded,
-                                      size: 13, color: t.accent),
-                                  const SizedBox(width: 4),
-                                  Text('Salin',
-                                      style: t.small.copyWith(color: t.accent)),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
                         _infoItem(context, label: 'Tipe Akun', value: 'Discord Member (${accountTier.toUpperCase()})'),
-                        if (settings.userApiKeyPrefix.value.isNotEmpty ||
-                            settings.userApiKey.value.isNotEmpty)
-                          _infoItem(
-                            context,
-                            label: 'AI API key',
-                            value: settings.userApiKeyPrefix.value.isNotEmpty
-                                ? settings.userApiKeyPrefix.value
-                                : 'Tersimpan di perangkat',
-                          ),
-                        _infoItem(context, label: 'Kredit Berbayar', value: '\$${_fmtComma(settings.creditBalance.value)}'),
                       ] else ...[
                         _infoItem(context, label: 'Status Login', value: 'Belum terhubung ke Discord'),
                         _infoItem(context, label: 'Kuota Saat Ini', value: '${_fmtComma(maxTokens)} Token (Guest)'),

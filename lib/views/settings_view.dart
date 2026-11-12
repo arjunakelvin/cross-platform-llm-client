@@ -482,29 +482,11 @@ class SettingsView extends GetView<SettingsController> {
           children: [
             Text('Base URL gateway', style: t.bodyStrong),
             const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: SelectableText(
-                    gateway,
-                    style: t.mono.copyWith(fontSize: 13),
-                    maxLines: 2,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                PillButton(
-                  label: 'Salin',
-                  icon: Icons.copy_rounded,
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: gateway));
-                    showToast(
-                      'Base URL disalin',
-                      gateway,
-                      tone: ToastTone.success,
-                    );
-                  },
-                ),
-              ],
+            // Base URL ditampilkan saja (salin manual kalau perlu).
+            SelectableText(
+              gateway,
+              style: t.mono.copyWith(fontSize: 13),
+              maxLines: 2,
             ),
             const SizedBox(height: 14),
             Text('API key kamu', style: t.bodyStrong),
@@ -513,10 +495,30 @@ class SettingsView extends GetView<SettingsController> {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  SelectableText(
-                    fullKey,
-                    style: t.mono.copyWith(fontSize: 13),
-                    maxLines: 2,
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: SelectableText(
+                          fullKey,
+                          style: t.mono.copyWith(fontSize: 13),
+                          maxLines: 2,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      PillButton(
+                        label: 'Salin key',
+                        icon: Icons.copy_rounded,
+                        onPressed: () {
+                          Clipboard.setData(ClipboardData(text: fullKey));
+                          showToast(
+                            'API key disalin',
+                            'Tempel key ini di aplikasi atau SDK kamu.',
+                            tone: ToastTone.success,
+                          );
+                        },
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 4),
                   Text(
@@ -582,17 +584,6 @@ class SettingsView extends GetView<SettingsController> {
                               );
                             }
                           },
-                  ),
-                if (fullKey.isNotEmpty)
-                  PillButton(
-                    label: 'Salin key',
-                    icon: Icons.copy_rounded,
-                    onPressed: () {
-                      Clipboard.setData(ClipboardData(text: fullKey));
-                      showToast('API key disalin',
-                          'Tempel key ini di aplikasi atau SDK kamu.',
-                          tone: ToastTone.success);
-                    },
                   ),
                 PillButton(
                   label: 'Tes koneksi',
