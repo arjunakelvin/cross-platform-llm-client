@@ -7,27 +7,19 @@ const REQUEST_TIMEOUT_MS = 120000;
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
 /**
- * Host yang tidak boleh jadi target proxy (SSRF): jaringan internal,
- * link-local, metadata cloud, dan loopback.
+ * Host yang TIDAK boleh jadi target proxy: endpoint metadata cloud
+ * (AWS/GCP/Azure). IP private lain tetap boleh karena AI server user
+ * sering ada di jaringan lokal.
  */
 function isBlockedHost(hostname) {
   const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
   if (!host) return true;
-  if (host === 'localhost' || host.endsWith('.localhost')) return true;
-  if (host === 'metadata.google.internal' || host.endsWith('.internal')) {
+  if (host === '169.254.169.254') return true;
+  if (host === '100.100.100.200') return true;
+  if (host === 'metadata.google.internal' || host === 'metadata.goog') {
     return true;
   }
-  if (host === '::1' || host === '0.0.0.0') return true;
-  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4) {
-    const a = Number(v4[1]);
-    const b = Number(v4[2]);
-    if (a === 10 || a === 127 || a === 0) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true;
-  }
+  if (host === 'fd00:ec2::254') return true;
   return false;
 }
 

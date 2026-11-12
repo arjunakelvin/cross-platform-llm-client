@@ -46,7 +46,7 @@ user memakai AI server tersebut lewat **gateway** dengan **API key sendiri**.
 | **Monitoring per VPS** | CPU, RAM, Disk, Network (traffic up/down) tiap VPS, plus tombol **Start / Stop / Lihat log** untuk **setiap proses AI** di VPS tersebut. |
 | **Gateway OpenAI-compatible** | `POST https://piercingblow.ai.id/api/gateway/v1/chat/completions` dengan `Authorization: Bearer pb_...` (API key milik user). Mendukung streaming (SSE). |
 | **API key per akun** | User buat key sendiri di aplikasi (Settings → AI API key). Nilai penuhnya hanya ditampilkan sekali, disimpan terenkripsi di perangkat. |
-| **Token & kredit** | Model `$0` memotong kuota token; model `>$0` memotong kredit. Sisa & terpakai tampil real-time di aplikasi. |
+| **Token & kredit** | Model berlabel **FREE** memotong kuota token; model berlabel **PRO/VIP** memotong kredit (tidak tercampur). Sisa & terpakai tampil real-time di aplikasi. |
 | **Log pemakaian** | Tiap request tercatat (akun, model, token, kredit, mode) → tabel **Log pemakaian AI** di dashboard. |
 | **Log API key** | Siapa membuat API key tercatat di dashboard (**API Key Logs**). |
 | **Cache hit rate** | Statistik cache daftar model 24 jam → tampil di halaman **Settings → AI API key**. |
@@ -118,8 +118,9 @@ Klik **Edit** pada model → ubah:
   (kalau `/req` diisi, `/1M` diabaikan untuk sisi itu),
 - **Context size** & **Max output**.
 
-> Harga `$0` → pemakaian memotong **kuota token**.
-> Harga `>$0` → pemakaian memotong **kredit** akun.
+> **Label model** menentukan dompet yang dipotong: berlabel **FREE** →
+> kuota **token**, berlabel **PRO/VIP** → **kredit** (tidak tercampur).
+> Harga `$0` di sisi itu → mode tersebut **gratis**.
 
 > Model yang AI-nya belum jalan ditandai **"AI mati"**: harga & tier tetap
 > disimpan, tapi modelnya tidak muncul di tab Model List pengguna. Nyalakan
@@ -136,21 +137,37 @@ Klik **Edit** pada model → ubah:
 
 ## Aturan token vs kredit
 
-Aturan ditentukan oleh **harga model** yang diatur di dashboard (bukan tier-nya).
-Tier hanya menentukan **siapa boleh memakai** model tersebut.
+Aturan ditentukan oleh **label tier model** yang diatur di dashboard.
+Tier model juga menentukan **siapa boleh memakai** model tersebut.
 
-| Harga model | Yang dipotong | Tampilan di aplikasi |
+| Label model | Yang dipotong | Tampilan di aplikasi |
 | --- | --- | --- |
-| `$0` (per req atau per 1M) | kuota **token** | bar **Kuota Token AI** memendek, "terpakai" naik, "sisa" turun |
-| `>$0` | **kredit** | bar **Kredit AI** memendek, "terpakai" naik, "sisa" turun |
+| **FREE** (tier *Free* dicentang) | kuota **token** | bar **Kuota Token AI** memendek, "terpakai" naik, "sisa" turun |
+| **PRO / VIP** (tier *Free* **tidak** dicentang) | **kredit** | bar **Kredit AI** memendek, "terpakai" naik, "sisa" turun |
 
-Contoh nyata (harga input `$0.0045` per request, saldo awal `$12`):
+Jadi **token & kredit tidak pernah tercampur**: satu request hanya akan
+memotong satu sisi — model FREE memotong token, model PRO/VIP memotong
+kredit. User **Pro/VIP** pun tetap seperti itu: memakai model FREE tetap
+memotong tokennya, memakai model PRO/VIP memotong kreditnya.
+
+Harga di dashboard (`$ per request` / `$ per 1M token`) menentukan **berapa**
+yang dipotong di sisi tersebut. Harga `$0` di mode itu → **gratis**, tidak
+ada pemotongan sama sekali.
+
+Dialog edit model menampilkan label tagihan yang aktif secara langsung
+(*"Label model: FREE → pemakaian dipotong dari kuota TOKEN user"*).
+
+Contoh nyata (model PRO/VIP, harga input `$0.0045` per request, saldo awal
+`$12`):
 
 | Request | Sisa kredit | Terpakai | Token limit |
 | --- | --- | --- | --- |
 | 0 | `$12` | `$0` | `20,000,000` (tidak berubah) |
 | 1 | `$11.9955` | `$0.0045` | `20,000,000` (tidak berubah) |
 | 4 | `$11.982` | `$0.018` | `20,000,000` (tidak berubah) |
+
+Kalau model yang sama dilabeli **FREE**, 4 request itu memotong **token**
+(`tokenUsed` naik 4× jumlah token) dan **kredit tetap `$12`**.
 
 Semua angka memakai **pemisah ribuan** (`$1,234.5`, `20,000,000`) dan harga
 kecil tetap presisi (`$0.0045`).

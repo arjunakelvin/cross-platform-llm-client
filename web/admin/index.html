@@ -349,8 +349,10 @@ async with aiohttp.ClientSession() as session:<br>
       <div class="hint" id="modelDialogServer" style="margin:0 0 6px"></div>
       <div class="hint" style="margin:0 0 6px">
         Model ID terdeteksi otomatis dari server dan tidak bisa ditambah
-        manual. Harga <span class="mono">$0</span> di /req dan /1M = pemakaian
-        memotong kuota token user; harga &gt; 0 = memotong credit.</div>
+        manual. <b>Model berlabel FREE</b> memakai kuota token user,
+        <b>model berlabel PRO/VIP</b> memakai kredit user — jadi token &amp;
+        kredit tidak tercampur. Harga di /req atau /1M = biaya per pemakaian
+        (0 = gratis untuk mode tersebut).</div>
       <div class="row">
         <div>
           <label for="smModelId">Model ID (dari server, read-only)</label>
@@ -383,6 +385,7 @@ async with aiohttp.ClientSession() as session:<br>
           <input type="checkbox" id="smTierVip" checked> VIP
         </label>
       </div>
+      <div class="hint" id="smBillingMode" style="margin:-2px 0 10px"></div>
       <label>Pricing input</label>
       <div class="row">
         <div>
@@ -1253,7 +1256,33 @@ function fillModelFormFrom(model) {
   $('smInputPer1M').value = p.inputPer1M || 0;
   $('smOutputPerReq').value = p.outputPerReq || 0;
   $('smOutputPer1M').value = p.outputPer1M || 0;
+  updateBillingModeHint();
 }
+
+/// Aturan tagihan (sama dengan Worker):
+///   model berlabel FREE  → dipotong dari kuota TOKEN user
+///   model berlabel PRO/VIP → dipotong dari KREDIT user
+function updateBillingModeHint() {
+  const el = $('smBillingMode');
+  if (!el) return;
+  const isFree = $('smTierFree').checked;
+  const priced = ['smInputPerReq', 'smInputPer1M', 'smOutputPerReq',
+    'smOutputPer1M'].some((id) => (Number($(id).value) || 0) > 0);
+  const label = isFree ? 'FREE' : 'PRO/VIP';
+  const wallet = isFree ? 'kuota <b>TOKEN</b> user' : '<b>KREDIT</b> user';
+  let text = 'Label model: <b>' + label + '</b> → pemakaian dipotong dari ' +
+    wallet + '.';
+  if (!priced) {
+    text += ' Harga 0 → mode ini <b>gratis</b> (tidak ada pemotongan).';
+  }
+  el.innerHTML = text;
+}
+
+['smTierFree', 'smTierPro', 'smTierVip', 'smInputPerReq', 'smInputPer1M',
+  'smOutputPerReq', 'smOutputPer1M'].forEach((id) => {
+  const node = $(id);
+  if (node) node.addEventListener('input', updateBillingModeHint);
+});
 
 function fillServerFormFrom(server) {
   $('srvId').value = server ? server.id : '';

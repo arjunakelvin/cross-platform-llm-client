@@ -389,6 +389,9 @@ class SettingsController extends GetxController {
 
   String get selectedCloudModelName {
     switch (cloudProvider.value) {
+      case 'local':
+        // Model AI server yang dipilih di tab Model List (model ID).
+        return localCloudModel.value;
       case 'anthropic':
         return anthropicModel.value;
       case 'google':

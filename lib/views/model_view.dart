@@ -743,8 +743,10 @@ class ModelView extends GetView<ModelController> {
                     children: [
                       Flexible(
                         child: Text(
-                          model.name,
-                          style: t.bodyStrong,
+                          model.modelId,
+                          style: t.bodyStrong.copyWith(
+                            fontFamily: t.mono.fontFamily,
+                          ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -757,7 +759,7 @@ class ModelView extends GetView<ModelController> {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    model.modelId,
+                    model.name.isEmpty ? model.modelId : model.name,
                     style: t.small.copyWith(color: t.muted),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,

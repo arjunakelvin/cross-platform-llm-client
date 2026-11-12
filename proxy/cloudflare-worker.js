@@ -1242,25 +1242,19 @@ async function handleBotApi(request, env, pathname) {
   return jsonResponse(request, 404, { error: 'Unknown bot endpoint.' });
 }
 
-/// Host yang tidak boleh dipakai sebagai target proxy (SSRF): jaringan
-/// internal, link-local, metadata cloud, dan loopback selain dev lokal.
+/// Host yang TIDAK boleh jadi target proxy: endpoint metadata cloud
+/// (AWS/GCP/Azure) yang bisa dipakai mencuri kredensial instance.
+/// IP private lain tetap boleh — AI server user sering ada di jaringan
+/// lokal (192.168.x, 10.x, atau 127.0.0.1).
 function isBlockedProxyHost(hostname) {
   const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
   if (!host) return true;
-  if (host === 'localhost' || host.endsWith('.localhost')) return true;
-  if (host === 'metadata.google.internal' || host.endsWith('.internal')) {
+  if (host === '169.254.169.254') return true;
+  if (host === '100.100.100.200') return true;
+  if (host === 'metadata.google.internal' || host === 'metadata.goog') {
     return true;
   }
-  if (host === '::1' || host === '0.0.0.0') return true;
-  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4) {
-    const [a, b] = [Number(v4[1]), Number(v4[2])];
-    if (a === 10 || a === 127 || a === 0) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true;
-  }
+  if (host === 'fd00:ec2::254') return true;
   return false;
 }
 
@@ -1598,8 +1592,18 @@ async function handleGateway(request, env, pathname) {
     const outputPerReq = Number(pricing.outputPerReq) || 0;
     const inputPer1M = Number(pricing.inputPer1M) || 0;
     const outputPer1M = Number(pricing.outputPer1M) || 0;
-    const useCredits = inputPerReq > 0 || outputPerReq > 0 ||
+    // Aturan tagihan (tier dibaca dari LABEL model):
+    //   - model berlabel FREE  → dipotong dari kuota token
+    //   - model berlabel PRO/VIP → dipotong dari kredit
+    // Jadi user Pro/VIP tidak mencampur token & kredit: model free tetap
+    // memakai token, model premium memakai kredit.
+    const tierAccess = Array.isArray(modelConfig.tierAccess)
+      ? modelConfig.tierAccess
+      : ['free', 'pro', 'vip'];
+    const isFreeModel = tierAccess.includes('free');
+    const hasPrice = inputPerReq > 0 || outputPerReq > 0 ||
       inputPer1M > 0 || outputPer1M > 0;
+    const useCredits = !isFreeModel && hasPrice;
 
     if (useCredits) {
       // Estimasi minimum: harga per-request kalau ada, selain itu cukup

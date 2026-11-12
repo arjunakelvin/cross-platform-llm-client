@@ -45,16 +45,15 @@ class AdminModelInfo {
     return tierAccess.contains(normalized);
   }
 
-  bool get usesTokens {
-    final inputPerReq = _num(pricing['inputPerReq']);
-    final inputPer1M = _num(pricing['inputPer1M']);
-    final outputPerReq = _num(pricing['outputPerReq']);
-    final outputPer1M = _num(pricing['outputPer1M']);
-    return inputPerReq <= 0 &&
-        inputPer1M <= 0 &&
-        outputPerReq <= 0 &&
-        outputPer1M <= 0;
+  /// Mode tagihan model — sama dengan aturan Worker:
+  /// model berlabel **FREE** → kuota token, model **PRO/VIP** → kredit.
+  bool get usesCredits {
+    final priced = inputPerReq > 0 || outputPerReq > 0 ||
+        inputPer1M > 0 || outputPer1M > 0;
+    return !tierAccess.contains('free') && priced;
   }
+
+  bool get usesTokens => !usesCredits;
 
   // Harga yang diatur admin di dashboard (per request atau per 1M token).
   double get inputPerReq => _num(pricing['inputPerReq']);
