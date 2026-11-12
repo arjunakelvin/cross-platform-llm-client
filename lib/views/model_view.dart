@@ -418,7 +418,7 @@ class ModelView extends GetView<ModelController> {
     final providerName = providerId == 'custom'
         ? settings.customCloudName.value
         : provider?.name ?? providerId;
-    final model = cloudModels.activeModelFor(providerId);
+    final model = cloudModels.activeModelDisplayName(providerId);
     final hasSelectedModel =
         cloudModels.canSelectModel(providerId) && model.isNotEmpty;
 
@@ -857,7 +857,7 @@ class ModelView extends GetView<ModelController> {
     final isCustom = provider.id == 'custom';
     final isActive = cloud.activeProvider == provider.id;
     final canUse = cloud.canSelectModel(provider.id);
-    final model = cloud.activeModelFor(provider.id);
+    final model = cloud.activeModelDisplayName(provider.id);
     final hasSelectedModel = canUse && model.isNotEmpty;
     final name = isCustom ? settings.customCloudName.value : provider.name;
     final error = cloud.errorByProvider[provider.id];
@@ -995,7 +995,7 @@ class ModelView extends GetView<ModelController> {
       context,
       builder: (ctx) => Obx(() {
         final t = AppTokens.of(ctx);
-        final model = cloud.activeModelFor(provider.id);
+        final model = cloud.activeModelDisplayName(provider.id);
         final configured = cloud.isConfigured(provider.id);
         final name = isCustom ? settings.customCloudName.value : provider.name;
 
@@ -1637,6 +1637,9 @@ class ModelView extends GetView<ModelController> {
     final canUse = cloud.canSelectModel(providerId);
     final isActive = isActiveProvider && normalized == activeModel && canUse;
     final tags = cloud.modelTagsFor(providerId, id);
+    // Tampilkan nama model (bukan nama file .gguf) — request tetap memakai
+    // model ID.
+    final label = cloud.displayNameForModel(providerId, normalized);
 
     Future<void> select() async {
       if (!canUse) {
@@ -1664,7 +1667,7 @@ class ModelView extends GetView<ModelController> {
             children: [
               Expanded(
                 child: Text(
-                  normalized,
+                  label,
                   style: t.body.copyWith(
                     fontSize: 14,
                     fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,

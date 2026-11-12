@@ -164,11 +164,14 @@ class CloudModelController extends GetxController {
 
   String get activeProvider => _settings.cloudProvider.value;
 
+  /// Model ID yang aktif untuk provider ini.
+  ///
+  /// PENTING: ini **model ID** (kunci ke gateway), bukan nama tampilan.
+  /// Yang tampil di UI pakai [activeModelDisplayName].
   String activeModelFor(String provider) {
     switch (provider) {
       case 'local':
-        // Nama tampilan model (dari dashboard admin), bukan nama file .gguf.
-        return _settings.localCloudModelDisplayName;
+        return _settings.localCloudModel.value;
       case 'openrouter':
         return _settings.openRouterModel.value;
       case 'deepseek':
@@ -182,6 +185,29 @@ class CloudModelController extends GetxController {
       default:
         return _settings.openaiModel.value;
     }
+  }
+
+  /// Nama yang ditampilkan di UI untuk model aktif provider ini.
+  ///
+  /// Untuk Local AI: nama tampilan dari dashboard admin (bukan nama file
+  /// `.gguf`). Model ID tetap dipakai untuk request ke gateway.
+  String activeModelDisplayName(String provider) {
+    if (provider == 'local') {
+      return _settings.localCloudModelDisplayName;
+    }
+    return activeModelFor(provider);
+  }
+
+  /// Nama tampilan untuk satu model ID (dipakai di daftar model).
+  String displayNameForModel(String provider, String modelId) {
+    if (provider != 'local') return modelId;
+    if (!Get.isRegistered<DashboardConfigService>()) {
+      return friendlyModelName(modelId);
+    }
+    for (final model in Get.find<DashboardConfigService>().models) {
+      if (model.modelId == modelId) return model.displayName;
+    }
+    return friendlyModelName(modelId);
   }
 
   String apiKeyFor(String provider) {

@@ -246,21 +246,16 @@ async function handleAuth(request, env, pathname) {
       const serverModels = await getJson(env.PB_KV, 'server_models', []);
       const mgrServers = await getJson(env.PB_KV, 'mgr_servers', []);
       // Daftar server publik (tanpa secret/API key backend). Dipakai aplikasi
-      // untuk tab Model List dan provider Local AI.
-      const modelApiByServer = new Map();
-      for (const m of serverModels) {
-        const sid = String((m && m.serverId) || '');
-        if (sid && !modelApiByServer.has(sid) && m.apiUrl) {
-          modelApiByServer.set(sid, String(m.apiUrl));
-        }
-      }
+      // untuk tab Model List dan provider Local AI. Alamat internal server
+      // (IP VPS / tunnel) tidak ikut publicized.
       const servers = mgrServers
         .filter((s) => s && s.id && s.enabled !== false)
         .map((s) => ({
           id: String(s.id),
           name: String(s.name || s.id),
-          baseUrl: String(s.baseUrl ||
-            modelApiByServer.get(String(s.id)) || ''),
+          // Alamat internal server (IP VPS / tunnel) TIDAK dipublikasikan.
+          // Semua request lewat gateway, jadi user tidak perlu alamat itu.
+          baseUrl: '',
           runtime: String(s.runtime || ''),
         }));
       const serverById = new Map(servers.map((s) => [s.id, s]));
@@ -278,9 +273,8 @@ async function handleAuth(request, env, pathname) {
             name: String(m.name || m.modelId),
             serverId: String(m.serverId || ''),
             serverName: server ? server.name : '',
-            serverBaseUrl: server
-              ? String(m.apiUrl || server.baseUrl || '')
-              : String(m.apiUrl || ''),
+            // Alamat internal server tidak pernah dikirim ke user.
+            serverBaseUrl: '',
             runtime: String(m.runtime ||
               (server ? server.runtime : '') || ''),
             tierAccess: Array.isArray(m.tierAccess)
@@ -295,10 +289,11 @@ async function handleAuth(request, env, pathname) {
     });
     const servers = cached.value.servers || [];
     const models = cached.value.models || [];
-    const firstServerUrl = servers.length ? servers[0].baseUrl : '';
     return jsonResponse(request, 200, {
       ...publicConfig(request, config),
-      aiServerUrl: config.aiServerUrl || firstServerUrl,
+      // Alamat AI server hanya diisi kalau admin menetapkannya sendiri di
+      // config — alamat hasil deteksi (IP VPS / tunnel) tidak dipublikasikan.
+      aiServerUrl: config.aiServerUrl || '',
       servers,
       models,
       gatewayBaseUrl: `${origin}/api/gateway/v1`,
