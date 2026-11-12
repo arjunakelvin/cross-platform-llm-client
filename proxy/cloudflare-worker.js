@@ -664,9 +664,16 @@ function buildManagerUrl(body, base) {
   if (explicit) return explicit;
   const host = String(body.ip ?? body.host ?? base.ip ?? base.host ?? '').trim();
   const port = Number(body.port ?? base.port ?? 0);
-  if (!host || !port) return '';
-  // IP + port → daemon Python, path /manager sudah ditangani tool Python.
-  return `http://${host}:${port}/manager`;
+  if (!host) return '';
+  // IP asli → http (VPS lokal/LAN). Hostname (domain / tunnel) → https.
+  const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':');
+  if (isIp && !port) return '';
+  const useHttps = !isIp || port === 443;
+  const scheme = useHttps ? 'https' : 'http';
+  const portPart = (useHttps && (port === 0 || port === 443))
+    ? ''
+    : `:${port}`;
+  return `${scheme}://${host}${portPart}/manager`;
 }
 
 function cleanServerEntry(body, existing) {

@@ -312,11 +312,65 @@ Dev server punya endpoint bantu (hanya lokal, **tidak ada di Worker produksi**):
 Tambah server dari dashboard memakai `managerUrl=http://127.0.0.1:9101/manager`
 dan secret `vps-secret-1`.
 
+### Tes lokal, tapi pakai domain produksi
+
+Aplikasi bisa dijalankan dari localhost sambil **semua request dikirim ke
+domain produksi** (`piercingblow.ai.id`) — berguna untuk menguji build
+terbaru persis seperti yang dipakai user:
+
+```bash
+flutter build web --release \
+  --dart-define=PB_API_ORIGIN=https://piercingblow.ai.id
+
+# serve hasil build (file statis apa saja cukup)
+npx serve build/web -l 5173
+```
+
+CORS Worker mengizinkan origin `http://localhost:*` dan
+`http://127.0.0.1:*`, jadi tidak ada masalah lintas origin.
+
+> Catatan: callback OAuth Discord diarahkan ke domain produksi, jadi kalau
+> app-nya dijalankan di `localhost`, sesi login **tidak** ikut tersimpan di
+> origin localhost. Untuk tes chat dari build lokal, buat **AI API key** di
+> situs produksi (Settings → AI API key) lalu tempel di app lokal
+> (Settings → AI API key) — key itu yang dipakai untuk authenticate ke
+> gateway produksi.
+
+### AI server lokal + dashboard produksi (tunnel)
+
+Worker produksi berjalan di edge Cloudflare — jadi **tidak bisa** menjangkau
+`127.0.0.1` di mesinmu. Pakai **quick tunnel** Cloudflare:
+
+```bash
+# 1. Jalankan AI server lokal (dari server/llama/model-ai)
+../llama-server.exe -m qwen2.5-coder-1.5b-instruct-q4_k_m.gguf \
+  --host 127.0.0.1 --port 8080 --api-key "kuncimu" -c 2048
+
+# 2. Buka tunnel
+.\server\start-tunnel.ps1 -Port 8080
+#    → TUNNEL URL: https://xxxx.trycloudflare.com
+```
+
+Lalu di dashboard admin (**https://piercingblow.ai.id/admin/**) isi:
+
+| Kolom | Isi |
+| --- | --- |
+| **IP / host VPS** | `xxxx.trycloudflare.com` (hostname → otomatis `https`) |
+| **Port /manager** | `443` |
+| **Secret key** | sama dengan `--api-key` llama-server |
+
+Worker lalu mendeteksi model secara otomatis dan aplikasi bisa chat lewat
+`piercingblow.ai.id` → tunnel → AI server lokal. Kalau tunnel di-restart,
+ subdomain-nya berubah → masukkan lagi URL baru di dashboard.
+
+> Untuk alamat tetap, pakai *named tunnel* (`cloudflared tunnel` + domain
+> sendiri) supaya IP di dashboard tidak pernah berubah.
+
 ### Test
 
 ```bash
-flutter analyze     # 0 error, 0 warning
-flutter test        # 67 test
+flutter analyze     # 0 error
+flutter test        # 90 test
 ```
 
 Test yang relevan:
@@ -328,6 +382,9 @@ Test yang relevan:
 | `test/quota_sync_test.dart` | sinkronisasi token & kredit, tanpa dobel hitung |
 | `test/quota_bar_test.dart` | bar kuota memendek + berwarna |
 | `test/account_sheet_layout_test.dart` | kartu token & kredit (angka ribuan, presisi harga) |
+| `test/tier_billing_test.dart` | model FREE → token, model PRO/VIP → kredit |
+| `test/friendly_model_name_test.dart` | nama file `.gguf` → nama model |
+| `test/display_name_test.dart` | header chat & Model List pakai nama tampilan |
 
 ---
 

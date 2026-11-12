@@ -133,6 +133,15 @@ class AppConstants {
   static const String keyGatewayBaseUrl = 'gateway_base_url';
   static const String keyUserApiKey = 'user_gateway_api_key';
   static const String keyUserApiKeyPrefix = 'user_gateway_api_prefix';
+
+  /// Override origin backend (Worker) saat build.
+  ///
+  /// Dipakai untuk tes lokal: aplikasi dijalankan dari localhost tapi
+  /// semua request dikirim ke domain produksi, contoh
+  /// `--dart-define=PB_API_ORIGIN=https://piercingblow.ai.id`.
+  static const String apiOriginOverride = String.fromEnvironment(
+    'PB_API_ORIGIN',
+  );
   static const String defaultLiteRtPerformanceMode = 'auto_fast';
   static const int defaultImageSteps = 1;
   static const bool defaultImageGenForceCpu = true;

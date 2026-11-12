@@ -85,11 +85,25 @@ void main() {
     expect(controller.selectedCloudModelName, isNot(contains('.gguf')));
   });
 
-  test('tanpa data dashboard, nama model ID jadi cadangan', () async {
+  test('nama file .gguf tidak pernah muncul di nama model', () async {
+    controller.cloudProvider.value = 'local';
+    await controller.setCloudModel('local', modelId);
+
+    for (final value in [
+      controller.localCloudModelDisplayName,
+      controller.selectedCloudModelName,
+    ]) {
+      expect(value.toLowerCase(), isNot(contains('.gguf')));
+      expect(value.toLowerCase(), isNot(contains('qwen2.5-coder')));
+    }
+  });
+
+  test('tanpa data dashboard, nama diturunkan dari model ID', () async {
     controller.cloudProvider.value = 'local';
     await controller.setCloudModel('local', 'model-yang-tidak-terdaftar');
 
-    expect(controller.localCloudModelDisplayName, 'model-yang-tidak-terdaftar');
+    expect(controller.localCloudModelDisplayName,
+        'Model Yang Tidak Terdaftar');
   });
 
   test('session login saja sudah cukup untuk lewat gateway', () {

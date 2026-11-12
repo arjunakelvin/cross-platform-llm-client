@@ -915,6 +915,9 @@ class SettingsController extends GetxController {
   /// Kalau base URL gateway sudah diketahui (diambil dari config dashboard),
   /// origin itu yang dipakai — jadi app dan gateway selalu satu host.
   String get apiOrigin {
+    // Override saat build (tes lokal → domain produksi).
+    final override = AppConstants.apiOriginOverride.trim();
+    if (override.isNotEmpty) return override.replaceAll(RegExp(r'/+$'), '');
     final saved =
         (_hive.getSetting<String>(AppConstants.keyGatewayBaseUrl) ?? '').trim();
     if (saved.isNotEmpty) {
@@ -951,12 +954,12 @@ class SettingsController extends GetxController {
     if (id.isEmpty) return id;
     if (Get.isRegistered<DashboardConfigService>()) {
       for (final model in Get.find<DashboardConfigService>().models) {
-        if (model.modelId == id) {
-          return model.name.trim().isEmpty ? id : model.name.trim();
-        }
+        if (model.modelId == id) return model.displayName;
       }
     }
-    return id;
+    // Model belum ada di config → turunkan nama dari model ID supaya nama
+    // file `.gguf` tidak pernah tampil.
+    return friendlyModelName(id);
   }
 
   /// True kalau Local AI dijalankan lewat gateway pakai API key user.

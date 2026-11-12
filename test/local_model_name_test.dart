@@ -51,15 +51,16 @@ void main() {
     await dir.delete(recursive: true);
   });
 
-  test('provider local → header chat memakai model ID', () async {
+  test('provider local → header chat memakai nama model', () async {
     controller.cloudProvider.value = 'local';
     await controller.setCloudModel(
       'local',
       'qwen2.5-coder-1.5b-instruct-q4_k_m.gguf',
     );
 
-    expect(controller.selectedCloudModelName,
-        'qwen2.5-coder-1.5b-instruct-q4_k_m.gguf');
+    // Nama file .gguf tidak boleh tampil di header chat.
+    expect(controller.selectedCloudModelName, 'Qwen2.5 Coder 1.5B');
+    expect(controller.selectedCloudModelName, isNot(contains('.gguf')));
     expect(controller.selectedCloudModelName, isNot(contains('gpt')));
   });
 

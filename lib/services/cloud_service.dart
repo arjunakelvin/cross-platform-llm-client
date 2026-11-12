@@ -751,6 +751,11 @@ class CloudService extends GetxService {
   /// This is only used on official PiercingBlow hosts (and localhost for
   /// development), because the proxy receives the API key in the
   String get _autoProxyUrl {
+    // Override saat build (tes lokal → domain produksi).
+    final override = AppConstants.apiOriginOverride.trim();
+    if (override.isNotEmpty) {
+      return '${override.replaceAll(RegExp(r'/+$'), '')}/api?url=';
+    }
     var origin = Uri.base.origin;
     if (origin == 'null' || origin.isEmpty) {
       origin = 'https://piercingblow.ai.id';

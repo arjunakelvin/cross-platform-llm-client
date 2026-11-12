@@ -743,9 +743,9 @@ class ModelView extends GetView<ModelController> {
                     children: [
                       Flexible(
                         child: Text(
-                          model.name.trim().isEmpty
-                              ? model.modelId
-                              : model.name.trim(),
+                          // Hanya nama model — nama file .gguf tidak pernah
+                          // ditampilkan.
+                          model.displayName,
                           style: t.bodyStrong,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -756,16 +756,6 @@ class ModelView extends GetView<ModelController> {
                         AppTag('Active', color: t.accent),
                       ],
                     ],
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    model.modelId,
-                    style: t.small.copyWith(
-                      color: t.muted,
-                      fontFamily: t.mono.fontFamily,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 5),
                   Wrap(
@@ -804,7 +794,8 @@ class ModelView extends GetView<ModelController> {
               tooltip: 'Copy model ID',
               onPressed: () {
                 Clipboard.setData(ClipboardData(text: model.modelId));
-                showToast('Model ID copied', model.modelId,
+                // Toast menampilkan nama model, bukan nama file .gguf.
+                showToast('Model ID copied', model.displayName,
                     tone: ToastTone.info);
               },
             ),
@@ -828,7 +819,7 @@ class ModelView extends GetView<ModelController> {
     await cloud.selectModel('local', model.modelId);
     if (!context.mounted) return;
     final server = model.serverName.isEmpty ? 'Local AI' : model.serverName;
-    showToast('Model active', '$server · ${model.modelId}',
+    showToast('Model active', '$server · ${model.displayName}',
         tone: ToastTone.success);
   }
 

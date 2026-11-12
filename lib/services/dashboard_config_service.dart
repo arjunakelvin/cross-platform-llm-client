@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 import '../core/constants.dart';
 import 'hive_service.dart';
 
-/// Satu model AI yang didaftarkan admin di dashboard.
+/// Nama tampilan model AI server (dari dashboard admin).
 class AdminModelInfo {
   const AdminModelInfo({
     required this.modelId,
@@ -45,6 +45,15 @@ class AdminModelInfo {
     return tierAccess.contains(normalized);
   }
 
+  /// Nama model yang tampil di aplikasi — **tidak pernah** nama file
+  /// `.gguf`. Kalau admin belum memberi nama, nama turunannya dari model ID
+  /// (mis. `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf` → `Qwen2.5 Coder 1.5B`).
+  String get displayName {
+    final custom = name.trim();
+    if (custom.isNotEmpty) return custom;
+    return friendlyModelName(modelId);
+  }
+
   /// Mode tagihan model — sama dengan aturan Worker:
   /// model berlabel **FREE** → kuota token, model **PRO/VIP** → kredit.
   bool get usesCredits {
@@ -76,6 +85,46 @@ class AdminModelInfo {
   }
 
   static double _num(Object? value) => value is num ? value.toDouble() : 0;
+}
+
+/// Ubah nama file model (`qwen2.5-coder-1.5b-instruct-q4_k_m.gguf`) menjadi
+/// nama model yang enak dibaca (`Qwen2.5 Coder 1.5B`).
+///
+/// Sama dengan versi Worker (`friendlyModelName`) supaya nama yang tampil di
+/// aplikasi selalu sama dengan yang tampil di dashboard.
+String friendlyModelName(String raw) {
+  final original = raw.trim();
+  if (original.isEmpty) return '';
+  var name = original.split(RegExp(r'[/\\]')).last;
+  name = name.replaceFirst(
+    RegExp(r'\.(gguf|ggml|litertlm|task|bin|safetensors|onnx|pt|pth)$',
+        caseSensitive: false),
+    '',
+  );
+  name = name.replaceFirst(
+    RegExp(r'[-_.](i?q\d+(_[a-z0-9]+)*|f16|f32|bf16)$', caseSensitive: false),
+    '',
+  );
+  name = name.replaceFirst(
+    RegExp(r'[-_.](instruct|chat|it|hf)$', caseSensitive: false),
+    '',
+  );
+  // Pemisah kata: dash & underscore. Titik dipertahankan supaya nomor versi
+  // tetap utuh ("qwen2.5", "v0.2").
+  name = name.replaceAll(RegExp(r'[-_]+'), ' ').trim();
+  if (name.isEmpty) return original;
+  return name
+      .split(' ')
+      .where((word) => word.isNotEmpty)
+      .map((word) {
+        // "1.5b" → "1.5B", "8b" → "8B"
+        if (RegExp(r'^\d').hasMatch(word)) {
+          return word.replaceFirst(RegExp(r'b$'), 'B')
+              .replaceFirst(RegExp(r'm$'), 'M');
+        }
+        return word[0].toUpperCase() + word.substring(1);
+      })
+      .join(' ');
 }
 
 /// Satu server AI (IP/URL) yang didaftarkan admin.
@@ -128,6 +177,9 @@ class DashboardConfigService extends GetxService {
 
   /// Backend admin ada di host yang sama dengan situsnya.
   String get _origin {
+    // Override saat build (tes lokal → domain produksi).
+    final override = AppConstants.apiOriginOverride.trim();
+    if (override.isNotEmpty) return override.replaceAll(RegExp(r'/+$'), '');
     var origin = Uri.base.origin;
     if (origin == 'null' || origin.isEmpty) {
       origin = 'https://piercingblow.ai.id';
