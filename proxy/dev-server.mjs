@@ -91,6 +91,7 @@ const server = createServer(async (req, res) => {
         tokenBalance: Number(body.tokenBalance) || 1000000,
         tokenUsed: Number(body.tokenUsed) || 0,
         creditBalance: Number(body.creditBalance) || 0,
+        creditUsed: Number(body.creditUsed) || 0,
         tokenResetDays: 1,
         lastReset: Date.now(),
         status: 'active',
@@ -117,8 +118,12 @@ const server = createServer(async (req, res) => {
       } catch {
         body = {};
       }
-      if (String(body.code || '') === 'dev-login') {
-        const id = String(body.id || 'dev-user');
+      const code = String(body.code || '');
+      if (code === 'dev-login' || code.startsWith('dev-login:')) {
+        // "dev-login:<id>" → pakai akun/id tertentu (untuk testing UI).
+        const id = code.includes(':')
+          ? code.split(':').slice(1).join(':').trim()
+          : String(body.id || 'dev-user');
         const token = `dev-session-${id}`;
         const account = {
           id,

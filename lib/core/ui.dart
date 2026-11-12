@@ -527,6 +527,70 @@ class AppProgressBar extends StatelessWidget {
   }
 }
 
+/// Bar kuota: **menyisa** yang ditampilkan, jadi bar memendek saat kuota
+/// terpakai (bukan memanjang). Isinya memakai gradient + cahaya supaya
+/// terlihat "hijau menyala", bukan bidang datar.
+class QuotaProgressBar extends StatelessWidget {
+  /// Sisa kuota, 0..1 (1 = kuota utuh).
+  final double remaining;
+
+  /// Warna according level (hijau → oranye → merah).
+  final Color color;
+
+  final double height;
+  const QuotaProgressBar({
+    super.key,
+    required this.remaining,
+    required this.color,
+    this.height = 8,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final value = remaining.clamp(0.0, 1.0);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(height),
+          child: SizedBox(
+            height: height,
+            child: Stack(
+              children: [
+                Positioned.fill(child: ColoredBox(color: t.fill)),
+                if (value > 0)
+                  Positioned(
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: width * value,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [color.withValues(alpha: 0.55), color],
+                          begin: Alignment.centerLeft,
+                          end: Alignment.centerRight,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: color.withValues(alpha: 0.45),
+                            blurRadius: 6,
+                            spreadRadius: -1,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 /// Horizontal filter chips. Selected = solid text-colour fill; others are
 /// outlined, matching the home suggestion pills.
 class AppChips<T> extends StatelessWidget {

@@ -331,8 +331,10 @@ class SettingsView extends GetView<SettingsController> {
       final used = controller.tokenUsed.value;
       final remaining = controller.tokenRemaining;
       final ratio = controller.tokenUsageRatio;
-      // Token level: green (plenty left) → yellow/orange (half used) → red (critical).
-      final level = ratio >= 0.8 ? 'critical' : (ratio >= 0.5 ? 'low' : 'ok');
+      // Bar menampilkan SISA kuota: memendek saat terpakai.
+      final left = (1 - ratio).clamp(0.0, 1.0);
+      // Level: hijau (banyak sisa) → oranye (setengah) → merah (hampir habis).
+      final level = left <= 0.2 ? 'critical' : (left <= 0.5 ? 'low' : 'ok');
       final warn = level != 'ok' || remaining <= 0;
       final barColor = level == 'critical'
           ? t.red
@@ -365,7 +367,7 @@ class SettingsView extends GetView<SettingsController> {
                         Text('Token balance', style: t.bodyStrong),
                         const SizedBox(height: 2),
                         Text(
-                          'Local AI server · ${_fmtTokenCount(controller.maxTokenBalance)} kuota',
+                          'Local AI server · ${_fmtThousands(controller.maxTokenBalance)} kuota',
                           style: t.caption,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -377,18 +379,18 @@ class SettingsView extends GetView<SettingsController> {
                 ],
               ),
             const SizedBox(height: 12),
-            AppProgressBar(value: ratio, color: barColor, height: 6),
-            const SizedBox(height: 10),
+            QuotaProgressBar(remaining: left, color: barColor),
+            const SizedBox(height: 8),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  '${_fmtTokenCount(used)} used',
+                  '${(ratio * 100).round()}% used · ${_fmtThousands(used)} token',
                   style:
                       t.small.copyWith(color: warn ? t.orange : t.muted),
                 ),
                 Text(
-                  '${_fmtTokenCount(remaining)} left',
+                  '${_fmtThousands(remaining)} left',
                   style: t.small.copyWith(
                     fontWeight: FontWeight.w600,
                     color: warn ? t.orange : t.text,
@@ -412,7 +414,16 @@ class SettingsView extends GetView<SettingsController> {
             if (remaining <= 0) ...[
               const SizedBox(height: 10),
               AppNotice(
-                'Out of tokens. Your daily quota resets tomorrow.',
+                'Kuota token sudah habis. Kuota akan reset otomatis sesuai '
+                'jadwal di atas.',
+                icon: Icons.warning_amber_rounded,
+                color: t.red,
+              ),
+            ] else if (ratio >= 0.8) ...[
+              const SizedBox(height: 10),
+              AppNotice(
+                'Kuota tinggal ${(ratio * 100).round()}%. Reset dalam '
+                '${controller.tokenResetCountdownLabel.toLowerCase()}.',
                 icon: Icons.warning_amber_rounded,
                 color: t.orange,
               ),
@@ -421,6 +432,19 @@ class SettingsView extends GetView<SettingsController> {
         ),
       ));
     });
+  }
+
+  /// Angka dengan pemisah ribuan, contoh: 12,000.
+  static String _fmtThousands(int v) {
+    final s = v.toString();
+    final buf = StringBuffer();
+    var count = 0;
+    for (var i = s.length - 1; i >= 0; i--) {
+      if (count > 0 && count % 3 == 0) buf.write(',');
+      buf.write(s[i]);
+      count++;
+    }
+    return buf.toString().split('').reversed.join();
   }
 
   String _fmtTokenCount(int v) {
