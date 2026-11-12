@@ -912,6 +912,15 @@ class ChatController extends GetxController {
         if (usesLocalAi && !settings.localAiViaGateway) {
           await settings.consumeTokens(approxTokens);
         }
+        // Pemakaian yang dilaporkan gateway (token/kredit) langsung
+        // ditampilkan di UI supaya angka saldo turun seketika.
+        if (settings.localAiViaGateway) {
+          final cloud = Get.find<CloudService>();
+          settings.applyGatewayUsage(
+            tokens: cloud.lastGatewayTokens ?? 0,
+            credits: cloud.lastGatewayCredits ?? 0,
+          );
+        }
         if (Get.isRegistered<AppLogService>()) {
           final cloud = Get.find<CloudService>();
           final usage = cloud.lastGatewayUsageLabel;

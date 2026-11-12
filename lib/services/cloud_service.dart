@@ -160,6 +160,9 @@ class CloudService extends GetxService {
     int? maxTokens,
     void Function(String token)? onToken,
   }) async {
+    // Usage dari request sebelumnya tidak boleh ikut dipakai.
+    lastGatewayTokens = null;
+    lastGatewayCredits = null;
     if (!isConfigured) {
       return _provider == 'custom'
           ? 'ERROR: Custom API is not configured. Set the Base URL and pick '

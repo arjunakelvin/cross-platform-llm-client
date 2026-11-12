@@ -70,6 +70,15 @@ class SettingsController extends GetxController {
 
   /// Token terpakai di sisi server (dipakai lewat gateway).
   int _serverTokenUsed = 0;
+
+  /// Kredit terpakai / sisa dari server (hasil sinkronisasi terakhir).
+  double _serverCreditUsed = 0;
+  double _serverCreditBalance = 0;
+
+  /// Pemakaian gateway yang sudah terjadi tapi belum masuk sinkronisasi
+  /// server berikutnya — dipakai supaya angka di UI langsung turun.
+  int _pendingGatewayTokens = 0;
+  double _pendingGatewayCredits = 0;
   final tokenLastReset = 0.obs;
   final tokenResetDays = AppConstants.tokenResetDays.obs;
   final localServerUrl = AppConstants.defaultLocalServerUrl.obs;
@@ -760,8 +769,14 @@ class SettingsController extends GetxController {
       if (acc != null) {
         // Kuota akun (dari server) yang jadi acuan.
         _serverTokenUsed = acc.tokenUsed;
-        creditUsed.value = acc.creditUsed;
-        creditBalance.value = acc.creditBalance;
+        _serverCreditUsed = acc.creditUsed;
+        _serverCreditBalance = acc.creditBalance;
+        // Pemakaian gateway yang sudah dilaporkan server, jadi pending
+        // dinolkan (nilai server sudah termasuk pemakaian itu).
+        _pendingGatewayTokens = 0;
+        _pendingGatewayCredits = 0;
+        creditUsed.value = _serverCreditUsed;
+        creditBalance.value = _serverCreditBalance;
         final total = _serverTokenUsed + localTokenUsed.value;
         if (tokenUsed.value != total) {
           tokenUsed.value = total;
@@ -789,14 +804,35 @@ class SettingsController extends GetxController {
     }
   }
 
+  /// Pemakaian on-device (inference lokal di HP) — tidak tercatat di server.
   Future<void> consumeTokens(int amount) async {
     if (amount <= 0) return;
     localTokenUsed.value += amount;
-    tokenUsed.value = _serverTokenUsed + localTokenUsed.value;
+    tokenUsed.value = _serverTokenUsed + localTokenUsed.value + _pendingGatewayTokens;
     tokenBalance.value = (tokenBalance.value - amount).clamp(0, maxTokenBalance);
     await _hive.setSetting(AppConstants.keyLocalTokenUsed, localTokenUsed.value);
     await _hive.setSetting(AppConstants.keyTokenUsed, tokenUsed.value);
     await _hive.setSetting(AppConstants.keyTokenBalance, tokenBalance.value);
+  }
+
+  /// Terapkan pemakaian gateway yang baru saja terjadi.
+  ///
+  /// Nilai ini datang dari header gateway (`X-Token-Used` / `X-Credit-Used`)
+  /// sehingga angka di UI langsung turun tanpa menunggu sinkronisasi server.
+  /// Saat sinkronisasi berikutnya, angka server (yang sudah termasuk pemakaian
+  /// ini) menggantikan perkiraan ini — jadi tidak ada dobel hitung.
+  void applyGatewayUsage({int tokens = 0, double credits = 0}) {
+    if (tokens <= 0 && credits <= 0) return;
+    _pendingGatewayTokens += tokens;
+    _pendingGatewayCredits += credits;
+    final max = maxTokenBalance;
+    final total =
+        _serverTokenUsed + localTokenUsed.value + _pendingGatewayTokens;
+    tokenUsed.value = total;
+    tokenBalance.value = (max - total).clamp(0, max);
+    creditUsed.value = _serverCreditUsed + _pendingGatewayCredits;
+    creditBalance.value =
+        (_serverCreditBalance - _pendingGatewayCredits).clamp(0, double.infinity);
   }
 
   Future<void> resetToken() async {
