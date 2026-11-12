@@ -939,9 +939,22 @@ class CloudService extends GetxService {
   }
 
   /// True kalau server menolak autentikasi (API key invalid/expired).
+  /// Tidak termasuk error tier (requires tier: ...) karena retry dengan
+  /// session token tidak akan membantu jika model dibatasi tier tertentu.
   bool _looksLikeAuthRejected(String result) {
     if (!result.startsWith('ERROR:')) return false;
-    return result.contains('returned 401') || result.contains('returned 403');
+    if (!result.contains('returned 401') && !result.contains('returned 403')) {
+      return false;
+    }
+    // Jangan retry jika error adalah tier mismatch — token yang berbeda
+    // tidak akan mengubah tier akses model.
+    final lower = result.toLowerCase();
+    if (lower.contains('requires tier') ||
+        lower.contains('your tier') ||
+        lower.contains('tier:')) {
+      return false;
+    }
+    return true;
   }
 
   Future<String> _sendLocalOpenAICompatible(

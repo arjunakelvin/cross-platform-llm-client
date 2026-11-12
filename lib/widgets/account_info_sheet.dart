@@ -169,16 +169,59 @@ class TokenQuotaCard extends StatelessWidget {
 class CreditQuotaCard extends StatelessWidget {
   final double creditBalance;
   final double creditUsed;
+  final bool isLoggedIn;
 
   const CreditQuotaCard({
     super.key,
     required this.creditBalance,
     required this.creditUsed,
+    this.isLoggedIn = true,
   });
 
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
+
+    // Guest: tampilkan bar kosong + ajakan daftar
+    if (!isLoggedIn) {
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: t.surface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: t.hairline),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.payments_outlined, size: 18, color: t.muted),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text('Kredit AI',
+                      style: t.bodyStrong,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            // Bar kosong (tidak ada kredit, belum login)
+            QuotaProgressBar(
+              remaining: 0.0,
+              color: t.muted.withValues(alpha: 0.3),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Daftar / login untuk mendapatkan kredit AI.',
+              style: t.small.copyWith(color: t.muted),
+            ),
+          ],
+        ),
+      );
+    }
+
     final total = creditBalance + creditUsed;
     final ratio =
         total <= 0 ? 0.0 : (creditUsed / total).clamp(0.0, 1.0).toDouble();
@@ -450,6 +493,7 @@ class AccountInfoSheet extends StatelessWidget {
                 CreditQuotaCard(
                   creditBalance: settings.creditBalance.value,
                   creditUsed: settings.creditUsed.value,
+                  isLoggedIn: isLoggedIn,
                 ),
 
                 const SizedBox(height: 14),

@@ -882,6 +882,32 @@ class ChatController extends GetxController {
           ? DateTime.now().difference(imageGenStartTime.value!).inMilliseconds
           : null;
 
+      // If the response is an AI error (connectivity / API failure), show it
+      // as a popup toast instead of adding it to the chat.
+      // Exception: token/credit depletion messages stay in chat so the user
+      // sees them in context.
+      if (rawResponse.startsWith('ERROR:')) {
+        final lower = rawResponse.toLowerCase();
+        final isDepletionError = lower.contains('exhausted') ||
+            lower.contains('no credits') ||
+            lower.contains('insufficient') ||
+            lower.contains('token') ||
+            lower.contains('kredit') ||
+            lower.contains('habis');
+        if (!isDepletionError) {
+          // Connection / API error → popup only, don't save to chat
+          isLoading.value = false;
+          imageGenStartTime.value = null;
+          showToast(
+            'AI Error',
+            rawResponse.replaceFirst('ERROR:', '').trim(),
+            tone: ToastTone.error,
+          );
+          _scrollToBottom(force: true);
+          return;
+        }
+      }
+
       // Display response directly (no command processing)
       final aiMsg = ChatMessage(
         id: _uuid.v4(),
@@ -901,6 +927,8 @@ class ChatController extends GetxController {
       // Tokens are only deducted when running on the local AI server; when a
       // cloud provider (user-owned API key) is used, no shared token balance
       // is consumed.
+      // If the response is an error, do NOT deduct tokens or credits.
+      final isErrorResponse = rawResponse.startsWith('ERROR:');
       try {
         final settings = Get.find<SettingsController>();
         final approxTokens = (effectiveText.length + rawResponse.length) ~/ 4;
@@ -909,12 +937,14 @@ class ChatController extends GetxController {
                 settings.cloudProvider.value == 'local');
         // Lewat gateway, token sudah dipotong server (itu acuan resmi),
         // jadi jangan dipotong dua kali di perangkat.
-        if (usesLocalAi && !settings.localAiViaGateway) {
+        // Jika error, jangan kurangi token sama sekali.
+        if (!isErrorResponse && usesLocalAi && !settings.localAiViaGateway) {
           await settings.consumeTokens(approxTokens);
         }
         // Pemakaian yang dilaporkan gateway (token/kredit) langsung
         // ditampilkan di UI supaya angka saldo turun seketika.
-        if (settings.localAiViaGateway) {
+        // Jika response error, jangan kurangi kredit/token.
+        if (!isErrorResponse && settings.localAiViaGateway) {
           final cloud = Get.find<CloudService>();
           settings.applyGatewayUsage(
             tokens: cloud.lastGatewayTokens ?? 0,

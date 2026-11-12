@@ -834,9 +834,14 @@ class SettingsController extends GetxController {
         _serverTokenUsed + localTokenUsed.value + _pendingGatewayTokens;
     tokenUsed.value = total;
     tokenBalance.value = (max - total).clamp(0, max);
-    creditUsed.value = _serverCreditUsed + _pendingGatewayCredits;
-    creditBalance.value =
-        (_serverCreditBalance - _pendingGatewayCredits).clamp(0, double.infinity);
+    // Round to 6 decimal places to avoid floating-point artifacts
+    // e.g. $200,000 - $0.0045 showing as $199,999.9999999976
+    creditUsed.value = double.parse(
+        (_serverCreditUsed + _pendingGatewayCredits).toStringAsFixed(6));
+    creditBalance.value = double.parse(
+        (_serverCreditBalance - _pendingGatewayCredits)
+            .clamp(0, double.infinity)
+            .toStringAsFixed(6));
   }
 
   Future<void> resetToken() async {
