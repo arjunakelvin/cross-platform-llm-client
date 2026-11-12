@@ -64,6 +64,10 @@ secrets/
 proxy/.worker-dev.mjs
 tools/llama-server/
 
+# Folder server/ dipakai langsung di VPS (isi secretKey + servers.json) —
+# sengaja tidak ikut di-push ke repo.
+server/
+
 # iOS
 /ios/Pods/
 /ios/.symlinks/
