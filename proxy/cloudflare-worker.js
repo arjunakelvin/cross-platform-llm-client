@@ -960,7 +960,14 @@ async function detectViaManager(env, server) {
   }
 
   // Alur biasa: tanya langsung AI server (OpenAI-compatible).
-  const { ids, url } = await fetchAiModels(raw, server.managerKey);
+  // Kalau URL-nya /manager tapi daemonnya tidak ada → coba AI server di
+  // host:port yang sama (port AI server), jadi dashboard tetap cukup
+  // IP + port + secret key.
+  let target = raw;
+  if (/\/manager\/?$/i.test(target)) {
+    target = target.replace(/\/manager\/?$/i, '');
+  }
+  const { ids, url } = await fetchAiModels(target, server.managerKey);
   server.baseUrl = url;
   const detected = ids.map((id) => ({
     backendId: id,

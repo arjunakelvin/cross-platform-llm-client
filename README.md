@@ -445,33 +445,49 @@ API keys are stored in Hive and never transmitted anywhere except to the provide
 | `/api/gateway/v1/*` | aplikasi (API key user) | `Authorization: Bearer pb_...` |
 | `/api?url=` | proxy CORS untuk provider | hanya target HTTPS publik (jaringan internal/metadata ditolak) |
 
-### AI Server Manager (tool Python di VPS)
+### AI Server Manager (llama.cpp / tanpa Python)
 
-AI server di VPS dikelola dari **tool Python** (`server/manager.py`) — TUI
-terminal, tanpa file config untuk diedit manual:
-
-- atur **IP**, **port**, **secret key**, dan **file model (GGUF)** dari UI
-  (tekan `m` untuk memilih file `.gguf`),
-- jalankan/matikan AI server (llama.cpp / Ollama / vLLM),
-- status CPU, RAM, disk, network + log proses,
-- sekaligus serve endpoint **`/manager`** untuk dashboard admin.
-
-Di dashboard admin (`https://piercingblow.ai.id/admin/` → kartu **Server
-manager**) yang diisi hanya **IP + port + secret key**; Worker menyusun
-`http://<IP>:<port>/manager` sendiri lalu membaca model aktif, statistik,
-log, dan start/stop dari sana.
-
-Request dari web client selalu membawa header `X-Secret-Key` (di-gerbang
-nginx), jadi server AI hanya menerima request yang memang hdr-authorized —
-tanpa secret, request tidak dikirim sama sekali.
-
-Backend-nya ada di [`server/`](server/README.md) — tool Python 3 tanpa
-dependency + contoh nginx yang menjadi gerbang secret key:
+Cara paling sederhana: **jalanin llama.cpp langsung** — binary-nya sudah ada di
+`server/llama/` dan modelnya di `server/llama/model-ai/`.
 
 ```bash
-python3 server/manager.py --ip 203.0.113.10 --port 8080 \
-    --manager-port 8788 --secret "kuncimu" --model /models/qwen3-8b.gguf
+# Windows
+$env:PB_SECRET = "kuncimu"
+.\server\start-llama.ps1
+
+# Linux
+PB_SECRET="kuncimu" ./server/start-llama.sh
 ```
+
+Atau manual:
+
+```bash
+cd server/llama/model-ai
+../llama-server -m qwen2.5-coder-1.5b-instruct-q4_k_m.gguf \
+    --host 0.0.0.0 --port 8080 --api-key "kuncimu" -c 4096
+```
+
+Lalu di dashboard admin cukup isi:
+
+| Kolom | Isi |
+| --- | --- |
+| **IP / host VPS** | `203.0.113.10` (atau `127.0.0.1` untuk lokal) |
+| **Port /manager** | `8080` — port **AI server** (Worker coba `/manager` dulu, kalau tidak ada langsung pakai AI server di port yang sama) |
+| **Secret key** | sama dengan `--api-key` di atas |
+
+Worker membaca daftar model **yang aktif** dari
+`GET http://IP:port/v1/models` (header `X-Secret-Key` + `Authorization:
+Bearer`), jadi **tidak butuh daemon Python sama sekali** — dan kalau tool
+Python `server/manager.py` dipakai,(fitur start/stop + statistik per VPS),
+dashboard tetap bisa memakai **IP + port + secret** yang sama.
+
+> Untuk memakai fitur start/stop + statistik CPU/RAM di dashboard, jalankan
+> tool Python `server/manager.py` (lihat [`server/README.md`](server/README.md))
+> — dia serve endpoint `/manager` di port sendiri.
+
+Request dari web client selalu membawa header `X-Secret-Key` (atau
+`Authorization: Bearer`), jadi server AI hanya menerima request yang memang
+diotorisasi — tanpa secret, request tidak dikirim sama sekali.
 
 Di aplikasi, provider **Local AI** memakai model dari dashboard (tab
 **Model List**) dan request-nya lewat gateway memakai API key user.
