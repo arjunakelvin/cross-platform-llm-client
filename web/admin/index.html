@@ -288,12 +288,14 @@ async with aiohttp.ClientSession() as session:<br>
         terpisah.</div>
       <div class="row">
         <div>
-          <label for="srvManagerUrl">Manager URL (daemon VPS ini)</label>
+          <label for="srvManagerUrl">Manager URL / Base URL AI server</label>
           <input type="text" id="srvManagerUrl"
-                 placeholder="https://api-ai.domain.com/manager">
-          <div class="hint">Alamat daemon Python <span class="mono">manager.py</span>
-            di VPS ini, sudah termasuk IP + port. Contoh:
-            <span class="mono">http://203.0.113.10:8788/manager</span>.</div>
+                 placeholder="http://203.0.113.10:8080/v1">
+          <div class="hint">Alamat AI server VPS ini (OpenAI-compatible):
+            <span class="mono">http://IP:port/v1</span>. Model aktif dibaca
+            langsung dari sana. Kalau pakai daemon
+            <span class="mono">manager.py</span>, isi
+            <span class="mono">.../manager</span>.</div>
         </div>
         <div>
           <label for="srvManagerKey">Secret key manager</label>

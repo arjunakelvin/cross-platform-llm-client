@@ -38,9 +38,10 @@ user memakai AI server tersebut lewat **gateway** dengan **API key sendiri**.
 
 | Fitur | Penjelasan |
 | --- | --- |
-| **Server per VPS** | Tiap VPS punya daemon `manager.py` sendiri. Di dashboard cukup isi **IP + port daemon** + **secret key manager** — Manager URL dibuat otomatis, dan tidak ada lagi input IP/base URL inference atau secret inference. |
-| **Deteksi model otomatis** | Saat server disimpan, dashboard memanggil `GET <manager>/servers` dan membaca `apiUrl`, `runtime`, dan daftar model **yang sedang aktif** (AI-nya sudah di-load & jalan) milik VPS itu. Model ID **tidak bisa ditambah manual**. |
-| **Model aktif vs nonaktif** | Kalau AI-nya dimatikan, model ditandai **"AI mati"** — harga/tier admin tetap tersimpan, tapi modelnya tidak ditawarkan ke user sampai AI-nya jalan lagi. |
+| **Server per VPS** | Satu kartu = satu VPS. Di dashboard cukup isi **base URL AI server** (mis. `http://203.0.113.10:8080/v1`) + **secret key**. Tidak ada file config, tidak ada daemon/endpoint tambahan. |
+| **Tool Python di VPS** | `server/manager.py` — TUI terminal untuk atur **IP**, **port**, **secret key**, dan **file model (GGUF)**, lalu jalankan/matikan AI server + lihat status & log. Tidak ada config file yang perlu diedit, tidak ada HTTP endpoint. |
+| **Deteksi model otomatis** | Saat server disimpan, dashboard membaca daftar model **yang sedang aktif** langsung dari AI server (OpenAI-compatible, header `X-Secret-Key`). Model ID **tidak bisa ditambah manual**. |
+| **Model aktif vs nonaktif** | Kalau AI-nya mati/tidak bisa dihubungi, model ditandai **"AI mati"** — harga/tier admin tetap tersimpan, tapi modelnya tidak ditawarkan ke user sampai AI-nya jalan lagi. |
 | **Edit per model** | Admin hanya mengedit: nama, tier (free/pro/vip), **harga input/output** (`/req` atau `/1M`), **context size**, dan **max output**. |
 | **Monitoring per VPS** | CPU, RAM, Disk, Network (traffic up/down) tiap VPS, plus tombol **Start / Stop / Lihat log** untuk **setiap proses AI** di VPS tersebut. |
 | **Gateway OpenAI-compatible** | `POST https://piercingblow.ai.id/api/gateway/v1/chat/completions` dengan `Authorization: Bearer pb_...` (API key milik user). Mendukung streaming (SSE). |
@@ -55,36 +56,37 @@ user memakai AI server tersebut lewat **gateway** dengan **API key sendiri**.
 ## Alur dari nol: VPS → dashboard → aplikasi
 
 ```
-┌──────────────┐   GET /manager/servers     ┌────────────────────┐
-│  VPS + daemon│ ─────────────────────────► │  Dashboard admin   │
-│ manager.py   │   (X-Secret-Key)           │  /admin/           │
-│  + AI server │ ◄───────────────────────── │  (X-Admin-Key)     │
-└──────┬───────┘   apiUrl, runtime, models  └─────────┬──────────┘
-       │                                            │ simpan ke KV
-       │                                            ▼
-       │                                   ┌────────────────────┐
-       │  chat/completions                 │  Cloudflare Worker │
-       │  + X-Secret-Key (ditambah worker) │  /api/*             │
-       │ ◄──────────────────────────────────│  gateway + config  │
-       │                                   └─────────┬──────────┘
-       │                                             │ /api/gateway/v1
-       │                                             │ (API key user)
-       │                                             ▼
-       │                                   ┌────────────────────┐
-       │                                   │  Aplikasi Flutter   │
-       │                                   │  Model List / Chat  │
-       └───────────────────────────────────┴────────────────────┘
+┌──────────────┐   GET /v1/models      ┌────────────────────┐
+│  VPS         │ ────────────────────► │  Dashboard admin   │
+│  AI server   │   (X-Secret-Key)      │  /admin/           │
+│  + tool      │ ◄──────────────────── │  (X-Admin-Key)     │
+│  manager.py  │   daftar model aktif  └─────────┬──────────┘
+└──────┬───────┘                                  │ simpan ke KV
+       │                                          ▼
+       │                                 ┌────────────────────┐
+       │  chat/completions               │  Cloudflare Worker │
+       │  + X-Secret-Key (ditambah worker)│  /api/*             │
+       │ ◄────────────────────────────────│  gateway + config  │
+       │                                 └─────────┬──────────┘
+       │                                           │ /api/gateway/v1
+       │                                           │ (API key user)
+       │                                           ▼
+       │                                 ┌────────────────────┐
+       │                                 │  Aplikasi Flutter   │
+       │                                 │  Model List / Chat  │
+       └─────────────────────────────────┴────────────────────┘
 ```
 
-1. Di VPS: jalankan daemon `manager.py` + AI server (Ollama / llama.cpp / vLLM),
-   lalu pasang nginx sebagai gerbang secret key.
-2. Di dashboard admin: tambah **Manager URL** + **secret key manager** → model,
-   statistik, dan tombol start/stop otomatis dari daemon.
+1. Di VPS: jalankan **tool Python** `server/manager.py` → isi IP, port, secret
+   key, dan file model (GGUF) → tekan `s` untuk memuat modelnya. (Bisa juga
+   lewat nginx sebagai gerbang secret key.)
+2. Di dashboard admin: tempel **base URL AI server** + **secret key** → model
+   aktif terdeteksi otomatis.
 3. Di aplikasi: user login Discord → buat **AI API key** → pilih model di tab
    **Model List** → chat. Semua request lewat gateway, jadi user tidak pernah
    memegang secret backend.
 
-Detail daemon & nginx: [`server/README.md`](server/README.md).
+Detail tool Python & nginx: [`server/README.md`](server/README.md).
 
 ---
 
@@ -96,17 +98,15 @@ Buka **https://piercingblow.ai.id/admin/** (butuh admin key).
 
 | Kolom | Isi |
 | --- | --- |
-| **IP / host VPS** | alamat VPS tempat daemon `manager.py` jalan, mis. `203.0.113.10` |
-| **Port daemon** | port `manager.py` (default `8788`) |
-| **Secret key manager** | nilai `secretKey` di `server/servers.json` VPS itu |
-| Manager URL | opsional — **dibuat otomatis** dari IP + port (`http://IP:PORT/manager`); isi manual hanya kalau daemonnya di belakang nginx/path lain |
+| **Manager URL / Base URL AI server** | alamat AI server VPS itu (OpenAI-compatible), mis. `http://203.0.113.10:8080/v1` atau URL publik nginx |
+| **Secret key** | secret yang sama dengan yang dipakai tool Python & nginx (dikirim sebagai `X-Secret-Key`) |
 | Nama / ID / Status / Catatan | opsional |
 
 Tekan **Tambah server & deteksi model**. Setelah tersimpan:
 
-- kartu server menampilkan CPU / RAM / Disk / Net **milik VPS itu**,
-- daftar **Proses AI** (Start / Stop / Lihat log) per proses,
-- daftar **Model** (otomatis dari daemon) dengan tier, harga, context, max output.
+- dashboard membaca **model yang sedang aktif** langsung dari AI server,
+- tiap model ditampilkan dengan tier, harga, context, max output, dan status
+  **aktif / AI mati**.
 
 ### Edit model
 
@@ -369,7 +369,7 @@ Jangan lupa salin `web/admin/index.html` → `build/web/admin/index.html` dan
 | Folder/berkas | Isi |
 | --- | --- |
 | `proxy/` | Worker (API, gateway, dashboard admin logic) + `dev-server.mjs` untuk lokal |
-| `server/` | daemon `manager.py` (Python 3, tanpa dependency) + contoh nginx |
+| `server/` | tool Python `manager.py` (TUI terminal: IP, port, secret, file GGUF) + contoh nginx |
 | `web/admin/index.html` | dashboard admin (privat, butuh admin key) |
 | `web/api/` | forwarder Vercel + proxy CORS (hardened) |
 | `build/web/` | hasil build web (repo git sendiri, target deploy) |
@@ -444,26 +444,30 @@ API keys are stored in Hive and never transmitted anywhere except to the provide
 | `/api/gateway/v1/*` | aplikasi (API key user) | `Authorization: Bearer pb_...` |
 | `/api?url=` | proxy CORS untuk provider | hanya target HTTPS publik (jaringan internal/metadata ditolak) |
 
-### Server Manager (AI server remote)
+### AI Server Manager (tool Python di VPS)
 
-Semua AI server dikelola dari **dashboard admin privat**
-(`https://piercingblow.ai.id/admin/` → kartu **Server manager**):
+AI server di VPS dikelola dari **tool Python** (`server/manager.py`) — TUI
+terminal, tanpa file config, tanpa HTTP endpoint:
 
-- daftar server AI (per VPS) + model yang tersedia di tiap server,
-- nyalakan / matikan AI **per proses** di VPS tersebut,
-- status CPU, RAM, penyimpanan, dan jaringan (di-refresh otomatis),
-- log sederhana (kapan server dinyalakan, output runtime terakhir).
+- atur **IP**, **port**, **secret key**, dan **file model (GGUF)** dari UI,
+- jalankan/matikan AI server (llama.cpp / Ollama / vLLM),
+- status CPU, RAM, disk, network + log proses,
+- salin base URL API (`http://<IP>:<port>/v1`) untuk ditempel di dashboard.
+
+Di dashboard admin (`https://piercingblow.ai.id/admin/` → kartu **Server
+manager**) yang diisi hanya **base URL AI server** + **secret key**; daftar
+model yang aktif dibaca langsung dari sana.
 
 Request dari web client selalu membawa header `X-Secret-Key` (di-gerbang
 nginx), jadi server AI hanya menerima request yang memang hdr-authorized —
 tanpa secret, request tidak dikirim sama sekali.
 
-Backend-nya ada di [`server/`](server/README.md) — daemon Python 3 tanpa
+Backend-nya ada di [`server/`](server/README.md) — tool Python 3 tanpa
 dependency + contoh nginx yang menjadi gerbang secret key:
 
 ```bash
-cp server/servers.json.example server/servers.json   # isi secretKey + apiUrl
-python3 server/manager.py --config server/servers.json
+python3 server/manager.py --ip 203.0.113.10 --port 8080 \
+    --secret "kuncimu" --model /models/qwen3-8b.gguf
 ```
 
 Di aplikasi, provider **Local AI** memakai model dari dashboard (tab

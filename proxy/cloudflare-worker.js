@@ -675,18 +675,24 @@ function cleanServerEntry(body, existing) {
     typeof value === 'string' && value.trim().length > 0
       ? value.trim()
       : String(base[field] || '');
+  const ip = String(body.ip ?? body.host ?? base.ip ?? base.host ?? '').trim();
+  const port = Number(body.port ?? base.port ?? 0) || 0;
+  // Base URL AI OpenAI-compatible: dari IP + port AI server.
+  let baseUrl = String(body.baseUrl ?? base.baseUrl ?? '').trim();
+  if (!baseUrl && ip && port) baseUrl = `http://${ip}:${port}/v1`;
   return {
     id: cleanServerId(body.id ?? base.id),
     name: String(body.name ?? base.name ?? '').trim(),
-    // Satu entri = satu VPS/daemon. Admin cukup mengisi IP + port daemon
-    // (+ secret key); Manager URL dibuat otomatis. Alamat inference dan
-    // secret-nya didapat dari daemon manager (servers.json).
-    ip: String(body.ip ?? body.host ?? base.ip ?? base.host ?? '').trim(),
-    port: Number(body.port ?? base.port ?? 0) || 0,
+    // Satu entri = satu VPS. Admin mengisi IP + port (AI server) + secret
+    // key; base URL AI dibuat otomatis, model aktif dideteksi langsung dari
+    // AI server (OpenAI-compatible).
+    ip,
+    port,
+    modelFile: String(body.modelFile ?? base.modelFile ?? '').trim(),
+    baseUrl,
+    // Opsional: kalau daemon manager.py dipakai (start/stop + statistik).
     managerUrl: buildManagerUrl(body, base),
     managerKey: keepSecret('managerKey', body.managerKey),
-    // Diisi otomatis dari daemon saat deteksi (kompatibilitas lama).
-    baseUrl: String(body.baseUrl ?? base.baseUrl ?? '').trim(),
     apiKey: keepSecret('apiKey', body.apiKey),
     runtime: String(body.runtime ?? base.runtime ?? '').trim(),
     enabled: body.enabled === undefined
@@ -840,11 +846,13 @@ async function syncDetectedModels(env, server, detected, daemons = []) {
 
   // Model yang prosesnya masih terdaftar tapi AI-nya belum jalan: tetap
   // disimpan (harga/tier admin tidak hilang), tapi ditandai nonaktif.
+  // Kalau deteksi dilakukan langsung ke AI server (tanpa daemon), semua model
+  // yang tidak terdeteksi dianggap nonaktif (AI-nya belum jalan).
   const inactive = [];
   for (const model of existingForServer) {
     const key = `${model.daemonId || ''}::${model.backendModelId || model.modelId || ''}`;
     if (detectedKeys.has(key)) continue;
-    if (knownDaemons.has(String(model.daemonId || ''))) {
+    if (!daemons.length || knownDaemons.has(String(model.daemonId || ''))) {
       kept.push({ ...model, active: false, updatedAt: now });
       inactive.push(model.modelId);
     }
@@ -861,19 +869,112 @@ async function syncDetectedModels(env, server, detected, daemons = []) {
   return { added, updated, removed, inactive, total: kept.length };
 }
 
+/// Ambil daftar model langsung dari AI server (OpenAI-compatible).
+/// dipakai kalau daemon manager.py tidak dipakai.
+async function fetchAiModels(base, secret) {
+  const clean = String(base || '').trim().replace(/\/+$/, '');
+  if (!clean) throw new Error('Base URL AI server belum diisi.');
+  const url = /\/v\d+$/.test(clean) ? `${clean}/models` : `${clean}/v1/models`;
+  const headers = { Accept: 'application/json' };
+  if (secret) {
+    headers['X-Secret-Key'] = secret;
+    headers.Authorization = `Bearer ${secret}`;
+  }
+  let res;
+  try {
+    res = await fetch(url, { headers });
+  } catch (error) {
+    throw new Error(`Tidak bisa menghubungi ${url}: ${error}`);
+  }
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} dari ${url}: ${text.slice(0, 180)}`);
+  }
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new Error(`Respons ${url} bukan JSON.`);
+  }
+  const items = Array.isArray(payload)
+    ? payload
+    : (Array.isArray(payload && payload.data)
+      ? payload.data
+      : (Array.isArray(payload && payload.models) ? payload.models : []));
+  const ids = items
+    .map((item) => {
+      if (typeof item === 'string') return item;
+      if (item && typeof item === 'object') {
+        return item.id || item.name || item.model || '';
+      }
+      return '';
+    })
+    .map((id) => String(id || '').trim())
+    .filter(Boolean);
+  return { ids: [...new Set(ids)], url: clean };
+}
+
+/// Tandai model server ini sebagai nonaktif (AI server-nya tidak bisa
+/// dihubungi → model dianggap belum dimuat).
+async function markServerModelsInactive(env, serverId) {
+  const models = await getJson(env.PB_KV, 'server_models', []);
+  let changed = false;
+  for (const model of models) {
+    if (String(model.serverId || '') === String(serverId) &&
+      model.active !== false) {
+      model.active = false;
+      changed = true;
+    }
+  }
+  if (changed) {
+    await env.PB_KV.put('server_models', JSON.stringify(models));
+    await invalidateModelCaches(env);
+  }
+}
+
 async function detectViaManager(env, server) {
-  const daemons = await fetchManagerServers(server);
-  const detected = detectedModelsFromManager(daemons);
-  const first = daemons.find((d) => d && (d.runtime || d.apiUrl)) || {};
-  if (first.runtime) server.runtime = String(first.runtime);
-  if (first.apiUrl) server.baseUrl = String(first.apiUrl);
-  const sync = await syncDetectedModels(env, server, detected, daemons);
+  const raw = String(server.managerUrl || '').trim();
+  if (!raw) throw new Error('Base URL AI server belum diisi.');
+
+  // URL yang berakhiran /manager → flow lama (daemon manager.py).
+  if (/\/manager\/?$/i.test(raw)) {
+    try {
+      const daemons = await fetchManagerServers(server);
+      const detected = detectedModelsFromManager(daemons);
+      const first = daemons.find((d) => d && (d.runtime || d.apiUrl)) || {};
+      if (first.runtime) server.runtime = String(first.runtime);
+      if (first.apiUrl) server.baseUrl = String(first.apiUrl);
+      const sync = await syncDetectedModels(env, server, detected, daemons);
+      return {
+        ok: true,
+        count: detected.length,
+        models: detected.map((d) => d.backendId),
+        daemons: daemons.length,
+        activeDaemons: daemons.filter((d) => d && d.running).length,
+        ...sync,
+      };
+    } catch (error) {
+      // Lanjut ke deteksi langsung ke AI server.
+      console.log('[worker] daemon tidak bisa dibaca:', error && error.message);
+    }
+  }
+
+  // Alur biasa: tanya langsung AI server (OpenAI-compatible).
+  const { ids, url } = await fetchAiModels(raw, server.managerKey);
+  server.baseUrl = url;
+  const detected = ids.map((id) => ({
+    backendId: id,
+    daemonId: '',
+    apiUrl: url,
+    runtime: server.runtime || '',
+  }));
+  const sync = await syncDetectedModels(env, server, detected, []);
   return {
     ok: true,
     count: detected.length,
-    models: detected.map((d) => d.backendId),
-    daemons: daemons.length,
-    activeDaemons: daemons.filter((d) => d && d.running).length,
+    models: ids,
+    daemons: 0,
+    activeDaemons: ids.length ? 1 : 0,
     ...sync,
   };
 }
@@ -907,11 +1008,13 @@ async function handleAdminServers(request, env, pathname) {
         error: 'IP + port daemon wajib diisi (atau isi Manager URL manual).',
       });
     }
-    // Deteksi model lewat daemon manager VPS ini (GET <manager>/servers).
+    // Deteksi model: langsung ke AI server (atau daemon manager.py).
     let detection = { ok: false, skipped: true, count: 0, models: [] };
     try {
       detection = await detectViaManager(env, entry);
     } catch (error) {
+      // AI server tidak bisa dihubungi → model-nya dianggap belum aktif.
+      await markServerModelsInactive(env, entry.id);
       detection = {
         ok: false,
         count: 0,
@@ -948,6 +1051,8 @@ async function handleAdminServers(request, env, pathname) {
       await invalidateModelCaches(env);
       return jsonResponse(request, 200, { ok: true, server, ...detection });
     } catch (error) {
+      // AI server tidak bisa dihubungi → model-nya dianggap belum aktif.
+      await markServerModelsInactive(env, server.id);
       return jsonResponse(request, 502, {
         ok: false,
         error: String(error && error.message ? error.message : error),
