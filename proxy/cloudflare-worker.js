@@ -660,12 +660,13 @@ function cleanServerId(value) {
 /// mengisi Manager URL manual, mis. karena daemon ada di belakang nginx).
 function buildManagerUrl(body, base) {
   const explicit = String(body.managerUrl ?? base.managerUrl ?? '').trim();
+  // URL yang sudah diisi dipakai apa adanya (bisa /manager atau base URL AI).
   if (explicit) return explicit;
   const host = String(body.ip ?? body.host ?? base.ip ?? base.host ?? '').trim();
   const port = Number(body.port ?? base.port ?? 0);
   if (!host || !port) return '';
-  const scheme = String(body.scheme ?? 'http').trim() || 'http';
-  return `${scheme}://${host}:${port}/manager`;
+  // IP + port → daemon Python, path /manager sudah ditangani tool Python.
+  return `http://${host}:${port}/manager`;
 }
 
 function cleanServerEntry(body, existing) {
@@ -677,9 +678,8 @@ function cleanServerEntry(body, existing) {
       : String(base[field] || '');
   const ip = String(body.ip ?? body.host ?? base.ip ?? base.host ?? '').trim();
   const port = Number(body.port ?? base.port ?? 0) || 0;
-  // Base URL AI OpenAI-compatible: dari IP + port AI server.
-  let baseUrl = String(body.baseUrl ?? base.baseUrl ?? '').trim();
-  if (!baseUrl && ip && port) baseUrl = `http://${ip}:${port}/v1`;
+  // Base URL AI OpenAI-compatible: biasanya diisi dari daemon saat deteksi.
+  const baseUrl = String(body.baseUrl ?? base.baseUrl ?? '').trim();
   return {
     id: cleanServerId(body.id ?? base.id),
     name: String(body.name ?? base.name ?? '').trim(),

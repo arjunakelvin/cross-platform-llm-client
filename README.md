@@ -38,8 +38,8 @@ user memakai AI server tersebut lewat **gateway** dengan **API key sendiri**.
 
 | Fitur | Penjelasan |
 | --- | --- |
-| **Server per VPS** | Satu kartu = satu VPS. Di dashboard cukup isi **base URL AI server** (mis. `http://203.0.113.10:8080/v1`) + **secret key**. Tidak ada file config, tidak ada daemon/endpoint tambahan. |
-| **Tool Python di VPS** | `server/manager.py` — TUI terminal untuk atur **IP**, **port**, **secret key**, dan **file model (GGUF)**, lalu jalankan/matikan AI server + lihat status & log. Tidak ada config file yang perlu diedit, tidak ada HTTP endpoint. |
+| **Server per VPS** | Satu kartu = satu VPS. Di dashboard cukup isi **IP** + **port /manager** + **secret key** — path `/manager` ditambahkan otomatis oleh Worker. |
+| **Tool Python di VPS** | `server/manager.py` — TUI terminal untuk atur **IP**, **port**, **secret key**, dan **file model (GGUF)** (dengan file picker), jalankan/matikan AI server, lihat status & log. Sekaligus serve endpoint `/manager` untuk dashboard. |
 | **Deteksi model otomatis** | Saat server disimpan, dashboard membaca daftar model **yang sedang aktif** langsung dari AI server (OpenAI-compatible, header `X-Secret-Key`). Model ID **tidak bisa ditambah manual**. |
 | **Model aktif vs nonaktif** | Kalau AI-nya mati/tidak bisa dihubungi, model ditandai **"AI mati"** — harga/tier admin tetap tersimpan, tapi modelnya tidak ditawarkan ke user sampai AI-nya jalan lagi. |
 | **Edit per model** | Admin hanya mengedit: nama, tier (free/pro/vip), **harga input/output** (`/req` atau `/1M`), **context size**, dan **max output**. |
@@ -98,13 +98,14 @@ Buka **https://piercingblow.ai.id/admin/** (butuh admin key).
 
 | Kolom | Isi |
 | --- | --- |
-| **Manager URL / Base URL AI server** | alamat AI server VPS itu (OpenAI-compatible), mis. `http://203.0.113.10:8080/v1` atau URL publik nginx |
-| **Secret key** | secret yang sama dengan yang dipakai tool Python & nginx (dikirim sebagai `X-Secret-Key`) |
+| **IP / host VPS** | alamat VPS tempat tool Python `manager.py` jalan, mis. `203.0.113.10` |
+| **Port /manager** | port tool Python (default `8788`) — path `/manager` otomatis |
+| **Secret key** | sama dengan secret key tool Python (dikirim sebagai `X-Secret-Key`) |
 | Nama / ID / Status / Catatan | opsional |
 
 Tekan **Tambah server & deteksi model**. Setelah tersimpan:
 
-- dashboard membaca **model yang sedang aktif** langsung dari AI server,
+- dashboard membaca **model yang sedang aktif** dari tool Python di VPS itu,
 - tiap model ditampilkan dengan tier, harga, context, max output, dan status
   **aktif / AI mati**.
 
@@ -369,7 +370,7 @@ Jangan lupa salin `web/admin/index.html` → `build/web/admin/index.html` dan
 | Folder/berkas | Isi |
 | --- | --- |
 | `proxy/` | Worker (API, gateway, dashboard admin logic) + `dev-server.mjs` untuk lokal |
-| `server/` | tool Python `manager.py` (TUI terminal: IP, port, secret, file GGUF) + contoh nginx |
+| `server/` | tool Python `manager.py` (TUI terminal + endpoint `/manager`: IP, port, secret, file GGUF) + contoh nginx |
 | `web/admin/index.html` | dashboard admin (privat, butuh admin key) |
 | `web/api/` | forwarder Vercel + proxy CORS (hardened) |
 | `build/web/` | hasil build web (repo git sendiri, target deploy) |
@@ -447,16 +448,18 @@ API keys are stored in Hive and never transmitted anywhere except to the provide
 ### AI Server Manager (tool Python di VPS)
 
 AI server di VPS dikelola dari **tool Python** (`server/manager.py`) — TUI
-terminal, tanpa file config, tanpa HTTP endpoint:
+terminal, tanpa file config untuk diedit manual:
 
-- atur **IP**, **port**, **secret key**, dan **file model (GGUF)** dari UI,
+- atur **IP**, **port**, **secret key**, dan **file model (GGUF)** dari UI
+  (tekan `m` untuk memilih file `.gguf`),
 - jalankan/matikan AI server (llama.cpp / Ollama / vLLM),
 - status CPU, RAM, disk, network + log proses,
-- salin base URL API (`http://<IP>:<port>/v1`) untuk ditempel di dashboard.
+- sekaligus serve endpoint **`/manager`** untuk dashboard admin.
 
 Di dashboard admin (`https://piercingblow.ai.id/admin/` → kartu **Server
-manager**) yang diisi hanya **base URL AI server** + **secret key**; daftar
-model yang aktif dibaca langsung dari sana.
+manager**) yang diisi hanya **IP + port + secret key**; Worker menyusun
+`http://<IP>:<port>/manager` sendiri lalu membaca model aktif, statistik,
+log, dan start/stop dari sana.
 
 Request dari web client selalu membawa header `X-Secret-Key` (di-gerbang
 nginx), jadi server AI hanya menerima request yang memang hdr-authorized —
@@ -467,7 +470,7 @@ dependency + contoh nginx yang menjadi gerbang secret key:
 
 ```bash
 python3 server/manager.py --ip 203.0.113.10 --port 8080 \
-    --secret "kuncimu" --model /models/qwen3-8b.gguf
+    --manager-port 8788 --secret "kuncimu" --model /models/qwen3-8b.gguf
 ```
 
 Di aplikasi, provider **Local AI** memakai model dari dashboard (tab

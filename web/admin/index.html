@@ -274,38 +274,40 @@ async with aiohttp.ClientSession() as session:<br>
     <div class="card">
       <h2>Server manager &amp; model AI</h2>
       <p class="hint" style="margin:0 0 12px">
-        Satu kartu server = satu VPS. Cukup isi <b>Manager URL</b> daemon
-        Python (sudah mencakup IP + port) + <b>secret key manager</b>. Base
-        URL AI, daftar model yang <b>aktif</b>, status CPU/RAM/disk/network,
-        dan traffic dibaca langsung dari daemon VPS tersebut — tidak perlu
-        mengetik base URL atau secret inference lagi. Admin hanya mengedit
-        harga, tier, context, dan max output.</p>
+        Satu kartu server = satu VPS. Cukup isi <b>IP</b> + <b>port</b> +
+        <b>secret key</b> — tool Python di VPS sudah menangani path
+        <span class="mono">/manager</span> sendiri, jadi tidak ada base URL
+        manual. Model yang sedang aktif, status CPU/RAM/disk/network, log, dan
+        tombol start/stop dibaca dari sana.</p>
 
       <h3 id="srvFormTitle" style="margin-top:12px">Tambah server AI (VPS baru)</h3>
       <div class="hint" style="margin:0 0 8px">
         Ulangi untuk VPS/server 2, server 3, dan seterusnya. Setiap VPS punya
-        Manager URL + secret sendiri sehingga model, CPU/RAM, dan traffic-nya
+        IP + port + secret sendiri sehingga model, CPU/RAM, dan traffic-nya
         terpisah.</div>
       <div class="row">
         <div>
-          <label for="srvManagerUrl">Manager URL / Base URL AI server</label>
-          <input type="text" id="srvManagerUrl"
-                 placeholder="http://203.0.113.10:8080/v1">
-          <div class="hint">Alamat AI server VPS ini (OpenAI-compatible):
-            <span class="mono">http://IP:port/v1</span>. Model aktif dibaca
-            langsung dari sana. Kalau pakai daemon
-            <span class="mono">manager.py</span>, isi
-            <span class="mono">.../manager</span>.</div>
+          <label for="srvIp">IP / host VPS</label>
+          <input type="text" id="srvIp" placeholder="203.0.113.10">
+          <div class="hint">Alamat VPS tempat tool Python
+            <span class="mono">manager.py</span> jalan.</div>
         </div>
         <div>
-          <label for="srvManagerKey">Secret key manager</label>
-          <input type="password" id="srvManagerKey" autocomplete="new-password"
-                 placeholder="secretKey di servers.json VPS ini">
-          <div class="hint">Dipakai untuk membaca daftar model yang aktif,
-            start/stop, statistik, dan request chat ke inference di VPS ini.</div>
+          <label for="srvPort">Port /manager</label>
+          <input type="number" id="srvPort" min="1" max="65535"
+                 placeholder="8788">
+          <div class="hint">Port tool Python (default 8788). Path
+            <span class="mono">/manager</span> ditambahkan otomatis.</div>
         </div>
       </div>
       <div class="row">
+        <div>
+          <label for="srvManagerKey">Secret key</label>
+          <input type="password" id="srvManagerKey" autocomplete="new-password"
+                 placeholder="secret key tool Python">
+          <div class="hint">Dikirim sebagai header
+            <span class="mono">X-Secret-Key</span> ke daemon VPS ini.</div>
+        </div>
         <div>
           <label for="srvName">Nama server (opsional)</label>
           <input type="text" id="srvName" placeholder="VPS 1 — Qwen3 8B">
@@ -1257,11 +1259,12 @@ function fillServerFormFrom(server) {
   $('srvId').value = server ? server.id : '';
   $('srvId').readOnly = !!server;
   $('srvName').value = server ? (server.name || '') : '';
-  $('srvManagerUrl').value = server ? (server.managerUrl || '') : '';
+  $('srvIp').value = server ? (server.ip || '') : '';
+  $('srvPort').value = server ? (server.port || '') : '';
   $('srvManagerKey').value = '';
   $('srvManagerKey').placeholder = server && server.managerKey
     ? 'Tersimpan — kosongkan = tidak diubah'
-    : 'secretKey di servers.json VPS ini';
+    : 'secret key tool Python';
   $('srvEnabled').value = server && server.enabled === false ? '0' : '1';
   $('srvNotes').value = server ? (server.notes || '') : '';
 }
@@ -1281,7 +1284,7 @@ function editServerEntry(id) {
   fillServerFormFrom(server);
   $('srvFormTitle').textContent = 'Edit server: ' + (server.name || server.id);
   $('saveServerEntry').textContent = 'Simpan perubahan';
-  $('srvManagerUrl').focus();
+  $('srvIp').focus();
   $('srvFormTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
@@ -1322,10 +1325,12 @@ function closeModelDialog() {
 }
 
 $('saveServerEntry').addEventListener('click', async () => {
-  const managerUrl = $('srvManagerUrl').value.trim();
-  if (!managerUrl) {
-    setStatus($('serverModelStatus'), 'Manager URL wajib diisi.', false);
-    $('srvManagerUrl').focus();
+  const ip = $('srvIp').value.trim();
+  const port = Number($('srvPort').value) || 0;
+  if (!ip || !port) {
+    setStatus($('serverModelStatus'),
+      'IP VPS + port /manager wajib diisi.', false);
+    (ip ? $('srvPort') : $('srvIp')).focus();
     return;
   }
   const wasEditing = !!editingServerId;
@@ -1335,7 +1340,8 @@ $('saveServerEntry').addEventListener('click', async () => {
     id,
     name: $('srvName').value.trim() ||
       (wasEditing ? id : 'Server ' + (gatewayServers.length + 1)),
-    managerUrl,
+    ip,
+    port,
     enabled: $('srvEnabled').value === '1',
     notes: $('srvNotes').value.trim(),
   };
