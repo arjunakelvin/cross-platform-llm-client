@@ -229,8 +229,11 @@ class CreditQuotaCard extends StatelessWidget {
     final ratio =
         total <= 0 ? 0.0 : (creditUsed / total).clamp(0.0, 1.0).toDouble();
     final left = (1 - ratio).clamp(0.0, 1.0).toDouble();
+    final accent = creditBalance <= 0 ? t.red : t.green;
+    final percentLabel = _percentLabel(ratio);
+
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: t.surface,
         borderRadius: BorderRadius.circular(14),
@@ -241,37 +244,72 @@ class CreditQuotaCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(Icons.payments_outlined, size: 18, color: t.green),
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(Icons.account_balance_wallet_outlined,
+                    size: 18, color: accent),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Kredit AI',
+                        style: t.bodyStrong,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis),
+                    const SizedBox(height: 2),
+                    Text('Untuk model berbayar',
+                        style: t.small.copyWith(color: t.muted),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis),
+                  ],
+                ),
+              ),
               const SizedBox(width: 8),
-              Flexible(
-                child: Text('Kredit AI',
-                    style: t.bodyStrong,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  percentLabel,
+                  style: t.small.copyWith(
+                    color: accent,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 14),
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Flexible(
                 child: Text(
                   _fmtMoney(creditBalance),
-                  style: t.bodyStrong,
+                  style: t.title.copyWith(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.6,
+                  ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  '${_fmtCharge(creditUsed)} terpakai',
-                  style: t.small.copyWith(color: t.muted),
-                  textAlign: TextAlign.right,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+              const SizedBox(width: 6),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text('tersisa',
+                    style: t.small.copyWith(color: t.muted)),
               ),
             ],
           ),
@@ -284,14 +322,11 @@ class CreditQuotaCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Flexible(
                 child: Text(
-                  '${(ratio * 100).round()}% terpakai',
-                  style: t.small.copyWith(
-                    color: ratio >= 0.5 ? t.orange : t.muted,
-                  ),
+                  'Terpakai ${_fmtCharge(creditUsed)}',
+                  style: t.small.copyWith(color: t.muted),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -299,11 +334,8 @@ class CreditQuotaCard extends StatelessWidget {
               const SizedBox(width: 8),
               Flexible(
                 child: Text(
-                  '${_fmtMoney(creditBalance)} tersisa',
-                  style: t.small.copyWith(
-                    color: creditBalance <= 0 ? t.red : t.text,
-                    fontWeight: FontWeight.w600,
-                  ),
+                  'Total ${_fmtMoney(total)}',
+                  style: t.small.copyWith(color: t.muted),
                   textAlign: TextAlign.right,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -320,15 +352,28 @@ class CreditQuotaCard extends StatelessWidget {
               color: t.red,
             ),
           ],
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           Text(
-            'Kredit dipakai untuk model dengan harga di atas \$0. '
-            'Model \$0 memakai kuota token.',
+            'Terpotong otomatis tiap request sesuai harga model di dashboard.',
             style: t.small.copyWith(color: t.muted),
           ),
         ],
       ),
     );
+  }
+
+  /// Persentase ringkas: 2 desimal di bawah 1% (biar tidak selalu 0%),
+  /// 1 desimal di bawah 10%, bulat untuk nilai besar.
+  static String _percentLabel(double ratio) {
+    final pct = (ratio * 100).clamp(0.0, 100.0);
+    final text = pct <= 0
+        ? '0'
+        : pct < 1
+            ? pct.toStringAsFixed(2)
+            : pct < 10
+                ? pct.toStringAsFixed(1)
+                : pct.round().toString();
+    return '$text%';
   }
 }
 
@@ -380,15 +425,6 @@ class AccountInfoSheet extends StatelessWidget {
             final ratio = settings.tokenUsageRatio;
             final resetDays = settings.tokenResetDays.value;
             final countdown = settings.tokenResetCountdownLabel;
-
-            // Kredit: total = sisa + yang sudah terpakai, jadi bar bisa
-            // menampilkan sisa kredit seperti bar kuota token.
-            final creditTotal =
-                settings.creditBalance.value + settings.creditUsed.value;
-            final creditRatio = creditTotal <= 0
-                ? 0.0
-                : (settings.creditUsed.value / creditTotal).clamp(0.0, 1.0);
-            final creditLeft = (1 - creditRatio).clamp(0.0, 1.0);
 
             const discordPurple = Color(0xFF5865F2);
 

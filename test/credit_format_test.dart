@@ -9,6 +9,12 @@ void main() {
       expect(formatCreditCharge(0.013), r'$0.013');
     });
 
+    test('menampilkan potongan panjang dengan angka ringkas', () {
+      // Angka mentah 8 desimal tidak boleh memenuhi kartu.
+      expect(formatCreditCharge(0.025544908), r'$0.0255');
+      expect(formatCreditCharge(0.0126), r'$0.0126');
+    });
+
     test('menampilkan potongan sub-sen dari harga /1M', () {
       expect(formatCreditCharge(0.0000013), r'$0.0000013');
       expect(formatCreditCharge(0.000001), r'$0.000001');

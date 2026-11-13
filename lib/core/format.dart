@@ -35,17 +35,22 @@ String formatMoney(num value, {int decimals = 2}) {
 
 /// Format biaya/kredit per pemakaian (bukan saldo).
 ///
-/// Saldo memakai 2 desimal ([formatMoney]), tapi potongan per request harus
-/// tampil apa adanya sampai 8 desimal (presisi internal worker). Contoh:
-/// `0.0126 → $0.0126`, `0.0000013 → $0.0000013`. Tanpa ini, potongan
-/// $0.0126 terlihat seperti $0.01 dan potongan $0.0000013 seperti $0.000001.
+/// Saldo memakai 2 desimal ([formatMoney]), sedangkan potongan per request
+/// ditampilkan ringkas tapi tetap akurat:
+/// - >= $0.01      → maksimal 4 desimal (`0.025544908 → $0.0255`)
+/// - >= $0.0001    → maksimal 6 desimal (`0.0065 → $0.0065`)
+/// - <  $0.0001    → maksimal 8 desimal (`0.0000013 → $0.0000013`)
+///
+/// Nol di belakang selalu dibuang dan minimal 2 desimal, supaya angka tidak
+/// jadi deretan panjang seperti `$0.025544908` tapi tidak juga jadi `$0.00`.
 String formatCreditCharge(num value) {
   final n = value.toDouble();
   if (n.isNaN || n.isInfinite) return '\$0.00';
   final negative = n < 0;
   final abs = n.abs();
   if (abs == 0) return '\$0.00';
-  var text = abs.toStringAsFixed(8);
+  final decimals = abs >= 0.01 ? 4 : (abs >= 0.0001 ? 6 : 8);
+  var text = abs.toStringAsFixed(decimals);
   text = text.replaceFirst(RegExp(r'0+$'), '');
   final parts = text.split('.');
   var frac = parts.length > 1 ? parts[1] : '';

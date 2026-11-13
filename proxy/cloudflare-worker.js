@@ -261,6 +261,8 @@ async function handleAuth(request, env, pathname) {
       const serverById = new Map(servers.map((s) => [s.id, s]));
       const models = serverModels
         .filter((m) => m && m.modelId)
+        // Model yang disembunyikan admin tidak pernah ditawarkan ke user.
+        .filter((m) => m.enabled !== false)
         .filter((m) => m.active !== false)
         .filter((m) => !m.serverId || serverById.has(String(m.serverId)))
         .map((m) => {
@@ -1041,6 +1043,8 @@ async function syncDetectedModels(env, server, detected, daemons = []) {
       runtime: item.runtime || server.runtime || '',
       tierAccess,
       pricing: (existing && existing.pricing) || {},
+      // Status tampil/sembunyi dipertahankan saat deteksi ulang.
+      enabled: existing ? (existing.enabled !== false) : true,
       contextSize: existing ? (Number(existing.contextSize) || 0) : 0,
       maxOutput: existing ? (Number(existing.maxOutput) || 0) : 0,
       detected: true,
@@ -1753,6 +1757,8 @@ async function handleGateway(request, env, pathname) {
           servers.map((s) => [String(s.id), s]));
         return serverModels
           .filter(m => {
+            // Model yang disembunyikan admin tidak boleh dipakai user.
+            if (m.enabled === false) return false;
             // Model yang AI-nya belum dimuat tidak ditawarkan ke user.
             if (m.active === false) return false;
             if (m.serverId && disabled.has(String(m.serverId))) return false;
@@ -1822,6 +1828,13 @@ async function handleGateway(request, env, pathname) {
       });
     }
     const modelId = String(modelConfig.modelId);
+    // Admin bisa menyembunyikan model: user tidak boleh memakainya sama sekali,
+    // walaupun id-nya masih dipegang client (mis. dari cache lama).
+    if (modelConfig.enabled === false) {
+      return jsonResponse(request, 403, {
+        error: `Model "${modelId}" dinonaktifkan admin.`,
+      });
+    }
 
     // Check tier access
     // FREE model → bisa dipakai siapa saja (token/credit sesuai label model),
@@ -1840,50 +1853,35 @@ async function handleGateway(request, env, pathname) {
 
     // Check balance.
     //
-    // Harga $0 (baik /req maupun /1M) → pemakaian memotong kuota token.
-    // Ada harga > 0 → pemakaian memotong credit (tier Pro/VIP).
+    // Aturan tagihan (sama dengan dashboard & aplikasi):
+    //   - harga $0 (semua field 0)          → gratis, potong kuota token
+    //   - model FREE + ada harga            → potong kuota token
+    //   - model PRO/VIP + ada harga         → SELALU potong kredit
+    // Model PRO/VIP berharga TIDAK lagi turun ke mode token saat kredit habis:
+    // kalau saldo tidak cukup, request ditolak 402 supaya log dan tagihan tidak
+    // tercampur (dulu user diam-diam dipotong token padahal pakai model PRO).
     const pricing = modelConfig.pricing || {};
     const inputPerReq = Number(pricing.inputPerReq) || 0;
     const outputPerReq = Number(pricing.outputPerReq) || 0;
     const inputPer1M = Number(pricing.inputPer1M) || 0;
     const outputPer1M = Number(pricing.outputPer1M) || 0;
-    // Aturan tagihan berdasarkan LABEL model (bukan tier user):
-    // FREE model  → selalu potong token dari kuota user
-    // PRO/VIP model → potongan kredit, TAPI jika user tier VIP/kredit-habis,
-    //               maka jatuhkan ke mode token (bukan paksa pakai model premium
-    //               tanpa uang). Ini supaya user tetap bisa pakai model mahal jika
-    //               kredit habis, dengan cara turun ke token.
-    // Catatan: `isFreeModel` sudah dihitung di atas dari `allowedTiers`
-    // (dipakai juga untuk cek akses tier), jadi JANGAN deklarasikan ulang —
-    // `const` ganda dalam satu scope = SyntaxError dan worker gagal load.
-
-    // Jika model FREE → selalu pakai token (tanpa memperhatikan tier user).
-    // Jika model PRO/VIP → cek kredit user.
-    //   - Jika punya kredit → potong kredit.
-    //   - Jika TIDAK punya kredit (balance <= 0) → turun ke mode token
-    //     supaya user tetap bisa request (bukan error 402).
-    let useCredits;
-    if (isFreeModel) {
-      // MODEL FREE → selalu token.
-      useCredits = false;
-    } else {
-      // MODEL PRO/VIP.
-      const creditBalance = Number(account.creditBalance) || 0;
-      // Jika user punya credit > 0 → pakai kredit.
-      // Jika user kredit habis (balance <= 0) → turun ke token agar bisa jalan.
-      useCredits = creditBalance > 0;
-    }
+    const priced = inputPerReq > 0 || outputPerReq > 0 ||
+      inputPer1M > 0 || outputPer1M > 0;
+    const useCredits = !isFreeModel && priced;
 
     if (useCredits) {
-      // Estimasi minimum: harga per-request kalau ada, selain itu cukup
-      // saldo credit > 0 (harga per-1M dihitung setelah usage diketahui).
+      // Biaya per request = flat satu panggilan (input + output /req).
+      // Untuk harga /1M, estimasi minimum cukup saldo > 0 karena biaya
+      // dihitung setelah jumlah token diketahui.
       const estimatedCost = inputPerReq + outputPerReq;
       const creditBalance = Number(account.creditBalance) || 0;
       if (creditBalance <= 0 || creditBalance < estimatedCost) {
         return jsonResponse(request, 402, {
-          error: 'Insufficient credits for this model.',
+          error: 'Kredit tidak cukup untuk model ini. Isi saldo kredit atau ' +
+            'pakai model gratis (harga $0).',
           required: estimatedCost,
           balance: creditBalance,
+          billing: 'credit',
         });
       }
     } else {
@@ -1896,6 +1894,7 @@ async function handleGateway(request, env, pathname) {
             (Number(account.tokenBalance) || 0) -
               (Number(account.tokenUsed) || 0),
           ),
+          billing: priced ? 'token' : 'free',
         });
       }
     }
@@ -2184,6 +2183,10 @@ async function handleServerModels(request, env, pathname) {
       runtime: body.runtime || base.runtime || '',
       tierAccess,
       pricing: body.pricing || base.pricing || {},
+      // Default tampil. Admin bisa menyembunyikan model dari aplikasi.
+      enabled: body.enabled !== undefined
+        ? !!body.enabled
+        : (base.enabled !== false),
       contextSize: body.contextSize ?? base.contextSize ?? 0,
       maxOutput: body.maxOutput ?? base.maxOutput ?? 0,
       detected: body.detected !== undefined

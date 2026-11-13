@@ -144,19 +144,12 @@
     <p class="hint">Halaman ini tidak ditautkan dari aplikasi. Masukkan admin key
       (secret <span class="mono">ADMIN_KEY</span> di worker) untuk mengelola login
       Discord, tier, dan akun.</p>
-    <label for="workerUrl">Worker URL (opsional)</label>
-    <input type="text" id="workerUrl" autocomplete="off"
-           placeholder="https://piercingblow-api.&lt;subdomain&gt;.workers.dev">
-    <div class="hint">Kosong = pakai API di domain ini sendiri. Isi kalau
-      <span class="mono">/api</span> di domain masih ketahan proxy CORS
-      (error <span class="mono">Missing target URL</span>) — isi alamat Worker
-      Cloudflare, atau set env <span class="mono">WORKER_URL</span> di Vercel,
-      atau pasang route <span class="mono">piercingblow.ai.id/api*</span>.</div>
     <label for="adminKey">Admin key</label>
     <input type="password" id="adminKey" autocomplete="off" placeholder="ADMIN_KEY">
     <div class="hint">Token disimpan di <span class="mono">sessionStorage</span>
       browser ini saja — hilang kalau tab ditutup, tidak pernah disimpan
-      permanen dan tidak pernah dikirim ke pengguna aplikasi.</div>
+      permanen dan tidak pernah dikirim ke pengguna aplikasi. API selalu
+      dipanggil ke domain ini sendiri (<span class="mono">/api</span>).</div>
     <div style="margin-top:12px">
       <button class="primary" id="loginBtn" style="width:100%">Masuk</button>
     </div>
@@ -363,9 +356,10 @@ async with aiohttp.ClientSession() as session:<br>
       <div class="hint" style="margin:0 0 6px">
         Model ID terdeteksi otomatis dari server dan tidak bisa ditambah
         manual. <b>Model berlabel FREE</b> memakai kuota token user,
-        <b>model berlabel PRO/VIP</b> memakai kredit user — jadi token &amp;
-        kredit tidak tercampur. Harga di /req atau /1M = biaya per pemakaian
-        (0 = gratis untuk mode tersebut).</div>
+        <b>model berlabel PRO/VIP</b> memakai kredit user — token &amp; kredit
+        tidak tercampur. <b>/req</b> = harga flat tiap panggilan (berapa pun
+        panjang jawabannya), <b>/1M</b> = harga per 1 juta token input/output
+        sesuai pemakaian aktual.</div>
       <div class="row">
         <div>
           <label for="smName">Nama tampilan (ditampilkan di aplikasi)</label>
@@ -400,27 +394,46 @@ async with aiohttp.ClientSession() as session:<br>
         </label>
       </div>
       <div class="hint" id="smBillingMode" style="margin:-2px 0 10px"></div>
-      <label>Pricing input</label>
-      <div class="row">
+      <label>Mode harga</label>
+      <div style="display:flex;gap:16px;margin-bottom:8px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:4px;color:var(--text);margin:0">
+          <input type="radio" name="smPricingMode" id="smModeFree" value="free"> Gratis
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;color:var(--text);margin:0">
+          <input type="radio" name="smPricingMode" id="smModeReq" value="req"> Per request (/req)
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;color:var(--text);margin:0">
+          <input type="radio" name="smPricingMode" id="smMode1M" value="1m"> Per 1M token (/1M)
+        </label>
+      </div>
+      <div id="smPerReqGroup">
+        <label for="smPerReq">Harga per request</label>
+        <input type="number" id="smPerReq" min="0" step="0.0001"
+               placeholder="mis. 0.0065">
+        <div class="hint">Flat per panggilan: 1 prompt masuk + 1 jawaban keluar
+          = 1 harga, tidak tergantung panjang jawaban.</div>
+      </div>
+      <div id="smPer1MGroup" class="row">
         <div>
-          <input type="number" id="smInputPerReq" min="0" step="0.0001" placeholder="$ per request">
-          <div class="hint">$ / request (0 = pakai token)</div>
+          <label for="smInputPer1M">Harga input / 1M token</label>
+          <input type="number" id="smInputPer1M" min="0" step="0.01"
+                 placeholder="$ per 1M tokens">
+          <div class="hint">Dihitung dari token prompt yang dikirim.</div>
         </div>
         <div>
-          <input type="number" id="smInputPer1M" min="0" step="0.01" placeholder="$ per 1M tokens">
-          <div class="hint">$ / 1M tokens (dipakai kalau /req = 0)</div>
+          <label for="smOutputPer1M">Harga output / 1M token</label>
+          <input type="number" id="smOutputPer1M" min="0" step="0.01"
+                 placeholder="$ per 1M tokens">
+          <div class="hint">Dihitung dari token jawaban yang dihasilkan.</div>
         </div>
       </div>
-      <label>Pricing output</label>
-      <div class="row">
-        <div>
-          <input type="number" id="smOutputPerReq" min="0" step="0.0001" placeholder="$ per request">
-          <div class="hint">$ / request (0 = pakai token)</div>
-        </div>
-        <div>
-          <input type="number" id="smOutputPer1M" min="0" step="0.01" placeholder="$ per 1M tokens">
-          <div class="hint">$ / 1M tokens (dipakai kalau /req = 0)</div>
-        </div>
+      <div style="margin-top:12px">
+        <label style="display:flex;align-items:center;gap:6px;color:var(--text);margin:0">
+          <input type="checkbox" id="smEnabled" checked>
+          Tampilkan model di aplikasi (user bisa memakainya)
+        </label>
+        <div class="hint">Kalau dinonaktifkan, model disembunyikan dari daftar
+          user dan request ke model ini ditolak — walaupun harganya diisi.</div>
       </div>
       <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
         <button id="cancelModelDialog">Batal</button>
@@ -527,13 +540,11 @@ let config = null;
 // Endpoint callback OAuth Discord yang harus didaftarkan di Discord Portal.
 const DEFAULT_REDIRECT_URI = window.location.origin + '/auth/discord';
 
-// Base API: defaultnya domain ini sendiri. Kalau /api di domain masih
-// ketahan proxy CORS, isi "Worker URL" untuk langsung menembak Worker.
-let workerUrl = localStorage.getItem('pb_worker_url') || '';
-
+// API selalu ke domain ini sendiri. Dulu ada kolom "Worker URL" yang bisa
+// diarahkan ke server lain — dihapus supaya ADMIN_KEY tidak mungkin dikirim
+// ke host asing (phishing/pencurian key).
 function apiUrl(path) {
-  const base = workerUrl.trim().replace(/\/+$/, '');
-  return base + path;
+  return path;
 }
 
 function setStatus(el, msg, ok) {
@@ -684,17 +695,18 @@ function fmtMoney(value) {
   return (negative ? '-' : '') + '$' + head + tail;
 }
 
-// Kredit / biaya per pemakaian: presisi sampai 8 desimal, nol di belakang
-// dibuang, minimal 2 desimal. Contoh: 0.0126 -> $0.0126, 0.0000013 ->
-// $0.0000013. Dipakai untuk log pemakaian supaya angkanya sama persis
-// dengan yang dipotong Worker (bukan dibulatkan jadi $0.01).
+// Kredit / biaya per pemakaian: angka ringkas tapi tetap akurat.
+// >= $0.01 → maksimal 4 desimal (0.025544908 -> $0.0255); >= $0.0001 →
+// maksimal 6 desimal; lebih kecil → 8 desimal. Nol di belakang dibuang,
+// minimal 2 desimal.
 function fmtCredit(value) {
   const n = Number(value || 0);
   if (!isFinite(n)) return '$0.00';
   const negative = n < 0;
   const abs = Math.abs(n);
   if (abs === 0) return '$0.00';
-  const parts = abs.toFixed(8).replace(/0+$/, '').split('.');
+  const decimals = abs >= 0.01 ? 4 : (abs >= 0.0001 ? 6 : 8);
+  const parts = abs.toFixed(decimals).replace(/0+$/, '').split('.');
   const head = fmtInt(parts[0]);
   let frac = parts.length > 1 ? parts[1] : '';
   if (frac.length < 2) frac = frac.padEnd(2, '0');
@@ -944,15 +956,13 @@ $('loginBtn').addEventListener('click', async () => {
     if (msg.includes('Missing target URL')) {
       setStatus($('loginStatus'),
         'API tidak terjangkau: /api di domain ini masih diteruskan ke proxy '
-        + 'CORS. Isi "Worker URL" di atas dengan alamat Worker Cloudflare, '
-        + 'atau set env WORKER_URL di project Vercel, atau pasang route '
-        + 'piercingblow.ai.id/api* di Cloudflare.', false);
+        + 'CORS. Pasang route piercingblow.ai.id/api* di Cloudflare '
+        + '(jalankan "npx wrangler deploy" di folder proxy).', false);
     } else if (msg.includes('NOT_FOUND') || msg.includes('not found')) {
       setStatus($('loginStatus'),
-        'Endpoint admin tidak ada (404). Worker belum mengambil alih /api di '
+        'Endpoint admin tidak ada (404). Worker belum mengambil alih /api — '
         + 'jalankan "npx wrangler deploy" di folder proxy (route '
-        + 'piercingblow.ai.id/api* sudah dipasang), atau isi "Worker URL" '
-        + 'di atas.', false);
+        + 'piercingblow.ai.id/api* sudah dipasang).', false);
     } else if (msg.includes('ADMIN_KEY is not set')) {
       setStatus($('loginStatus'),
         'Worker belum punya ADMIN_KEY. Jalankan: wrangler secret put ADMIN_KEY',
@@ -961,19 +971,12 @@ $('loginBtn').addEventListener('click', async () => {
       setStatus($('loginStatus'), 'Admin key salah.', false);
     } else if (msg.includes('Failed to fetch')) {
       setStatus($('loginStatus'),
-        'Tidak bisa menghubungi Worker. Cek "Worker URL" (harus '
-        + 'https://...workers.dev tanpa path /api).', false);
+        'Tidak bisa menghubungi server. Pastikan halaman dibuka dari '
+        + 'https://piercingblow.ai.id/admin/ dan worker aktif.', false);
     } else {
       setStatus($('loginStatus'), msg, false);
     }
   }
-});
-
-// Worker URL disimpan di browser supaya tidak diisi ulang tiap sesi.
-$('workerUrl').value = workerUrl;
-$('workerUrl').addEventListener('input', () => {
-  workerUrl = $('workerUrl').value.trim();
-  localStorage.setItem('pb_worker_url', workerUrl);
 });
 
 $('copyRedirect').addEventListener('click', async () => {
@@ -1152,9 +1155,35 @@ function pricingLabel(model) {
   const in1M = Number(p.inputPer1M) || 0;
   const outReq = Number(p.outputPerReq) || 0;
   const out1M = Number(p.outputPer1M) || 0;
-  if (!inReq && !in1M && !outReq && !out1M) return '$0 · pakai token';
-  return 'In ' + fmtPrice(inReq) + '/req · ' + fmtPrice(in1M) + '/1M — ' +
-    'Out ' + fmtPrice(outReq) + '/req · ' + fmtPrice(out1M) + '/1M';
+  const perReq = inReq + outReq;
+  if (perReq > 0) {
+    // /req = flat per panggilan. Dulu admin mengisi input & output terpisah,
+    // jadi totalnya dijumlahkan dan ditampilkan apa adanya.
+    return 'Per request: ' + fmtCredit(perReq) + ' (flat)' +
+      (outReq > 0 ? ' = ' + fmtCredit(inReq) + ' + ' + fmtCredit(outReq) : '');
+  }
+  if (in1M > 0 || out1M > 0) {
+    return '/1M: input ' + fmtPrice(in1M) + ' · output ' + fmtPrice(out1M);
+  }
+  return 'Gratis · pakai kuota token';
+}
+
+function pricingMode() {
+  if ($('smModeReq').checked) return 'req';
+  if ($('smMode1M').checked) return '1m';
+  return 'free';
+}
+
+/// Tampilkan hanya field yang relevan dengan mode harga terpilih.
+function updatePricingModeFields() {
+  const mode = pricingMode();
+  if ($('smPerReqGroup')) {
+    $('smPerReqGroup').style.display = mode === 'req' ? 'block' : 'none';
+  }
+  if ($('smPer1MGroup')) {
+    $('smPer1MGroup').style.display = mode === '1m' ? 'flex' : 'none';
+  }
+  updateBillingModeHint();
 }
 
 /// Nama file model (`qwen2.5-coder-1.5b-instruct-q4_k_m.gguf`) → nama model
@@ -1190,12 +1219,16 @@ function modelRowHtml(model) {
   const activeTag = model.active === false
     ? ' <span class="tag off">AI mati</span>'
     : ' <span class="tag on">aktif</span>';
+  // Model yang disembunyikan admin: tidak muncul di aplikasi & request ditolak.
+  const hidden = model.enabled === false;
+  const hiddenTag = hidden ? ' <span class="tag off">disembunyikan</span>' : '';
   // Nama model saja — nama file .gguf tidak ditampilkan.
   const title = escapeHtml(model.name || friendlyModelName(model.modelId));
   const server = model.serverName ? ' · ' + escapeHtml(model.serverName) : '';
   return '<div class="model-row">' +
     '<div><b>' + title + '</b> ' +
     '<span class="tag">' + escapeHtml(tiers) + '</span>' + activeTag +
+    hiddenTag +
     '<div class="meta">' + server +
     ' · ctx ' + (model.contextSize || 0) +
     ' · max ' + (model.maxOutput || 0) +
@@ -1204,6 +1237,9 @@ function modelRowHtml(model) {
     backend + '</div>' +
     '<div class="price">' + escapeHtml(pricingLabel(model)) + '</div></div>' +
     '<div class="actions">' +
+    '<button data-model-toggle="' + escapeAttr(model.modelId) + '" ' +
+    'data-model-enabled="' + (hidden ? '0' : '1') + '">' +
+    (hidden ? 'Tampilkan' : 'Sembunyikan') + '</button>' +
     '<button data-model-edit="' + escapeAttr(model.modelId) + '">Edit</button>' +
     '</div></div>';
 }
@@ -1358,47 +1394,67 @@ function fillModelFormFrom(model) {
   $('smTierPro').checked = tiers.includes('pro');
   $('smTierVip').checked = tiers.includes('vip');
   const p = (model && model.pricing) || {};
-  $('smInputPerReq').value = p.inputPerReq || 0;
-  $('smInputPer1M').value = p.inputPer1M || 0;
-  $('smOutputPerReq').value = p.outputPerReq || 0;
-  $('smOutputPer1M').value = p.outputPer1M || 0;
-  updateBillingModeHint();
+  const inReq = Number(p.inputPerReq) || 0;
+  const outReq = Number(p.outputPerReq) || 0;
+  const in1M = Number(p.inputPer1M) || 0;
+  const out1M = Number(p.outputPer1M) || 0;
+  // /req disimpan sebagai satu angka flat. Data lama memisah input & output,
+  // jadi totalnya dijumlahkan supaya biaya yang sudah berjalan tidak berubah.
+  const perReq = inReq + outReq;
+  $('smPerReq').value = perReq || 0;
+  $('smInputPer1M').value = in1M || 0;
+  $('smOutputPer1M').value = out1M || 0;
+  if (perReq > 0) {
+    $('smModeReq').checked = true;
+  } else if (in1M > 0 || out1M > 0) {
+    $('smMode1M').checked = true;
+  } else {
+    $('smModeFree').checked = true;
+  }
+  $('smEnabled').checked = !model || model.enabled !== false;
+  updatePricingModeFields();
 }
 
 /// Aturan tagihan (sama dengan Worker):
 ///   model berlabel FREE  → dipotong dari kuota TOKEN user
 ///   model berlabel PRO/VIP → dipotong dari KREDIT user
+/// /req = flat per panggilan, /1M = volume token input/output.
 function updateBillingModeHint() {
   const el = $('smBillingMode');
   if (!el) return;
   const isFree = $('smTierFree').checked;
-  const inReq = Number($('smInputPerReq').value) || 0;
-  const outReq = Number($('smOutputPerReq').value) || 0;
+  const mode = pricingMode();
+  const perReq = Number($('smPerReq').value) || 0;
   const in1M = Number($('smInputPer1M').value) || 0;
   const out1M = Number($('smOutputPer1M').value) || 0;
-  const priced = inReq > 0 || outReq > 0 || in1M > 0 || out1M > 0;
+  const priced = mode === 'req' ? perReq > 0 : mode === '1m';
   const label = isFree ? 'FREE' : 'PRO/VIP';
   const wallet = isFree ? 'kuota <b>TOKEN</b> user' : '<b>KREDIT</b> user';
   let text = 'Label model: <b>' + label + '</b> → pemakaian dipotong dari ' +
     wallet + '.';
   if (!priced) {
-    text += ' Harga 0 → mode ini <b>gratis</b> (tidak ada pemotongan).';
-  } else if (inReq > 0 || outReq > 0) {
-    // Worker memakai harga per-request lebih dulu (harga /1M diabaikan).
-    text += ' Biaya per request: <b>' + fmtCredit(inReq + outReq) + '</b>' +
-      ' (input ' + fmtCredit(inReq) + ' + output ' + fmtCredit(outReq) + ')' +
-      '. Harga /1M diabaikan selama harga per-request diisi.';
+    text += ' Tanpa harga → <b>gratis</b> (tidak ada pemotongan kredit).';
+  } else if (mode === 'req') {
+    text += ' Skema <b>/req</b>: ' + fmtCredit(perReq) +
+      ' per panggilan (flat, berapa pun panjang jawabannya).';
   } else {
-    text += ' Biaya dihitung dari token aktual: ' + fmtPrice(in1M) +
-      '/1M input + ' + fmtPrice(out1M) + '/1M output.';
+    text += ' Skema <b>/1M</b>: input ' + fmtPrice(in1M) +
+      ' + output ' + fmtPrice(out1M) + ' per 1 juta token. Contoh 1.000 token' +
+      ' input + 1.000 token output = ' +
+      fmtCredit((in1M + out1M) / 1000) + '.';
   }
   el.innerHTML = text;
 }
 
-['smTierFree', 'smTierPro', 'smTierVip', 'smInputPerReq', 'smInputPer1M',
-  'smOutputPerReq', 'smOutputPer1M'].forEach((id) => {
+['smTierFree', 'smTierPro', 'smTierVip', 'smPerReq', 'smInputPer1M',
+  'smOutputPer1M'].forEach((id) => {
   const node = $(id);
   if (node) node.addEventListener('input', updateBillingModeHint);
+});
+
+['smModeFree', 'smModeReq', 'smMode1M'].forEach((id) => {
+  const node = $(id);
+  if (node) node.addEventListener('change', updatePricingModeFields);
 });
 
 function fillServerFormFrom(server) {
@@ -1572,6 +1628,16 @@ $('saveModelEntry').addEventListener('click', async () => {
   const model = serverModels.find((m) => String(m.modelId) === String(modelId));
   const ctx = Number($('smContextSize').value) || 0;
   const max = Number($('smMaxOutput').value) || 0;
+  // Satu mode harga saja: /req (flat), /1M (token), atau gratis.
+  const mode = pricingMode();
+  const pricing = {
+    inputPerReq: mode === 'req' ? (Number($('smPerReq').value) || 0) : 0,
+    outputPerReq: 0,
+    inputPer1M: mode === '1m' ? (Number($('smInputPer1M').value) || 0) : 0,
+    outputPer1M: mode === '1m' ? (Number($('smOutputPer1M').value) || 0) : 0,
+    contextSize: ctx,
+    maxOutput: max,
+  };
   try {
     await api('POST', '/api/admin/server-models', {
       modelId,
@@ -1583,14 +1649,8 @@ $('saveModelEntry').addEventListener('click', async () => {
       contextSize: ctx,
       maxOutput: max,
       tierAccess,
-      pricing: {
-        inputPerReq: Number($('smInputPerReq').value) || 0,
-        inputPer1M: Number($('smInputPer1M').value) || 0,
-        outputPerReq: Number($('smOutputPerReq').value) || 0,
-        outputPer1M: Number($('smOutputPer1M').value) || 0,
-        contextSize: ctx,
-        maxOutput: max,
-      },
+      pricing,
+      enabled: $('smEnabled').checked,
     });
     await loadGatewayData(true);
     closeModelDialog();
@@ -1632,6 +1692,21 @@ $('gatewayServerList').addEventListener('click', async (ev) => {
       } else if (btn.dataset.mgrAction === 'logs') {
         await mgrLogs(serverId, daemonId);
       }
+      return;
+    }
+    if (btn.dataset.modelToggle) {
+      const model = serverModels.find((m) =>
+        String(m.modelId) === String(btn.dataset.modelToggle));
+      if (!model) return;
+      const nextEnabled = btn.dataset.modelEnabled !== '1';
+      await api('POST', '/api/admin/server-models', {
+        modelId: model.modelId,
+        enabled: nextEnabled,
+      });
+      await loadGatewayData(true);
+      setStatus($('serverModelStatus'),
+        'Model "' + (model.name || model.modelId) + '" ' +
+        (nextEnabled ? 'ditampilkan ke user.' : 'disembunyikan dari user.'), true);
       return;
     }
     if (btn.dataset.modelEdit) {

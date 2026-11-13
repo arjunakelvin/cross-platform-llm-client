@@ -14,6 +14,7 @@ import '../services/discord_service.dart';
 import '../services/download_service.dart';
 import '../services/inference_service.dart';
 import '../services/local_image_service.dart';
+import '../widgets/cache_stats_card.dart';
 
 const _tabular = [FontFeature.tabularFigures()];
 
@@ -655,6 +656,12 @@ class ModelView extends GetView<ModelController> {
                     config.isLoading.value ? null : () => config.refresh(),
               ),
             ],
+          ),
+          // Statistik cache model list dipindah ke sini (tab Model List),
+          // bukan di bagian API key.
+          const Padding(
+            padding: EdgeInsets.fromLTRB(4, 14, 4, 2),
+            child: CacheStatsCard(),
           ),
           for (final entry in groups.entries) ...[
             SectionHeader(

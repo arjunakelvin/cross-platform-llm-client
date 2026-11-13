@@ -71,10 +71,10 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.text(r'$1,234.50'), findsOneWidget);
-    expect(find.text(r'$3.50 terpakai'), findsOneWidget);
-    expect(find.text(r'$1,234.50 tersisa'), findsOneWidget);
-    // 3.5 dari 1238 total -> 0%.
-    expect(find.textContaining('% terpakai'), findsOneWidget);
+    expect(find.textContaining(r'Terpakai $3.50'), findsOneWidget);
+    expect(find.text(r'Total $1,238.00'), findsOneWidget);
+    // 3.5 dari 1238 total -> 0.28% (presisi ekstra untuk nilai kecil).
+    expect(find.text('0.28%'), findsOneWidget);
   });
 
   testWidgets('kartu kredit habis: peringatan kredit', (tester) async {
@@ -87,7 +87,7 @@ void main() {
     expect(find.textContaining('Kredit sudah habis'), findsOneWidget);
   });
 
-  testWidgets('kartu kredit: 2 desimal untuk nilai besar, kredit kecil tetap tampil',
+  testWidgets('kartu kredit: saldo besar tetap ringkas, potongan kecil presisi',
       (tester) async {
     await pump(
       tester,
@@ -95,7 +95,9 @@ void main() {
     );
 
     expect(tester.takeException(), isNull);
+    // Saldo dan total dua-duanya dibulatkan 2 desimal.
     expect(find.text(r'$12.00'), findsOneWidget);
-    expect(find.text(r'$0.0045 terpakai'), findsOneWidget);
+    expect(find.text(r'Total $12.00'), findsOneWidget);
+    expect(find.textContaining(r'Terpakai $0.0045'), findsOneWidget);
   });
 }
