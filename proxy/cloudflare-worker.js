@@ -2207,7 +2207,10 @@ async function handleServerModels(request, env, pathname) {
   if (deleteMatch && request.method === 'DELETE') {
     const modelId = decodeURIComponent(deleteMatch[1]);
     const models = await getJson(env.PB_KV, 'server_models', []);
-    const filtered = models.filter(m => m.modelId !== modelId);
+    // Id dari tab dashboard yang masih lama (`…:free`) tetap harus menghapus
+    // entri yang sudah di-retag (`…:pro`) — cocokkan lewat retag juga.
+    const filtered = models.filter((m) => m.modelId !== modelId &&
+      retagPublicId(m.modelId, m.tierAccess) !== modelId);
     await env.PB_KV.put('server_models', JSON.stringify(filtered));
     await invalidateModelCaches(env);
     return jsonResponse(request, 200, { ok: true, deleted: modelId });

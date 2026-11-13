@@ -139,3 +139,15 @@ test('POST admin tidak membuat duplikat saat id lama masih :free', async () => {
   );
   assert.equal(stored[0].pricing.outputPerReq, 0.0065);
 });
+test('DELETE dengan id :free lama tetap menghapus entri yang sudah :pro', async () => {
+  const { store, env } = makeEnv();
+  seedModels(store);
+  // KV sengaja masih menyimpan id :free (belum sempat GET admin).
+  const res = await call(
+    env,
+    '/api/admin/server-models/' + encodeURIComponent(STALE_ID),
+    { method: 'DELETE', headers: { 'X-Admin-Key': ADMIN_KEY } },
+  );
+  assert.equal(res.status, 200);
+  assert.equal(JSON.parse(store.get('server_models')).length, 0);
+});
