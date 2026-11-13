@@ -142,6 +142,12 @@ Buka `http://localhost:8090/admin/` — admin key lokal: `dev-admin-key`.
 Data disimpan di memori (hilang saat server berhenti). Jangan dipakai untuk
 produksi.
 
+Regression test Worker (API key, sesi, gateway) tanpa perlu deploy:
+
+```bash
+node --test proxy/api-key.test.mjs
+```
+
 ## Kenapa perlu proxy?
 
 Saat aplikasi berjalan di browser (web), browser hanya mengizinkan request ke

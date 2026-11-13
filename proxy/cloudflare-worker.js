@@ -1616,7 +1616,8 @@ async function handleApiKey(request, env, pathname) {
   if (!session) {
     return jsonResponse(request, 401, { error: 'Login required to manage API keys.' });
   }
-  const accountId = session.account.id;
+  const account = session.account;
+  const accountId = account.id;
 
   // POST /api/auth/api-key — generate new API key
   if (pathname === '/api/auth/api-key' && request.method === 'POST') {
