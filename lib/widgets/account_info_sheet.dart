@@ -24,9 +24,12 @@ String _fmtComma(num v) {
 
 /// Uang dengan pemisah ribuan + 2 desimal (mis. $1,999.99).
 ///
-/// Nilai sangat kecil (< $0.01) tetap menampilkan desimalnya supaya kredit
-/// kecil tidak terlihat seperti nol.
+/// Saldo kredit: 2 desimal (nilai besar tetap ringkas).
 String _fmtMoney(num v) => formatMoney(v);
+
+/// Potongan kredit per pemakaian: presisi sampai 8 desimal supaya $0.0126
+/// tidak terlihat seperti $0.01.
+String _fmtCharge(num v) => formatCreditCharge(v);
 
 /// Kartu kuota token: bar menampilkan SISA kuota (memendek saat terpakai),
 /// persentase, dan peringatan saat habis.
@@ -263,7 +266,7 @@ class CreditQuotaCard extends StatelessWidget {
               const SizedBox(width: 8),
               Flexible(
                 child: Text(
-                  '${_fmtMoney(creditUsed)} terpakai',
+                  '${_fmtCharge(creditUsed)} terpakai',
                   style: t.small.copyWith(color: t.muted),
                   textAlign: TextAlign.right,
                   maxLines: 1,

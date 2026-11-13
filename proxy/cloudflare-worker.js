@@ -887,6 +887,16 @@ function tierTagForAccess(tierAccess) {
   return tiers[0];
 }
 
+/// Samakan tag tier di akhir id turunan (`label:model:tier`) dengan
+/// `tierAccess` terbaru dari dashboard. Id kustom yang tidak berakhiran
+/// tier dibiarkan apa adanya.
+function retagPublicId(modelId, tierAccess) {
+  const id = String(modelId || '').trim();
+  const match = id.match(/^(.+):(free|pro|vip)$/i);
+  if (!match) return id;
+  return `${match[1]}:${tierTagForAccess(tierAccess)}`;
+}
+
 /// Id model publik untuk `/v1/models` — BUKAN nama/path file.
 /// Format: `<label>:<model>:<tier>`, contoh `uncensored:deepseek-v4.1-flash:free`.
 /// `label` = nama kustom model di dashboard, kalau tidak ada pakai nama server.
@@ -920,8 +930,11 @@ function looksLikeFilePathId(value) {
 function gatewayPublicIdFor(model, servers) {
   const current = String((model && model.modelId) || '').trim();
   const backend = String((model && model.backendModelId) || '');
+  const tierAccess = (model && model.tierAccess) || ['free', 'pro', 'vip'];
   if (current && !looksLikeFilePathId(current) && current !== backend) {
-    return current;
+    // Id turunan (`…:free`) WAJIB ikut tier terbaru dari dashboard. Tanpa ini,
+    // model yang diubah ke PRO/VIP tetap tampil `:free` sampai deteksi ulang.
+    return retagPublicId(current, tierAccess);
   }
   const serverId = String((model && model.serverId) || '');
   const server = Array.isArray(servers)
@@ -930,7 +943,7 @@ function gatewayPublicIdFor(model, servers) {
   return buildGatewayModelId({
     label: (model && model.name) || '',
     model: (model && (model.backendModelId || model.modelId)) || '',
-    tierAccess: (model && model.tierAccess) || ['free', 'pro', 'vip'],
+    tierAccess,
     serverName: (server && server.name) || serverId,
   });
 }
@@ -1007,11 +1020,7 @@ async function syncDetectedModels(env, server, detected, daemons = []) {
     } else {
       // Id sudah bagus, tapi tag tier di belakang bisa berubah kalau admin
       // mengubah tier model → sinkronkan tanpa menghapus prefix label.
-      const tierTag = tierTagForAccess(tierAccess);
-      const currentTier = (modelId.match(/:(free|pro|vip)$/i) || [])[1];
-      if (currentTier && currentTier.toLowerCase() !== tierTag) {
-        modelId = modelId.replace(/:(free|pro|vip)$/i, `:${tierTag}`);
-      }
+      modelId = retagPublicId(modelId, tierAccess);
     }
     if (taken.has(modelId)) {
       // Bentrok dengan model di server lain: tambah suffix angka.
@@ -2105,8 +2114,23 @@ async function handleServerModels(request, env, pathname) {
 
   // GET /api/admin/server-models
   if (pathname === '/api/admin/server-models' && request.method === 'GET') {
-    const models = await getJson(env.PB_KV, 'server_models', []);
+    const stored = await getJson(env.PB_KV, 'server_models', []);
     const servers = await getJson(env.PB_KV, 'mgr_servers', []);
+    // Rapikan id turunan yang tag tier-nya masih lama (`…:free`) supaya sama
+    // dengan tier yang disimpan di dashboard. Sekali jalan, lalu simpan lagi.
+    let changed = false;
+    const models = stored.map((m) => {
+      const fixed = retagPublicId(m.modelId, m.tierAccess);
+      if (fixed && fixed !== m.modelId) {
+        changed = true;
+        return { ...m, modelId: fixed };
+      }
+      return m;
+    });
+    if (changed) {
+      await env.PB_KV.put('server_models', JSON.stringify(models));
+      await invalidateModelCaches(env);
+    }
     // `publicId` = id yang dipakai client ke gateway (`label:model:tier`).
     // `modelId` tetap dikirim apa adanya karena dipakai sebagai kunci edit.
     return jsonResponse(request, 200, {
@@ -2129,10 +2153,24 @@ async function handleServerModels(request, env, pathname) {
       return jsonResponse(request, 400, { error: 'modelId is required.' });
     }
     const models = await getJson(env.PB_KV, 'server_models', []);
-    const idx = models.findIndex(m => m.modelId === body.modelId);
+    const submittedId = String(body.modelId).trim();
+    // Cari entri lama lewat id yang dikirim. Kalau modal mengirim id yang
+    // sudah di-retag (…:pro) sementara KV masih …:free, cocokkan lewat
+    // retag agar tidak membuat entri duplikat.
+    let idx = models.findIndex(m => m.modelId === submittedId);
+    if (idx < 0) {
+      idx = models.findIndex(
+        (m) => retagPublicId(m.modelId, m.tierAccess) === submittedId);
+    }
     const base = idx >= 0 ? models[idx] : {};
+    const tierAccess = Array.isArray(body.tierAccess)
+      ? body.tierAccess
+      : (base.tierAccess || ['free', 'pro', 'vip']);
+    // Simpan id dengan tag tier yang sesuai pilihan dashboard, bukan tag
+    // lama yang sudah tidak cocok.
+    const finalModelId = retagPublicId(submittedId, tierAccess) || submittedId;
     const entry = {
-      modelId: body.modelId,
+      modelId: finalModelId,
       // ID asli di server inference dipakai saat proxy chat, supaya modelId
       // publik boleh unik per VPS tanpa mengubah nama model di backend.
       backendModelId: backendModelName(
@@ -2144,9 +2182,7 @@ async function handleServerModels(request, env, pathname) {
       apiUrl: body.apiUrl || base.apiUrl || '',
       apiKey: body.apiKey || base.apiKey || '',
       runtime: body.runtime || base.runtime || '',
-      tierAccess: Array.isArray(body.tierAccess)
-        ? body.tierAccess
-        : (base.tierAccess || ['free', 'pro', 'vip']),
+      tierAccess,
       pricing: body.pricing || base.pricing || {},
       contextSize: body.contextSize ?? base.contextSize ?? 0,
       maxOutput: body.maxOutput ?? base.maxOutput ?? 0,

@@ -684,6 +684,23 @@ function fmtMoney(value) {
   return (negative ? '-' : '') + '$' + head + tail;
 }
 
+// Kredit / biaya per pemakaian: presisi sampai 8 desimal, nol di belakang
+// dibuang, minimal 2 desimal. Contoh: 0.0126 -> $0.0126, 0.0000013 ->
+// $0.0000013. Dipakai untuk log pemakaian supaya angkanya sama persis
+// dengan yang dipotong Worker (bukan dibulatkan jadi $0.01).
+function fmtCredit(value) {
+  const n = Number(value || 0);
+  if (!isFinite(n)) return '$0.00';
+  const negative = n < 0;
+  const abs = Math.abs(n);
+  if (abs === 0) return '$0.00';
+  const parts = abs.toFixed(8).replace(/0+$/, '').split('.');
+  const head = fmtInt(parts[0]);
+  let frac = parts.length > 1 ? parts[1] : '';
+  if (frac.length < 2) frac = frac.padEnd(2, '0');
+  return (negative ? '-' : '') + '$' + head + '.' + frac;
+}
+
 // Harga model: 2 desimal, tapi harga kecil (< $0.01) tetap dibaca.
 function fmtPrice(value) {
   const n = Number(value || 0);
@@ -1355,14 +1372,25 @@ function updateBillingModeHint() {
   const el = $('smBillingMode');
   if (!el) return;
   const isFree = $('smTierFree').checked;
-  const priced = ['smInputPerReq', 'smInputPer1M', 'smOutputPerReq',
-    'smOutputPer1M'].some((id) => (Number($(id).value) || 0) > 0);
+  const inReq = Number($('smInputPerReq').value) || 0;
+  const outReq = Number($('smOutputPerReq').value) || 0;
+  const in1M = Number($('smInputPer1M').value) || 0;
+  const out1M = Number($('smOutputPer1M').value) || 0;
+  const priced = inReq > 0 || outReq > 0 || in1M > 0 || out1M > 0;
   const label = isFree ? 'FREE' : 'PRO/VIP';
   const wallet = isFree ? 'kuota <b>TOKEN</b> user' : '<b>KREDIT</b> user';
   let text = 'Label model: <b>' + label + '</b> → pemakaian dipotong dari ' +
     wallet + '.';
   if (!priced) {
     text += ' Harga 0 → mode ini <b>gratis</b> (tidak ada pemotongan).';
+  } else if (inReq > 0 || outReq > 0) {
+    // Worker memakai harga per-request lebih dulu (harga /1M diabaikan).
+    text += ' Biaya per request: <b>' + fmtCredit(inReq + outReq) + '</b>' +
+      ' (input ' + fmtCredit(inReq) + ' + output ' + fmtCredit(outReq) + ')' +
+      '. Harga /1M diabaikan selama harga per-request diisi.';
+  } else {
+    text += ' Biaya dihitung dari token aktual: ' + fmtPrice(in1M) +
+      '/1M input + ' + fmtPrice(out1M) + '/1M output.';
   }
   el.innerHTML = text;
 }
@@ -1723,7 +1751,7 @@ async function loadUsageLogs() {
       // Tampilkan SATU jenis pemakaian sesuai mode: token ATAU kredit.
       const isCredit = l.mode === 'credit';
       const usage = isCredit
-        ? fmtMoney(l.credits || 0)
+        ? fmtCredit(l.credits || 0)
         : fmtInt(l.tokens || 0) + ' token';
       return '<tr>' +
         '<td>' + escapeHtml(ts) + '</td>' +

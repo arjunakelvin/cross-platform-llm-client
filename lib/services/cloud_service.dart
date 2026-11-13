@@ -133,7 +133,9 @@ class CloudService extends GetxService {
     if (tokens == null && credits == null) return '';
     final parts = <String>[];
     if (tokens != null) parts.add('$tokens token');
-    if (credits != null && credits > 0) parts.add(formatMoney(credits));
+    if (credits != null && credits > 0) {
+      parts.add(formatCreditCharge(credits));
+    }
     return parts.join(' · ');
   }
 
