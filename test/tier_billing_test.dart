@@ -82,7 +82,7 @@ void main() {
         'outputPer1M': 4,
       });
       expect(m.inputPriceLabel, r'$0.0023/req');
-      expect(m.outputPriceLabel, r'$4.0/1M');
+      expect(m.outputPriceLabel, r'$4.00/1M');
     });
 
     test('harga nol → \$0', () {

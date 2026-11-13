@@ -70,9 +70,9 @@ void main() {
     );
 
     expect(tester.takeException(), isNull);
-    expect(find.text(r'$1,234.5'), findsOneWidget);
-    expect(find.text(r'$3.5 terpakai'), findsOneWidget);
-    expect(find.text(r'$1,234.5 tersisa'), findsOneWidget);
+    expect(find.text(r'$1,234.50'), findsOneWidget);
+    expect(find.text(r'$3.50 terpakai'), findsOneWidget);
+    expect(find.text(r'$1,234.50 tersisa'), findsOneWidget);
     // 3.5 dari 1238 total -> 0%.
     expect(find.textContaining('% terpakai'), findsOneWidget);
   });
@@ -87,7 +87,7 @@ void main() {
     expect(find.textContaining('Kredit sudah habis'), findsOneWidget);
   });
 
-  testWidgets('kartu kredit: harga per request tampil presisi',
+  testWidgets('kartu kredit: 2 desimal untuk nilai besar, kredit kecil tetap tampil',
       (tester) async {
     await pump(
       tester,
@@ -95,7 +95,7 @@ void main() {
     );
 
     expect(tester.takeException(), isNull);
-    expect(find.text(r'$11.9955'), findsOneWidget);
+    expect(find.text(r'$12.00'), findsOneWidget);
     expect(find.text(r'$0.0045 terpakai'), findsOneWidget);
   });
 }

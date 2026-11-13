@@ -834,14 +834,16 @@ class SettingsController extends GetxController {
         _serverTokenUsed + localTokenUsed.value + _pendingGatewayTokens;
     tokenUsed.value = total;
     tokenBalance.value = (max - total).clamp(0, max);
-    // Round to 6 decimal places to avoid floating-point artifacts
-    // e.g. $200,000 - $0.0045 showing as $199,999.9999999976
-    creditUsed.value = double.parse(
-        (_serverCreditUsed + _pendingGatewayCredits).toStringAsFixed(6));
-    creditBalance.value = double.parse(
+    // Simpan presisi tinggi (8 desimal, sama dengan worker) supaya charge
+    // kecil seperti $0.000014 tidak hilang. Pembulatan ke 2 desimal hanya
+    // dilakukan saat MENAMPILKAN angka (lihat lib/core/format.dart).
+    final totalCreditsUsed = _serverCreditUsed + _pendingGatewayCredits;
+    creditUsed.value = double.parse(totalCreditsUsed.toStringAsFixed(8));
+    final totalCreditsBalance =
         (_serverCreditBalance - _pendingGatewayCredits)
-            .clamp(0, double.infinity)
-            .toStringAsFixed(6));
+            .clamp(0, double.infinity);
+    creditBalance.value =
+        double.parse(totalCreditsBalance.toStringAsFixed(8));
   }
 
   Future<void> resetToken() async {

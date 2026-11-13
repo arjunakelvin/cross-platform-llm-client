@@ -266,10 +266,12 @@ async function handleAuth(request, env, pathname) {
         .map((m) => {
           const server = serverById.get(String(m.serverId || ''));
           return {
-            modelId: String(m.modelId),
-            // Nama model asli di daemon; dipakai aplikasi saat memanggil
-            // server inference langsung (tanpa gateway) sebagai fallback.
-            backendModelId: String(m.backendModelId || m.modelId),
+            // Id publik gateway: `<label>:<model>:<tier>` — bukan nama file.
+            modelId: gatewayPublicIdFor(m, mgrServers),
+            // Nama model asli di daemon (tanpa folder); dipakai aplikasi saat
+            // memanggil server inference langsung (tanpa gateway) sebagai
+            // fallback.
+            backendModelId: backendModelName(m.backendModelId || m.modelId),
             name: String(m.name || m.modelId),
             serverId: String(m.serverId || ''),
             serverName: server ? server.name : '',
@@ -713,7 +715,10 @@ function cleanServerEntry(body, existing) {
 // inference terpisah.
 
 function normalizeManagerUrl(value) {
-  let base = String(value || '').trim().replace(/\/+$/, '');
+  let base = String(value || '').trim();
+  // Hapus protokol http:// atau https:// jika user memasukkan lengkap
+  base = base.replace(/^https?:\/\//i, '').trim();
+  base = base.replace(/\/+$/, '');
   if (!base) return '';
   base = base.replace(/\/servers$/i, '').replace(/\/+$/, '');
   if (!/\/manager$/i.test(base)) base += '/manager';
@@ -763,9 +768,13 @@ function detectedModelsFromManager(daemons) {
     } else if (running) {
       ids = Array.isArray(daemon.models) ? daemon.models : [];
     }
-    ids = ids.map((id) => String(id || '').trim()).filter(Boolean);
+    // Daemon bisa melaporkan path lengkap (`C:\...\x.gguf`) — ambil nama
+    // filenya saja supaya id/model publik tidak berupa path.
+    ids = ids
+      .map((id) => backendModelName(String(id || '').trim()))
+      .filter(Boolean);
     if (!ids.length && running && daemon.model) {
-      ids = [String(daemon.model).trim()];
+      ids = [backendModelName(String(daemon.model).trim())].filter(Boolean);
     }
     for (const backendId of [...new Set(ids)]) {
       const key = `${daemonId}::${backendId}`;
@@ -805,6 +814,93 @@ function friendlyModelName(raw) {
       .join(' ');
 }
 
+/// Nama model backend tanpa folder. Path di VPS tidak boleh bocor ke user,
+/// dan tidak boleh dipakai sebagai id model publik.
+function backendModelName(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  // Path absolut Windows (`C:\...\x.gguf`) atau Unix (`/opt/.../x.gguf`).
+  const looksLikePath = /^[a-zA-Z]:[\\/]/.test(raw) ||
+    raw.includes('\\') || raw.startsWith('/') || raw.startsWith('./');
+  // Path relatif juga sering muncul (`llama/model-ai/x.gguf`).
+  const hasModelExt = /\.(gguf|ggml|litertlm|task|bin|safetensors|onnx|pt|pth)$/i
+    .test(raw);
+  if (!looksLikePath && !(hasModelExt && raw.includes('/'))) return raw;
+  const parts = raw.split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : raw;
+}
+
+/// Slug untuk id model gateway: huruf kecil, angka, titik; pemisah "-".
+/// `deepseek-v4.1-flash-q4_k_m.gguf` → `deepseek-v4.1-flash`
+function slugifyModelId(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\.(gguf|ggml|litertlm|task|bin|safetensors|onnx|pt|pth)$/i, '')
+    // Buang suffix kuantisasi: q4_k_m, iq2_xs, f16, bf16, dsb.
+    .replace(/[-_.](i?q\d+(_[a-z0-9]+)*|f16|f32|bf16)$/i, '')
+    // Buang suffix peran yang tidak penting untuk id.
+    .replace(/[-_.](instruct|chat|it|hf)$/i, '')
+    .replace(/[^a-z0-9.]+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '')
+    .replace(/-{2,}/g, '-');
+}
+
+/// Tag tier di akhir id model: `free`, `pro`, atau `vip`.
+function tierTagForAccess(tierAccess) {
+  const tiers = Array.isArray(tierAccess)
+    ? tierAccess.map((t) => String(t || '').trim().toLowerCase()).filter(Boolean)
+    : [];
+  if (!tiers.length || tiers.includes('free')) return 'free';
+  if (tiers.includes('pro')) return 'pro';
+  return tiers[0];
+}
+
+/// Id model publik untuk `/v1/models` — BUKAN nama/path file.
+/// Format: `<label>:<model>:<tier>`, contoh `uncensored:deepseek-v4.1-flash:free`.
+/// `label` = nama kustom model di dashboard, kalau tidak ada pakai nama server.
+function buildGatewayModelId(options) {
+  const opts = options || {};
+  const modelSlug = slugifyModelId(opts.model || opts.label) || 'model';
+  const labelSlug = slugifyModelId(opts.label);
+  const serverSlug = slugifyModelId(opts.serverName);
+  const prefix = (labelSlug && labelSlug !== modelSlug)
+    ? labelSlug
+    : (serverSlug && serverSlug !== modelSlug ? serverSlug : '');
+  const tier = tierTagForAccess(opts.tierAccess);
+  return prefix ? `${prefix}:${modelSlug}:${tier}` : `${modelSlug}:${tier}`;
+}
+
+/// Id lama yang masih berupa nama/path file harus dibuat ulang.
+function looksLikeFilePathId(value) {
+  const id = String(value || '').trim();
+  if (!id) return true;
+  if (/^[a-zA-Z]:[\\/]/.test(id)) return true;
+  if (id.includes('\\') || id.includes('/')) return true;
+  if (id.startsWith('.')) return true;
+  return /\.(gguf|ggml|litertlm|task|bin|safetensors|onnx|pt|pth)$/i.test(id);
+}
+
+/// Id yang aman ditampilkan ke user. Id admin yang bukan path dipertahankan;
+/// id lama berbentuk file dibuat ulang jadi `<label>:<model>:<tier>`.
+function gatewayPublicIdFor(model, servers) {
+  const current = String((model && model.modelId) || '').trim();
+  const backend = String((model && model.backendModelId) || '');
+  if (current && !looksLikeFilePathId(current) && current !== backend) {
+    return current;
+  }
+  const serverId = String((model && model.serverId) || '');
+  const server = Array.isArray(servers)
+    ? servers.find((s) => String((s && s.id) || '') === serverId)
+    : null;
+  return buildGatewayModelId({
+    label: (model && model.name) || '',
+    model: (model && (model.backendModelId || model.modelId)) || '',
+    tierAccess: (model && model.tierAccess) || ['free', 'pro', 'vip'],
+    serverName: (server && server.name) || serverId,
+  });
+}
+
 async function syncDetectedModels(env, server, detected, daemons = []) {
   const models = await getJson(env.PB_KV, 'server_models', []);
   const now = Date.now();
@@ -815,10 +911,15 @@ async function syncDetectedModels(env, server, detected, daemons = []) {
   const byKey = new Map();
   const byBackend = new Map();
   for (const model of existingForServer) {
-    const key = `${model.daemonId || ''}::${model.backendModelId || model.modelId || ''}`;
-    if (!byKey.has(key)) byKey.set(key, model);
     const backend = String(model.backendModelId || model.modelId || '');
-    if (backend && !byBackend.has(backend)) byBackend.set(backend, model);
+    // Index pakai nama backend tanpa folder, supaya entri lama yang masih
+    // menyimpan path file tetap ketemu (dan harganya tidak hilang).
+    const backendName = backendModelName(backend) || backend;
+    const key = `${model.daemonId || ''}::${backendName}`;
+    if (!byKey.has(key)) byKey.set(key, model);
+    if (backendName && !byBackend.has(backendName)) {
+      byBackend.set(backendName, model);
+    }
   }
   // Daemon yang masih terdaftar di servers.json (proses ada, cuma mungkin
   // belum jalan). Modelnya tetap disimpan, hanya ditandai tidak aktif.
@@ -831,46 +932,70 @@ async function syncDetectedModels(env, server, detected, daemons = []) {
   const kept = [];
   const detectedKeys = new Set();
   for (const item of detected) {
-    const key = `${item.daemonId || ''}::${item.backendId}`;
+    // Nama backend tanpa folder: `C:\models\x.gguf` → `x.gguf`.
+    const backendId = backendModelName(item.backendId);
+    if (!backendId) continue;
+    const key = `${item.daemonId || ''}::${backendId}`;
     detectedKeys.add(key);
     const existing = byKey.get(key) ||
       // Model yang dibuat manual (tanpa daemonId) tetap cocok lewat nama
       // model backend, supaya harga/tier admin tidak hilang.
-      byBackend.get(String(item.backendId || ''));
-    let modelId = existing ? existing.modelId : item.backendId;
-    if (!existing && taken.has(modelId)) {
-      // Nama model sama di VPS/proses lain: beri prefix server agar
-      // modelId tetap unik untuk gateway.
-      let candidate = `${server.id}/${item.backendId}`;
-      let suffix = 2;
-      while (taken.has(candidate)) {
-        candidate = `${server.id}/${item.backendId}-${suffix++}`;
-      }
-      modelId = candidate;
-    }
-    taken.add(modelId);
+      byBackend.get(backendId);
     // Nama tampilan: pakai yang sudah dikustom admin; kalau belum, turunkan
     // dari nama file model supaya `qwen2.5-coder-1.5b-...gguf` tidak muncul
     // mentah-mentah di aplikasi.
     const existingName = String((existing && existing.name) || '').trim();
     const isAutoName = !existingName ||
-      existingName === item.backendId ||
+      existingName === backendId ||
+      existingName === String(item.backendId || '') ||
       (existing && existing.modelId === existingName);
     const displayName = isAutoName
-      ? friendlyModelName(item.backendId)
+      ? friendlyModelName(backendId)
       : existingName;
+    const tierAccess = Array.isArray(existing && existing.tierAccess)
+      ? existing.tierAccess
+      : ['free', 'pro', 'vip'];
+
+    // Id publik gateway: `<label>:<model>:<tier>` mis.
+    // `uncensored:deepseek-v4.1-flash:free`. BUKAN path/nama file.
+    // Id admin yang sudah bagus dipertahankan; id lama berbentuk file
+    // (`x.gguf`, `server1/x.gguf`) dibuat ulang.
+    let modelId = String((existing && existing.modelId) || '').trim();
+    if (looksLikeFilePathId(modelId) || modelId === backendId) {
+      modelId = buildGatewayModelId({
+        // Nama kustom admin dipakai sebagai label; kalau nama masih otomatis,
+        // pakai nama server (mis. "uncensored") supaya id tidak dobel.
+        label: isAutoName ? '' : displayName,
+        model: backendId,
+        tierAccess,
+        serverName: String(server.name || '') || String(server.id || ''),
+      });
+    } else {
+      // Id sudah bagus, tapi tag tier di belakang bisa berubah kalau admin
+      // mengubah tier model → sinkronkan tanpa menghapus prefix label.
+      const tierTag = tierTagForAccess(tierAccess);
+      const currentTier = (modelId.match(/:(free|pro|vip)$/i) || [])[1];
+      if (currentTier && currentTier.toLowerCase() !== tierTag) {
+        modelId = modelId.replace(/:(free|pro|vip)$/i, `:${tierTag}`);
+      }
+    }
+    if (taken.has(modelId)) {
+      // Bentrok dengan model di server lain: tambah suffix angka.
+      const baseId = modelId;
+      let suffix = 2;
+      while (taken.has(modelId)) modelId = `${baseId}-${suffix++}`;
+    }
+    taken.add(modelId);
     const entry = {
       modelId,
-      backendModelId: item.backendId,
+      backendModelId: backendId,
       daemonId: item.daemonId || '',
-      name: displayName || item.backendId,
+      name: displayName || backendId,
       serverId: String(server.id),
       serverUrl: item.apiUrl || server.baseUrl || '',
       apiUrl: item.apiUrl || '',
       runtime: item.runtime || server.runtime || '',
-      tierAccess: Array.isArray(existing && existing.tierAccess)
-        ? existing.tierAccess
-        : ['free', 'pro', 'vip'],
+      tierAccess,
       pricing: (existing && existing.pricing) || {},
       contextSize: existing ? (Number(existing.contextSize) || 0) : 0,
       maxOutput: existing ? (Number(existing.maxOutput) || 0) : 0,
@@ -890,7 +1015,9 @@ async function syncDetectedModels(env, server, detected, daemons = []) {
   // yang tidak terdeteksi dianggap nonaktif (AI-nya belum jalan).
   const inactive = [];
   for (const model of existingForServer) {
-    const key = `${model.daemonId || ''}::${model.backendModelId || model.modelId || ''}`;
+    const backend = String(model.backendModelId || model.modelId || '');
+    const backendName = backendModelName(backend) || backend;
+    const key = `${model.daemonId || ''}::${backendName}`;
     if (detectedKeys.has(key)) continue;
     if (!daemons.length || knownDaemons.has(String(model.daemonId || ''))) {
       kept.push({ ...model, active: false, updatedAt: now });
@@ -988,10 +1115,11 @@ async function detectViaManager(env, server) {
       return {
         ok: true,
         count: detected.length,
-        models: detected.map((d) => d.backendId),
         daemons: daemons.length,
         activeDaemons: daemons.filter((d) => d && d.running).length,
         ...sync,
+        // Id publik yang sekarang dipakai gateway (bukan nama file).
+        models: [...sync.added, ...sync.updated],
       };
     } catch (error) {
       // Lanjut ke deteksi langsung ke AI server.
@@ -1010,7 +1138,7 @@ async function detectViaManager(env, server) {
   const { ids, url } = await fetchAiModels(target, server.managerKey);
   server.baseUrl = url;
   const detected = ids.map((id) => ({
-    backendId: id,
+    backendId: backendModelName(id),
     daemonId: '',
     apiUrl: url,
     runtime: server.runtime || '',
@@ -1019,10 +1147,10 @@ async function detectViaManager(env, server) {
   return {
     ok: true,
     count: detected.length,
-    models: ids,
     daemons: 0,
     activeDaemons: ids.length ? 1 : 0,
     ...sync,
+    models: [...sync.added, ...sync.updated],
   };
 }
 
@@ -1596,15 +1724,23 @@ async function handleGateway(request, env, pathname) {
           }));
       });
     const filtered = cached.value || [];
+    // Id publik tidak pernah berupa nama/path file. Entri lama yang belum
+    // di-sync ulang tetap ditampilkan dengan id `<label>:<model>:<tier>`.
+    const withPublicId = filtered.map((m) => ({
+      ...m,
+      modelId: gatewayPublicIdFor(m, servers),
+      backendModelId: backendModelName(m.backendModelId || m.modelId),
+    }));
     return jsonResponse(request, 200, {
       object: 'list',
-      data: filtered.map(m => ({
+      data: withPublicId.map(m => ({
         id: m.modelId,
         object: 'model',
         owned_by: m.serverId || 'piercingblow',
         name: m.name || m.modelId,
+        tier: tierTagForAccess(m.tierAccess),
       })),
-      models: filtered,
+      models: withPublicId,
       tier: userTier,
       cached: cached.hit,
     });
@@ -1619,17 +1755,28 @@ async function handleGateway(request, env, pathname) {
       return jsonResponse(request, 400, { error: 'Invalid JSON body.' });
     }
 
-    const modelId = body.model || '';
-    if (!modelId) {
+    // Model dikirim sebagai id publik (`uncensored:deepseek-v4.1-flash:free`).
+    // Tetap terima id lama (nama file / backend id) supaya klien lama jalan.
+    const wantedModel = String(body.model || '').trim();
+    if (!wantedModel) {
       return jsonResponse(request, 400, { error: 'Missing "model" field.' });
     }
 
-    // Find model config
+    const servers = await getJson(env.PB_KV, 'mgr_servers', []);
     const serverModels = await getJson(env.PB_KV, 'server_models', []);
-    const modelConfig = serverModels.find(m => m.modelId === modelId);
+    const wantedBackend = backendModelName(wantedModel);
+    const modelConfig =
+      serverModels.find((m) => String(m.modelId) === wantedModel) ||
+      serverModels.find((m) =>
+        backendModelName(m.backendModelId || m.modelId) === wantedBackend) ||
+      serverModels.find((m) =>
+        gatewayPublicIdFor(m, servers) === wantedModel);
     if (!modelConfig) {
-      return jsonResponse(request, 404, { error: `Model "${modelId}" not found.` });
+      return jsonResponse(request, 404, {
+        error: `Model "${wantedModel}" not found.`,
+      });
     }
+    const modelId = String(modelConfig.modelId);
 
     // Check tier access
     // FREE model → bisa dipakai siapa saja (token/credit sesuai label model),
@@ -1655,23 +1802,32 @@ async function handleGateway(request, env, pathname) {
     const outputPerReq = Number(pricing.outputPerReq) || 0;
     const inputPer1M = Number(pricing.inputPer1M) || 0;
     const outputPer1M = Number(pricing.outputPer1M) || 0;
-    // Aturan tagihan (tier dibaca dari LABEL model):
-    //   - model berlabel FREE  → dipotong dari kuota token
-    //   - model berlabel PRO/VIP → dipotong dari kredit
-    // Jadi user Pro/VIP tidak mencampur token & kredit: model free tetap
-    // memakai token, model premium memakai kredit.
-    const tierAccess = Array.isArray(modelConfig.tierAccess)
-      ? modelConfig.tierAccess
-      : ['free', 'pro', 'vip'];
-    const isFreeModel = tierAccess.includes('free');
-    const hasPrice = inputPerReq > 0 || outputPerReq > 0 ||
-      inputPer1M > 0 || outputPer1M > 0;
-    // Gunakan kredit jika model PRO/VIP (tidak ada "free" di tierAccess).
-// MODEL FREE → selalu pakai token (harga $0 atau >$0 tidak mengubah mode).
-// MODEL PRO/VIP → selalu pakai kredit (harga $0 atau >$0 tidak mengubah mode).
-// Ini sesuai aturan: FREE → token, PRO/VIP → kredit, tidak dicampur.
-const isFreeModel = tierAccess.includes('free');
-const useCredits = !isFreeModel;
+    // Aturan tagihan berdasarkan LABEL model (bukan tier user):
+    // FREE model  → selalu potong token dari kuota user
+    // PRO/VIP model → potongan kredit, TAPI jika user tier VIP/kredit-habis,
+    //               maka jatuhkan ke mode token (bukan paksa pakai model premium
+    //               tanpa uang). Ini supaya user tetap bisa pakai model mahal jika
+    //               kredit habis, dengan cara turun ke token.
+    // Catatan: `isFreeModel` sudah dihitung di atas dari `allowedTiers`
+    // (dipakai juga untuk cek akses tier), jadi JANGAN deklarasikan ulang —
+    // `const` ganda dalam satu scope = SyntaxError dan worker gagal load.
+
+    // Jika model FREE → selalu pakai token (tanpa memperhatikan tier user).
+    // Jika model PRO/VIP → cek kredit user.
+    //   - Jika punya kredit → potong kredit.
+    //   - Jika TIDAK punya kredit (balance <= 0) → turun ke mode token
+    //     supaya user tetap bisa request (bukan error 402).
+    let useCredits;
+    if (isFreeModel) {
+      // MODEL FREE → selalu token.
+      useCredits = false;
+    } else {
+      // MODEL PRO/VIP.
+      const creditBalance = Number(account.creditBalance) || 0;
+      // Jika user punya credit > 0 → pakai kredit.
+      // Jika user kredit habis (balance <= 0) → turun ke token agar bisa jalan.
+      useCredits = creditBalance > 0;
+    }
 
     if (useCredits) {
       // Estimasi minimum: harga per-request kalau ada, selain itu cukup
@@ -1701,7 +1857,7 @@ const useCredits = !isFreeModel;
 
     // Proxy to backend server. Model boleh menunjuk server lewat serverId;
     // alamat + API key diambil dari Server manager (KV) kalau kosong.
-    const servers = await getJson(env.PB_KV, 'mgr_servers', []);
+    // `servers` sudah dibaca di atas saat mencari model.
     const serverConfig = modelConfig.serverId
       ? servers.find((s) => String(s.id) === String(modelConfig.serverId))
       : servers.find((s) =>
@@ -1739,7 +1895,9 @@ const useCredits = !isFreeModel;
     try {
       const upstreamBody = {
         ...body,
-        model: modelConfig.backendModelId || modelId,
+        // Backend selalu menerima nama model asli (bukan id publik
+        // `label:model:tier`) dan tanpa folder path.
+        model: backendModelName(modelConfig.backendModelId || modelId),
       };
       // Minta usage di akhir stream supaya kuota tetap terhitung.
       if (body.stream === true) {
@@ -1822,12 +1980,20 @@ const useCredits = !isFreeModel;
               new TextEncoder().encode(
                 'data: ' + JSON.stringify({
                   piercingblow_usage: true,
-                  usage: {
-                    prompt_tokens: promptTokens,
-                    completion_tokens: completionTokens,
-                    total_tokens: promptTokens + completionTokens,
-                  },
-                  credits: Math.round(credits * 1e8) / 1e8,
+                  // Mode menentukan mana yang dipotong: token ATAU kredit.
+                  mode: useCredits ? 'credit' : 'token',
+                  // Mode credit → JANGAN kirim token (biar app tidak ikut
+                  // memotong kuota token). Mode token → tanpa kredit.
+                  usage: useCredits
+                    ? null
+                    : {
+                        prompt_tokens: promptTokens,
+                        completion_tokens: completionTokens,
+                        total_tokens: promptTokens + completionTokens,
+                      },
+                  credits: useCredits
+                    ? Math.round(credits * 1e8) / 1e8
+                    : 0,
                 }) + '\n\n',
               ),
             );
@@ -1872,9 +2038,10 @@ const useCredits = !isFreeModel;
       completionTokens,
       useCredits,
     });
+    // Kredit terpakai = saldo sebelum - saldo sesudah (jangan dibalik).
     const creditsUsed = useCredits
-      ? Math.max(0, (Number(charged.creditBalance) || 0) -
-        (Number(account.creditBalance) || 0))
+      ? Math.max(0, (Number(account.creditBalance) || 0) -
+        (Number(charged.creditBalance) || 0))
       : 0;
 
     return new Response(JSON.stringify(responseData), {
@@ -1882,8 +2049,11 @@ const useCredits = !isFreeModel;
       headers: {
         ...corsHeaders(request),
         'Content-Type': 'application/json',
-        'X-Token-Used': String(totalTokens),
-        'X-Credit-Used': String(Math.round(creditsUsed * 10000) / 10000),
+        // Mode credit → token TIDAK dipotong, jadi header token harus 0.
+        // Mode token  → kredit tidak dipotong.
+        'X-Token-Used': String(useCredits ? 0 : totalTokens),
+        'X-Credit-Used': String(Math.round(creditsUsed * 1e8) / 1e8),
+        'X-Usage-Mode': useCredits ? 'credit' : 'token',
       },
     });
   }
@@ -1921,7 +2091,8 @@ async function handleServerModels(request, env, pathname) {
       modelId: body.modelId,
       // ID asli di server inference dipakai saat proxy chat, supaya modelId
       // publik boleh unik per VPS tanpa mengubah nama model di backend.
-      backendModelId: body.backendModelId || base.backendModelId || body.modelId,
+      backendModelId: backendModelName(
+        body.backendModelId || base.backendModelId || body.modelId),
       daemonId: body.daemonId || base.daemonId || '',
       name: body.name || base.name || body.modelId,
       serverId: body.serverId || base.serverId || '',

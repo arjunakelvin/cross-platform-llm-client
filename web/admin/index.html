@@ -51,6 +51,19 @@
   th { color: var(--muted); font-weight: 500; }
   td input, td select { padding: 5px 6px; font-size: 13px; }
   td input[type=number] { width: 100px; }
+  /* Tabel log: tinggi dibatasi ±10 baris, sisanya di-scroll. */
+  .table-scroll {
+    max-height: 418px; overflow-y: auto; margin-top: 12px;
+    border: 1px solid var(--line); border-radius: 10px;
+    background: #0d1117;
+  }
+  .table-scroll table { margin-top: 0; }
+  .table-scroll thead th {
+    position: sticky; top: 0; z-index: 1;
+    background: #0d1117; padding-top: 10px; padding-bottom: 10px;
+    box-shadow: 0 1px 0 var(--line);
+  }
+  .table-scroll tbody tr:hover { background: rgba(255,255,255,.03); }
   .pill { padding: 2px 8px; border-radius: 99px; font-size: 11px; }
   .pill.active { background: rgba(46,160,67,.15); color: var(--green); }
   .pill.banned { background: rgba(248,81,73,.15); color: var(--red); }
@@ -426,14 +439,16 @@ async with aiohttp.ClientSession() as session:<br>
         <button id="clearApiKeyLogs" class="danger">Hapus semua</button>
       </div>
       <div class="status" id="apiKeyLogStatus"></div>
-      <table>
-        <thead>
-          <tr><th>Waktu</th><th>Akun</th><th>Aksi</th><th>Prefix Key</th><th></th></tr>
-        </thead>
-        <tbody id="apiKeyLogRows">
-          <tr><td colspan="5" style="color:var(--muted)">Belum ada log.</td></tr>
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Waktu</th><th>Akun</th><th>Aksi</th><th>Prefix Key</th><th></th></tr>
+          </thead>
+          <tbody id="apiKeyLogRows">
+            <tr><td colspan="5" style="color:var(--muted)">Belum ada log.</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card">
@@ -447,17 +462,19 @@ async with aiohttp.ClientSession() as session:<br>
         <button id="refreshUsageLogs">Refresh log</button>
       </div>
       <div class="status" id="usageLogStatus"></div>
-      <table>
-        <thead>
-          <tr>
-            <th>Waktu</th><th>Akun</th><th>Model</th>
-            <th>Pemakaian</th><th>Mode</th>
-          </tr>
-        </thead>
-        <tbody id="usageLogRows">
-          <tr><td colspan="5" style="color:var(--muted)">Belum ada pemakaian.</td></tr>
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Waktu</th><th>Akun</th><th>Model</th>
+              <th>Pemakaian</th><th>Mode</th>
+            </tr>
+          </thead>
+          <tbody id="usageLogRows">
+            <tr><td colspan="5" style="color:var(--muted)">Belum ada pemakaian.</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card">
@@ -1163,7 +1180,9 @@ function modelRowHtml(model) {
     '<span class="tag">' + escapeHtml(tiers) + '</span>' + activeTag +
     '<div class="meta">' + server +
     ' · ctx ' + (model.contextSize || 0) +
-    ' · max ' + (model.maxOutput || 0) + backend + '</div>' +
+    ' · max ' + (model.maxOutput || 0) +
+    ' · id <span class="mono">' + escapeHtml(model.modelId) + '</span>' +
+    backend + '</div>' +
     '<div class="price">' + escapeHtml(pricingLabel(model)) + '</div></div>' +
     '<div class="actions">' +
     '<button data-model-edit="' + escapeAttr(model.modelId) + '">Edit</button>' +
@@ -1618,7 +1637,8 @@ async function loadApiKeyLogs() {
         '</td></tr>';
       return;
     }
-    $('apiKeyLogRows').innerHTML = logs.slice(0, 100).map((l) => {
+    // Semua baris dirender; tinggi tabel dibatasi CSS (10 baris) + scroll.
+    $('apiKeyLogRows').innerHTML = logs.slice(0, 500).map((l) => {
       const d = new Date(l.timestamp);
       const ts = d.toLocaleString('id-ID');
       return '<tr>' +
@@ -1688,7 +1708,8 @@ async function loadUsageLogs() {
         '</td></tr>';
       return;
     }
-    $('usageLogRows').innerHTML = logs.slice(0, 100).map((l) => {
+    // Semua baris dirender; tinggi tabel dibatasi CSS (10 baris) + scroll.
+    $('usageLogRows').innerHTML = logs.slice(0, 500).map((l) => {
       const d = new Date(l.timestamp);
       const ts = d.toLocaleString('id-ID');
       // Tampilkan SATU jenis pemakaian sesuai mode: token ATAU kredit.

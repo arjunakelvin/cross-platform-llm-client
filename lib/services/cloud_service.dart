@@ -1258,13 +1258,19 @@ class CloudService extends GetxService {
         // Event usage dari gateway (dikirim di akhir stream) supaya saldo
         // token/kredit bisa langsung turun di UI.
         if (data['piercingblow_usage'] == true) {
+          // Mode "credit" → token TIDAK ikut dipotong (kuota token tetap).
+          // Mode "token"  → kredit tidak dipotong.
+          final mode = (data['mode'] as String?)?.trim().toLowerCase();
+          final isCredit = mode == 'credit';
           final rawUsage = data['usage'];
-          if (rawUsage is Map) {
+          if (isCredit) {
+            lastGatewayTokens = 0;
+          } else if (rawUsage is Map) {
             lastGatewayTokens =
                 (rawUsage['total_tokens'] as num?)?.toInt() ?? lastGatewayTokens;
           }
-          lastGatewayCredits =
-              (data['credits'] as num?)?.toDouble() ?? lastGatewayCredits;
+          final credits = (data['credits'] as num?)?.toDouble();
+          if (credits != null) lastGatewayCredits = credits;
           continue;
         }
 
