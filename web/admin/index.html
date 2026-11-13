@@ -374,6 +374,7 @@ async with aiohttp.ClientSession() as session:<br>
         <div>
           <label for="smModelId">Model ID teknis (dari server, read-only)</label>
           <input type="text" id="smModelId" readonly>
+          <div class="hint" id="smPublicId" style="word-break:break-all"></div>
         </div>
       </div>
       <div class="row">
@@ -1181,7 +1182,8 @@ function modelRowHtml(model) {
     '<div class="meta">' + server +
     ' · ctx ' + (model.contextSize || 0) +
     ' · max ' + (model.maxOutput || 0) +
-    ' · id <span class="mono">' + escapeHtml(model.modelId) + '</span>' +
+    ' · id <span class="mono">' +
+    escapeHtml(model.publicId || model.modelId) + '</span>' +
     backend + '</div>' +
     '<div class="price">' + escapeHtml(pricingLabel(model)) + '</div></div>' +
     '<div class="actions">' +
@@ -1325,6 +1327,12 @@ async function loadGatewayData(silent) {
 
 function fillModelFormFrom(model) {
   $('smModelId').value = model ? model.modelId : '';
+  // ID yang dilihat client di /v1/models — bukan path file VPS.
+  if ($('smPublicId')) {
+    $('smPublicId').textContent = model && model.publicId
+      ? 'ID publik gateway: ' + model.publicId
+      : '';
+  }
   $('smName').value = model ? (model.name || '') : '';
   $('smContextSize').value = model ? (model.contextSize || 0) : 4096;
   $('smMaxOutput').value = model ? (model.maxOutput || 0) : 2048;

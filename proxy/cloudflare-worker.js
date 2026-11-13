@@ -658,7 +658,7 @@ function cleanServerId(value) {
 function buildManagerUrl(body, base) {
   const explicit = String(body.managerUrl ?? base.managerUrl ?? '').trim();
   // URL yang sudah diisi dipakai apa adanya (bisa /manager atau base URL AI).
-  if (explicit) return explicit;
+  if (explicit) return normalizePublicUrl(explicit);
   const host = String(body.ip ?? body.host ?? base.ip ?? base.host ?? '').trim();
   const port = Number(body.port ?? base.port ?? 0);
   if (!host) return '';
@@ -683,7 +683,8 @@ function cleanServerEntry(body, existing) {
   const ip = String(body.ip ?? body.host ?? base.ip ?? base.host ?? '').trim();
   const port = Number(body.port ?? base.port ?? 0) || 0;
   // Base URL AI OpenAI-compatible: biasanya diisi dari daemon saat deteksi.
-  const baseUrl = String(body.baseUrl ?? base.baseUrl ?? '').trim();
+  const baseUrl = normalizePublicUrl(
+    body.baseUrl ?? base.baseUrl ?? '').trim();
   return {
     id: cleanServerId(body.id ?? base.id),
     name: String(body.name ?? base.name ?? '').trim(),
@@ -714,11 +715,41 @@ function cleanServerEntry(body, existing) {
 // GET <manager>/servers, jadi dashboard tidak perlu base URL + secret
 // inference terpisah.
 
+/// Rapikan URL publik dari admin/daemon:
+/// - buang skema dobel (`http://https://host` → `https://host`)
+/// - tentukan skema kalau belum ada (IP → http, domain → https)
+/// - buang port untuk host tunnel Cloudflare: quick tunnel selalu lewat 443,
+///   jadi `https://x.trycloudflare.com:8788` berakhir 403/1003.
+function normalizePublicUrl(value) {
+  let raw = String(value || '').trim();
+  if (!raw) return '';
+  raw = raw.replace(/^https?:\/\/(?=\s*https?:\/\/)/i, '');
+  let scheme = '';
+  const match = raw.match(/^(https?):\/\//i);
+  if (match) {
+    scheme = match[1].toLowerCase();
+    raw = raw.slice(match[0].length);
+  }
+  raw = raw.replace(/\/+$/, '');
+  if (!raw) return '';
+  const slash = raw.indexOf('/');
+  let host = slash >= 0 ? raw.slice(0, slash) : raw;
+  const tail = slash >= 0 ? raw.slice(slash) : '';
+  const hostname = host.split(':')[0];
+  const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname);
+  const isTunnel = /\.(trycloudflare\.com|cfargotunnel\.com)$/i.test(hostname);
+  if (!scheme) scheme = isIp ? 'http' : 'https';
+  if (isTunnel) {
+    scheme = 'https';
+    host = hostname;
+  } else if (scheme === 'https' && /:(80|443)$/.test(host)) {
+    host = hostname;
+  }
+  return `${scheme}://${host}${tail}`;
+}
+
 function normalizeManagerUrl(value) {
-  let base = String(value || '').trim();
-  // Hapus protokol http:// atau https:// jika user memasukkan lengkap
-  base = base.replace(/^https?:\/\//i, '').trim();
-  base = base.replace(/\/+$/, '');
+  let base = normalizePublicUrl(value);
   if (!base) return '';
   base = base.replace(/\/servers$/i, '').replace(/\/+$/, '');
   if (!/\/manager$/i.test(base)) base += '/manager';
@@ -861,7 +892,10 @@ function tierTagForAccess(tierAccess) {
 /// `label` = nama kustom model di dashboard, kalau tidak ada pakai nama server.
 function buildGatewayModelId(options) {
   const opts = options || {};
-  const modelSlug = slugifyModelId(opts.model || opts.label) || 'model';
+  // `model` bisa berupa path absolut (`C:\...\x.gguf`) dari data lama KV.
+  // Ambil basename dulu supaya id publik tidak pernah memuat folder VPS.
+  const modelSlug = slugifyModelId(
+    backendModelName(opts.model) || opts.model || opts.label) || 'model';
   const labelSlug = slugifyModelId(opts.label);
   const serverSlug = slugifyModelId(opts.serverName);
   const prefix = (labelSlug && labelSlug !== modelSlug)
@@ -992,8 +1026,9 @@ async function syncDetectedModels(env, server, detected, daemons = []) {
       daemonId: item.daemonId || '',
       name: displayName || backendId,
       serverId: String(server.id),
-      serverUrl: item.apiUrl || server.baseUrl || '',
-      apiUrl: item.apiUrl || '',
+      serverUrl: normalizePublicUrl(item.apiUrl)
+        || normalizePublicUrl(server.baseUrl) || '',
+      apiUrl: normalizePublicUrl(item.apiUrl) || '',
       runtime: item.runtime || server.runtime || '',
       tierAccess,
       pricing: (existing && existing.pricing) || {},
@@ -1100,7 +1135,7 @@ async function markServerModelsInactive(env, serverId) {
 }
 
 async function detectViaManager(env, server) {
-  const raw = String(server.managerUrl || '').trim();
+  const raw = normalizePublicUrl(server.managerUrl);
   if (!raw) throw new Error('Base URL AI server belum diisi.');
 
   // URL yang berakhiran /manager → flow lama (daemon manager.py).
@@ -1110,7 +1145,7 @@ async function detectViaManager(env, server) {
       const detected = detectedModelsFromManager(daemons);
       const first = daemons.find((d) => d && (d.runtime || d.apiUrl)) || {};
       if (first.runtime) server.runtime = String(first.runtime);
-      if (first.apiUrl) server.baseUrl = String(first.apiUrl);
+      if (first.apiUrl) server.baseUrl = normalizePublicUrl(first.apiUrl);
       const sync = await syncDetectedModels(env, server, detected, daemons);
       return {
         ok: true,
@@ -2070,7 +2105,15 @@ async function handleServerModels(request, env, pathname) {
   // GET /api/admin/server-models
   if (pathname === '/api/admin/server-models' && request.method === 'GET') {
     const models = await getJson(env.PB_KV, 'server_models', []);
-    return jsonResponse(request, 200, { models });
+    const servers = await getJson(env.PB_KV, 'mgr_servers', []);
+    // `publicId` = id yang dipakai client ke gateway (`label:model:tier`).
+    // `modelId` tetap dikirim apa adanya karena dipakai sebagai kunci edit.
+    return jsonResponse(request, 200, {
+      models: models.map((m) => ({
+        ...m,
+        publicId: gatewayPublicIdFor(m, servers),
+      })),
+    });
   }
 
   // POST /api/admin/server-models — upsert
