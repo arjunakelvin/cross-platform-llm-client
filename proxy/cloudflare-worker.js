@@ -216,6 +216,7 @@ function emptyModelStat() {
     promptTokens: 0,
     cachedTokens: 0,
     completionTokens: 0,
+    tokensPerSec: 0,
     lastUsedAt: 0,
   };
 }
@@ -234,6 +235,8 @@ async function recordModelUsage(env, modelId, sample = {}) {
     entry.cachedTokens = (Number(entry.cachedTokens) || 0) + cachedTokens;
     entry.completionTokens = (Number(entry.completionTokens) || 0) +
       Math.max(0, Number(sample.completionTokens) || 0);
+    // Kecepatan terbaru (tok/s) yang dilaporkan server untuk model ini.
+    entry.tokensPerSec = Number(sample.tokensPerSec) || 0;
     // Hit = prompt-nya sebagian/utuh dipakai ulang dari cache. Kalau backend
     // tidak melaporkan jumlah token, request tetap dihitung tapi tidak
     // mengubah rasio hit/miss.
@@ -289,6 +292,7 @@ async function modelCacheStats(env) {
       promptTokens: Number(raw.promptTokens) || 0,
       cachedTokens: Number(raw.cachedTokens) || 0,
       completionTokens: Number(raw.completionTokens) || 0,
+      tokensPerSec: Number(raw.tokensPerSec) || 0,
       lastUsedAt: Number(raw.lastUsedAt) || 0,
     });
   }
@@ -2298,11 +2302,13 @@ async function handleGateway(request, env, pathname) {
             Number(timings.predicted_n) || Math.ceil(contentChars / 4);
           // Statistik per model: berapa request, berapa prompt yang kena
           // cache, dan berapa token yang dihasilkan.
+          const tokensPerSec = Number(timings.predicted_per_second) || 0;
           if (promptTokens > 0 || completionTokens > 0) {
             await recordModelUsage(env, modelId, {
               promptTokens,
               cachedTokens,
               completionTokens,
+              tokensPerSec,
             });
           }
           if (!promptTokens && !completionTokens) return;
@@ -2338,6 +2344,8 @@ async function handleGateway(request, env, pathname) {
                   mode: useCredits ? 'credit' : 'token',
                   // Batas output yang dipakai gateway (dari context server).
                   maxTokens: tokenLimit.maxTokens,
+                  // Kecepatan terkini server (tok/s) untuk model ini.
+                  tokensPerSec,
                   // Mode credit → JANGAN kirim token (biar app tidak ikut
                   // memotong kuota token). Mode token → tanpa kredit.
                   usage: useCredits
@@ -2394,6 +2402,7 @@ async function handleGateway(request, env, pathname) {
           ((Number(timings.prompt_n) || 0) + (Number(timings.cache_n) || 0)),
         cachedTokens: Number(timings.cache_n) || 0,
         completionTokens: completionTokens || Number(timings.predicted_n) || 0,
+        tokensPerSec: Number(timings.predicted_per_second) || 0,
       });
     }
 

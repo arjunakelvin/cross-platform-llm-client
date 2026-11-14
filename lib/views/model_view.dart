@@ -698,8 +698,10 @@ class ModelView extends GetView<ModelController> {
       return 'Belum dipakai';
     }
     final rate = stat.hitRate.toStringAsFixed(0);
+    final speed = stat.tokensPerSec > 0 ? ' · tok/s ${stat.tokensPerSec}' : '';
     return 'Pemakaian ${_fmtThousands(stat.requests)}x · cache $rate% · '
-        'hit ${_fmtThousands(stat.hits)} / miss ${_fmtThousands(stat.misses)}';
+        'hit ${_fmtThousands(stat.hits)} / miss ${_fmtThousands(stat.misses)}'
+        '$speed';
   }
 
   /// Angka dengan pemisah ribuan, contoh: 32,768.

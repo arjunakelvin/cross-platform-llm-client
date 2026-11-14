@@ -103,6 +103,7 @@ class ModelUsageStat {
     required this.promptTokens,
     required this.cachedTokens,
     required this.completionTokens,
+    required this.tokensPerSec,
     required this.lastUsedAt,
   });
 
@@ -114,6 +115,7 @@ class ModelUsageStat {
   final int promptTokens;
   final int cachedTokens;
   final int completionTokens;
+  final int tokensPerSec;
   final DateTime? lastUsedAt;
 
   bool get used => requests > 0 || hits > 0 || misses > 0;
@@ -129,6 +131,7 @@ class ModelUsageStat {
       promptTokens: (map['promptTokens'] as num?)?.toInt() ?? 0,
       cachedTokens: (map['cachedTokens'] as num?)?.toInt() ?? 0,
       completionTokens: (map['completionTokens'] as num?)?.toInt() ?? 0,
+      tokensPerSec: (map['tokensPerSec'] as num?)?.toInt() ?? 0,
       lastUsedAt: lastUsed > 0
           ? DateTime.fromMillisecondsSinceEpoch(lastUsed)
           : null,

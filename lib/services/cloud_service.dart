@@ -174,6 +174,10 @@ class CloudService extends GetxService {
   int? lastGatewayTokens;
   double? lastGatewayCredits;
 
+  /// Kecepatan token terakhir yang dilaporkan gateway (tok/s) dari event
+  /// usage stream. Dipakai untuk menampilkan kecepatan model aktif.
+  double? lastGatewayTokensPerSec;
+
   /// Ringkasan pemakaian terakhir, contoh: "12 tokens · $0.0001".
   String get lastGatewayUsageLabel {
     final tokens = lastGatewayTokens;
@@ -221,6 +225,7 @@ class CloudService extends GetxService {
     // Usage dari request sebelumnya tidak boleh ikut dipakai.
     lastGatewayTokens = null;
     lastGatewayCredits = null;
+    lastGatewayTokensPerSec = null;
     if (!isConfigured) {
       return _provider == 'custom'
           ? 'ERROR: Custom API is not configured. Set the Base URL and pick '
@@ -1331,6 +1336,8 @@ class CloudService extends GetxService {
           }
           final credits = (data['credits'] as num?)?.toDouble();
           if (credits != null) lastGatewayCredits = credits;
+          final tokensPerSec = (data['tokensPerSec'] as num?)?.toDouble();
+          if (tokensPerSec != null) lastGatewayTokensPerSec = tokensPerSec;
           continue;
         }
 

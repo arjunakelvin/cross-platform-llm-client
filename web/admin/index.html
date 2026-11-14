@@ -199,6 +199,11 @@
     color: #adbac7;
   }
   .empty { color: var(--muted); font-size: 12px; padding: 6px 0; }
+  .cache-chart { display: flex; align-items: flex-end; gap: 2px; height: 70px; padding-top: 4px; }
+  .cache-bar { flex: 1 1 auto; min-width: 2px; height: 2px; background: rgba(110,118,129,.25); border-radius: 2px 2px 0 0; }
+  .cache-bar.hit { background: var(--green); }
+  .cache-legend { display: flex; gap: 14px; margin-top: 8px; flex-wrap: wrap; color: var(--muted); font-size: 11.5px; }
+  .cache-total { color: var(--text); font-weight: 600; }
   .model-head {
     display: flex; align-items: center; justify-content: space-between;
     gap: 10px; margin-top: 12px; padding-top: 10px;
@@ -463,6 +468,13 @@ async with aiohttp.ClientSession() as session:<br>
       <h3 style="margin-top:20px">Server terdaftar</h3>
       <div id="gatewayServerList">
         <div class="hint">Memuat server…</div>
+      </div>
+
+      <h3 style="margin-top:20px">Cache model list (24 jam)</h3>
+      <div class="card" style="padding:12px 14px;margin-top:4px">
+        <div class="cache-chart" id="cacheChart"></div>
+        <div class="cache-legend" id="cacheLegend"></div>
+        <div class="hint" id="cacheStatsHint">Memuat statistik cache…</div>
       </div>
     </div>
     </section>
@@ -826,6 +838,8 @@ let gatewayServers = [];
 let serverModels = [];
 // Statistik prompt cache + pemakaian per model dari gateway (modelId → data).
 let modelStats = {};
+// Ringkasan cache 24 jam (global) dari /api/auth/cache-stats.
+let globalCache = { hitRate: 0, hours: [], hits: 0, misses: 0 };
 let managerTimer = null;
 let usageTimer = null;
 // serverId -> { ok, servers, error } dari daemon manager VPS tsb.
@@ -1461,7 +1475,8 @@ function modelRowHtml(model) {
   const stat = modelStats[String(model.modelId)] || null;
   const cacheMeta = stat
     ? ' · cache ' + (stat.hitRate || 0) + '% (hit ' + (stat.hits || 0) +
-      ' / miss ' + (stat.misses || 0) + ') · ' + (stat.requests || 0) + ' req'
+      ' / miss ' + (stat.misses || 0) + ') · ' + (stat.requests || 0) + ' req' +
+      (stat.tokensPerSec > 0 ? ' · tok/s ' + (stat.tokensPerSec) : '')
     : '';
   return '<div class="model-row">' +
     '<div><b>' + title + '</b> ' +
@@ -1486,6 +1501,38 @@ function nextServerId() {
   let n = gatewayServers.length + 1;
   while (gatewayServers.some((s) => String(s.id) === 'server-' + n)) n++;
   return 'server-' + n;
+}
+
+function renderCacheChart() {
+  const host = $('cacheChart');
+  const legend = $('cacheLegend');
+  const hint = $('cacheStatsHint');
+  if (!host) return;
+  const hours = globalCache.hours || [];
+  if (!hours.length) {
+    if (host) host.innerHTML = '<div class="hint">Belum ada data statistik cache.</div>';
+    if (legend) legend.innerHTML = '';
+    if (hint) hint.innerHTML = '';
+    return;
+  }
+  const max = Math.max(1, ...hours.map((h) => (h.hits || 0) + (h.misses || 0)));
+  host.innerHTML = hours.map((h) => {
+    const total = (h.hits || 0) + (h.misses || 0);
+    const rate = total > 0 ? Math.round((h.hits / total) * 100) : 0;
+    const hourNum = parseInt(String(h.hour || '0:00').split(':')[0], 10) || 0;
+    const heightPx = Math.max(2, Math.round((total / max) * 100)) + 'px';
+    const title = hourNum + ':00 — hit ' + (h.hits || 0) + ', miss ' + (h.misses || 0) +
+      ', rate ' + rate + '%';
+    const cls = 'cache-bar' + (rate >= 50 ? ' hit' : '');
+    return '<div class="' + cls + '" style="height:' + heightPx + '" title="' + title + '"></div>';
+  }).join('');
+  if (legend) {
+    legend.innerHTML = '<span class="cache-total">Hit rate 24 jam: ' + (globalCache.hitRate || 0) +
+      '%</span> · hit ' + (globalCache.hits || 0) + ' · miss ' + (globalCache.misses || 0) +
+      ' · ' + hours.length + ' jam terakhir';
+  }
+  if (hint) hint.innerHTML = 'Cache model list (dari /api/auth/cache-stats): grafik batang ' +
+    'berwarna hijau = jam dengan cache hitting ≥ 50%.';
 }
 
 function renderGatewayServers() {
@@ -1612,7 +1659,15 @@ async function loadGatewayData(silent) {
     for (const m of (stats && stats.models) || []) {
       if (m && m.modelId) modelStats[String(m.modelId)] = m;
     }
+    const cacheRes = await api('GET', '/api/auth/cache-stats').catch(() => null);
+    globalCache = {
+      hitRate: (cacheRes && cacheRes.hitRate) || 0,
+      hours: (cacheRes && cacheRes.hours) || [],
+      hits: (cacheRes && cacheRes.hits) || 0,
+      misses: (cacheRes && cacheRes.misses) || 0,
+    };
     renderGatewayServers();
+    renderCacheChart();
     if (!silent) {
       setStatus($('serverModelStatus'),
         gatewayServers.length + ' server · ' + serverModels.length + ' model', true);
