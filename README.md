@@ -384,7 +384,8 @@ Worker lalu mendeteksi model secara otomatis dan aplikasi bisa chat lewat
 
 ```bash
 flutter analyze     # 0 error
-flutter test        # 90 test
+flutter test        # 97 test
+node --test proxy/*.test.mjs   # config admin + billing worker
 ```
 
 Test yang relevan:
@@ -399,6 +400,7 @@ Test yang relevan:
 | `test/tier_billing_test.dart` | model FREE → token, model PRO/VIP → kredit |
 | `test/friendly_model_name_test.dart` | nama file `.gguf` → nama model |
 | `test/display_name_test.dart` | header chat & Model List pakai nama tampilan |
+| `proxy/admin-config.test.mjs` | system prompt global + harga `/req` input/output |
 
 ---
 
