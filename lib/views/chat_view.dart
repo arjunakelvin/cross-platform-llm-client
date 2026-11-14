@@ -586,12 +586,25 @@ class ChatView extends GetView<ChatController> {
 
   Widget _typingHint(BuildContext context, bool isDark,
       {String? attachmentType}) {
-    final msg = attachmentType == 'image'
-        ? 'Reading image…'
-        : attachmentType == 'audio'
-            ? 'Listening to audio…'
-            : null;
-    if (msg == null) return _TypingDots(isDark: isDark);
+    // Antrean server AI: pengguna harus tahu request-nya menunggu, bukan
+    // halaman error. `queueStatus` hanya terisi selama request masih antre.
+    final queue = Get.find<ChatController>().queueStatus.value;
+    String? msg;
+    if (queue != null && queue.isWaiting) {
+      final eta = queue.waitMs >= 1000
+          ? ' • ±${(queue.waitMs / 1000).ceil()} dtk'
+          : '';
+      final total = queue.queued > 0 ? queue.queued : queue.position;
+      msg = queue.position > 1
+          ? 'Antrean ke-${queue.position} dari $total$eta'
+          : 'Menunggu giliran server$eta';
+    } else {
+      msg = attachmentType == 'image'
+          ? 'Reading image…'
+          : attachmentType == 'audio'
+              ? 'Listening to audio…'
+              : 'Memproses prompt…';
+    }
     return Row(mainAxisSize: MainAxisSize.min, children: [
       _TypingDots(isDark: isDark),
       const SizedBox(width: 10),

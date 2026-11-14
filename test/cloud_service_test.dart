@@ -170,4 +170,37 @@ void main() {
     expect(await pending.timeout(const Duration(seconds: 2)),
         startsWith('ERROR:'));
   });
+
+  test('queue events from the proxy drive the UI position indicator', () async {
+    respond = (res) async {
+      res.write('data: ${jsonEncode({
+            'piercingblow_queue': true,
+            'active': 1,
+            'queued': 2,
+            'position': 2,
+            'wait_ms': 1200,
+          })}\n\n');
+      res.write(_chunk('Halo dunia', finish: 'stop'));
+      res.write('data: [DONE]\n\n');
+      await res.close();
+    };
+    final tokens = <String>[];
+    final statuses = <QueueStatus>[];
+    final result = await cloud.sendMessage(
+      messages: [
+        {'role': 'user', 'content': 'hi'},
+      ],
+      onToken: tokens.add,
+      onQueue: statuses.add,
+    );
+    expect(result, 'Halo dunia');
+    // Event antrean: posisi kita ke-2 dari 2 antrean, ±1,2 dtk tunggu.
+    expect(statuses.length, greaterThanOrEqualTo(2));
+    final waiting = statuses.first;
+    expect(waiting.position, 2);
+    expect(waiting.queued, 2);
+    expect(waiting.waitMs, 1200);
+    // Request mulai diproses → event idle/clear harus menghapus indikator.
+    expect(statuses.last.position, 0);
+  });
 }

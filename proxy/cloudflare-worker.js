@@ -193,7 +193,109 @@ async function cacheStats(env) {
     misses,
     total,
     hours,
+    // Statistik per model (prompt cache) supaya kelihatan model mana yang
+    // sering dipakai dan berapa hit/miss-nya.
+    models: await modelCacheStats(env),
   };
+}
+
+// ── Statistik prompt cache per model ─────────────────────────────────────
+// llama-server melaporkan `timings.cache_n` (token prompt yang dipakai ulang
+// dari cache KV) dan `timings.prompt_n` (token yang benar-benar diproses).
+// Angka itu dicatat per model supaya admin/user tahu model mana yang sering
+// dipakai dan seberapa efektif cache-nya — bukan cuma satu angka global.
+
+const MODEL_STATS_KEY = 'model_stats';
+const MODEL_STATS_MAX = 200;
+
+function emptyModelStat() {
+  return {
+    requests: 0,
+    hits: 0,
+    misses: 0,
+    promptTokens: 0,
+    cachedTokens: 0,
+    completionTokens: 0,
+    lastUsedAt: 0,
+  };
+}
+
+/// Catat satu request selesai untuk sebuah model.
+async function recordModelUsage(env, modelId, sample = {}) {
+  const id = String(modelId || '').trim();
+  if (!id) return;
+  try {
+    const stats = await getJson(env.PB_KV, MODEL_STATS_KEY, {});
+    const entry = stats[id] || emptyModelStat();
+    const promptTokens = Math.max(0, Number(sample.promptTokens) || 0);
+    const cachedTokens = Math.max(0, Number(sample.cachedTokens) || 0);
+    entry.requests = (Number(entry.requests) || 0) + 1;
+    entry.promptTokens = (Number(entry.promptTokens) || 0) + promptTokens;
+    entry.cachedTokens = (Number(entry.cachedTokens) || 0) + cachedTokens;
+    entry.completionTokens = (Number(entry.completionTokens) || 0) +
+      Math.max(0, Number(sample.completionTokens) || 0);
+    // Hit = prompt-nya sebagian/utuh dipakai ulang dari cache. Kalau backend
+    // tidak melaporkan jumlah token, request tetap dihitung tapi tidak
+    // mengubah rasio hit/miss.
+    if (promptTokens > 0) {
+      if (cachedTokens > 0) entry.hits = (Number(entry.hits) || 0) + 1;
+      else entry.misses = (Number(entry.misses) || 0) + 1;
+    }
+    entry.lastUsedAt = Date.now();
+    stats[id] = entry;
+    // Jaga ukuran KV: simpan hanya model yang paling baru dipakai.
+    const ids = Object.keys(stats);
+    if (ids.length > MODEL_STATS_MAX) {
+      ids.sort((a, b) =>
+        (Number(stats[a].lastUsedAt) || 0) - (Number(stats[b].lastUsedAt) || 0));
+      for (const old of ids.slice(0, ids.length - MODEL_STATS_MAX)) {
+        delete stats[old];
+      }
+    }
+    await env.PB_KV.put(MODEL_STATS_KEY, JSON.stringify(stats));
+  } catch (_) {
+    // Statistik tidak boleh menggagalkan request.
+  }
+}
+
+/// Ringkasan cache/pemakaian per model, digabung dengan daftar model supaya
+/// model yang belum pernah dipakai tetap muncul (dengan angka 0).
+async function modelCacheStats(env) {
+  const [stats, models] = await Promise.all([
+    getJson(env.PB_KV, MODEL_STATS_KEY, {}),
+    getJson(env.PB_KV, 'server_models', []),
+  ]);
+  const nameById = new Map();
+  for (const model of models) {
+    const id = String(model.modelId || '');
+    if (id) nameById.set(id, String(model.name || id));
+  }
+  const ids = new Set([...Object.keys(stats), ...nameById.keys()]);
+  const rows = [];
+  for (const id of ids) {
+    const raw = stats[id] || emptyModelStat();
+    const hits = Number(raw.hits) || 0;
+    const misses = Number(raw.misses) || 0;
+    const judged = hits + misses;
+    rows.push({
+      modelId: id,
+      name: nameById.get(id) || id,
+      requests: Number(raw.requests) || 0,
+      hits,
+      misses,
+      // Rasio dihitung dari request yang punya data token, bukan dari
+      // total request (backend lama tidak melaporkan cache).
+      hitRate: judged > 0 ? Math.round((hits / judged) * 1000) / 10 : 0,
+      promptTokens: Number(raw.promptTokens) || 0,
+      cachedTokens: Number(raw.cachedTokens) || 0,
+      completionTokens: Number(raw.completionTokens) || 0,
+      lastUsedAt: Number(raw.lastUsedAt) || 0,
+    });
+  }
+  rows.sort((a, b) =>
+    (b.lastUsedAt - a.lastUsedAt) || (b.requests - a.requests) ||
+    a.name.localeCompare(b.name));
+  return rows;
 }
 
 function publicConfig(request, config) {
@@ -477,6 +579,27 @@ async function handleAdmin(request, env, pathname) {
 
   if (pathname === '/api/admin/health' && request.method === 'GET') {
     return jsonResponse(request, 200, { ok: true, service: 'piercingblow-admin' });
+  }
+
+  // GET /api/admin/model-stats — cache/pemakaian per model untuk dashboard.
+  if (pathname === '/api/admin/model-stats' && request.method === 'GET') {
+    const rows = await modelCacheStats(env);
+    const models = await getJson(env.PB_KV, 'server_models', []);
+    const byId = new Map(models.map((m) => [String(m.modelId), m]));
+    return jsonResponse(request, 200, {
+      models: rows.map((row) => {
+        const model = byId.get(row.modelId) || {};
+        return {
+          ...row,
+          name: model.name || row.name,
+          serverId: String(model.serverId || ''),
+          contextSize: Number(model.contextSize) || 0,
+          maxOutput: Number(model.maxOutput) || 0,
+          enabled: model.enabled !== false,
+          active: model.active !== false,
+        };
+      }),
+    });
   }
 
   if (pathname === '/api/admin/config') {
@@ -1056,8 +1179,12 @@ async function syncDetectedModels(env, server, detected, daemons = []) {
       pricing: (existing && existing.pricing) || {},
       // Status tampil/sembunyi dipertahankan saat deteksi ulang.
       enabled: existing ? (existing.enabled !== false) : true,
-      contextSize: existing ? (Number(existing.contextSize) || 0) : 0,
-      maxOutput: existing ? (Number(existing.maxOutput) || 0) : 0,
+      // Nilai dari `/props` server menang; kalau server tidak melaporkannya,
+      // nilai terakhir dipertahankan supaya UI tidak kosong.
+      contextSize: Number(item.contextSize) ||
+        (existing ? (Number(existing.contextSize) || 0) : 0),
+      maxOutput: Number(item.maxOutput) ||
+        (existing ? (Number(existing.maxOutput) || 0) : 0),
       detected: true,
       active: true,
       createdAt: (existing && existing.createdAt) || now,
@@ -1137,7 +1264,64 @@ async function fetchAiModels(base, secret) {
     })
     .map((id) => String(id || '').trim())
     .filter(Boolean);
-  return { ids: [...new Set(ids)], url: clean };
+  // Batas context/max output dibaca dari server (llama-server `/props`),
+  // bukan ditebak admin. Gagal membaca props bukan error: model tetap
+  // terdeteksi, nilainya cuma 0 (belum diketahui).
+  const props = await fetchAiProps(clean, secret);
+  return { ids: [...new Set(ids)], url: clean, props };
+}
+
+/// Baca `/props` server AI (llama-server) untuk mengetahui context dan batas
+/// output yang benar-benar dipakai server. Nilai ini dipakai dashboard dan
+/// dikirim ke aplikasi supaya UI menampilkan angka yang sama dengan server.
+async function fetchAiProps(base, secret) {
+  const clean = String(base || '').trim().replace(/\/+$/, '');
+  if (!clean) return { contextSize: 0, maxOutput: 0, slots: 0, model: '' };
+  const root = /\/v\d+$/i.test(clean)
+    ? clean.replace(/\/v\d+$/i, '')
+    : clean;
+  const headers = { Accept: 'application/json' };
+  if (secret) {
+    headers['X-Secret-Key'] = secret;
+    headers.Authorization = `Bearer ${secret}`;
+  }
+  let payload = null;
+  // llama-server: `/props`. Sebagian build lama hanya punya `/v1/props`.
+  for (const url of [`${root}/props`, `${clean}/props`]) {
+    try {
+      const res = await fetch(url, { headers });
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data && typeof data === 'object') {
+        payload = data;
+        break;
+      }
+    } catch (_) {
+      // Coba URL berikutnya.
+    }
+  }
+  if (!payload) return { contextSize: 0, maxOutput: 0, slots: 0, model: '' };
+  const slots = Math.max(1, Number(payload.total_slots) || 1);
+  const generation = payload.default_generation_settings || {};
+  // `n_ctx` di default_generation_settings = context PER SLOT. Total context
+  // server = n_ctx * total_slots (llama-server membagi context ke tiap slot).
+  const ctxPerSlot = Number(payload.n_ctx) || Number(generation.n_ctx) || 0;
+  const contextSize = ctxPerSlot > 0 ? Math.floor(ctxPerSlot * slots) : 0;
+  // `n_predict` = batas output default; -1 (tanpa batas) → pakai perkiraan
+  // aman seperdua context, dibatasi 4096 supaya jawaban tidak menggantung.
+  const nPredict = Number(generation.n_predict);
+  const maxOutput = nPredict > 0
+    ? Math.floor(nPredict)
+    : (contextSize > 0
+      ? Math.min(4096, Math.max(256, Math.floor(contextSize / 2)))
+      : 0);
+  const modelPaths = payload.model_path ? [payload.model_path] : [];
+  return {
+    contextSize,
+    maxOutput,
+    slots,
+    model: backendModelName(modelPaths[0] || ''),
+  };
 }
 
 /// Tandai model server ini sebagai nonaktif (AI server-nya tidak bisa
@@ -1158,6 +1342,24 @@ async function markServerModelsInactive(env, serverId) {
   }
 }
 
+/// Lengkapi hasil deteksi dengan context/max output dari `/props` tiap
+/// endpoint AI (satu proses llama-server = satu daemon).
+async function attachDetectedProps(detected, secret) {
+  const urls = [...new Set(
+    detected.map((m) => String(m.apiUrl || '').trim()).filter(Boolean))];
+  const byUrl = new Map();
+  await Promise.all(urls.map(async (url) => {
+    byUrl.set(url, await fetchAiProps(url, secret));
+  }));
+  for (const item of detected) {
+    const props = byUrl.get(String(item.apiUrl || '').trim());
+    if (!props) continue;
+    item.contextSize = props.contextSize;
+    item.maxOutput = props.maxOutput;
+  }
+  return detected;
+}
+
 async function detectViaManager(env, server) {
   const raw = normalizePublicUrl(server.managerUrl);
   if (!raw) throw new Error('Base URL AI server belum diisi.');
@@ -1166,7 +1368,8 @@ async function detectViaManager(env, server) {
   if (/\/manager\/?$/i.test(raw)) {
     try {
       const daemons = await fetchManagerServers(server);
-      const detected = detectedModelsFromManager(daemons);
+      const detected = await attachDetectedProps(
+        detectedModelsFromManager(daemons), server.managerKey);
       const first = daemons.find((d) => d && (d.runtime || d.apiUrl)) || {};
       if (first.runtime) server.runtime = String(first.runtime);
       if (first.apiUrl) server.baseUrl = normalizePublicUrl(first.apiUrl);
@@ -1194,13 +1397,15 @@ async function detectViaManager(env, server) {
   if (/\/manager\/?$/i.test(target)) {
     target = target.replace(/\/manager\/?$/i, '');
   }
-  const { ids, url } = await fetchAiModels(target, server.managerKey);
+  const { ids, url, props } = await fetchAiModels(target, server.managerKey);
   server.baseUrl = url;
   const detected = ids.map((id) => ({
     backendId: backendModelName(id),
     daemonId: '',
     apiUrl: url,
     runtime: server.runtime || '',
+    contextSize: props.contextSize,
+    maxOutput: props.maxOutput,
   }));
   const sync = await syncDetectedModels(env, server, detected, []);
   return {
@@ -1709,6 +1914,66 @@ async function handleApiKey(request, env, pathname) {
   return jsonResponse(request, 404, { error: 'Unknown API key endpoint.' });
 }
 
+// ── Batas max_tokens dari server ─────────────────────────────────────────
+// Context & max output diisi otomatis dari `/props` server manager. Gateway
+// memakai angka itu untuk membatasi permintaan user, jadi server tidak
+// pernah menerima output lebih panjang dari yang bisa diprosesnya.
+
+const GATEWAY_HARD_MAX_TOKENS = 8192;
+
+/// Perkiraan token prompt dari isi pesan (≈4 karakter/token, bahasa campur).
+function estimatePromptTokens(messages) {
+  if (!Array.isArray(messages)) return 0;
+  let chars = 0;
+  for (const message of messages) {
+    if (!message) continue;
+    const content = message.content;
+    if (typeof content === 'string') {
+      chars += content.length;
+    } else if (Array.isArray(content)) {
+      for (const part of content) {
+        if (part && typeof part.text === 'string') chars += part.text.length;
+      }
+    }
+    chars += 8; // role + pemisah pesan
+  }
+  return chars > 0 ? Math.ceil(chars / 4) + 8 : 0;
+}
+
+/// Hitung `max_tokens` efektif: `min(permintaan, maxOutput, sisa context)`.
+/// Bila prompt sudah melebihi context, kembalikan `error` yang jelas supaya
+/// user tidak melihat kegagalan backend yang membingungkan.
+function resolveMaxTokens(body, modelConfig) {
+  const contextSize = Number(modelConfig.contextSize) || 0;
+  const maxOutput = Number(modelConfig.maxOutput) || 0;
+  const requested = Number(body.max_tokens ?? body.max_completion_tokens) || 0;
+  // Tanpa permintaan eksplisit, pakai batas output server (atau 4096).
+  let limit = requested > 0 ? requested : (maxOutput || 4096);
+  if (maxOutput > 0) limit = Math.min(limit, maxOutput);
+  limit = Math.min(limit, GATEWAY_HARD_MAX_TOKENS);
+  const promptEstimate = estimatePromptTokens(body.messages);
+  if (contextSize > 0) {
+    const room = contextSize - promptEstimate - 32;
+    if (room <= 0) {
+      return {
+        error: `Pesan terlalu panjang: perkiraan ${promptEstimate} token, ` +
+          `context model ini ${contextSize} token. Perpendek pesan atau ` +
+          'mulai chat baru.',
+        promptEstimate,
+        contextSize,
+      };
+    }
+    limit = Math.min(limit, room);
+  }
+  return {
+    maxTokens: Math.max(1, Math.floor(limit)),
+    promptEstimate,
+    contextSize,
+    maxOutput,
+    requested,
+  };
+}
+
 async function handleGateway(request, env, pathname) {
   // Terima dua bentuk: /api/gateway/... dan /api/gateway/v1/... (OpenAI
   // compatible). Dengan begitu base URL untuk SDK cukup
@@ -1933,6 +2198,18 @@ async function handleGateway(request, env, pathname) {
       ? `${base}/chat/completions`
       : `${base}/v1/chat/completions`;
 
+    // Batasi output sesuai context & max output model (hasil auto-detect
+    // `/props`). Ini satu-satunya penentu ukuran jawaban — aplikasi tidak
+    // perlu mengirim `max_tokens` sendiri.
+    const tokenLimit = resolveMaxTokens(body, modelConfig);
+    if (tokenLimit.error) {
+      return jsonResponse(request, 413, {
+        error: tokenLimit.error,
+        promptTokens: tokenLimit.promptEstimate,
+        contextSize: tokenLimit.contextSize,
+      });
+    }
+
     const headers = new Headers();
     headers.set('Content-Type', 'application/json');
     // Secret inference = manager secret VPS (nginx memakai key yang sama
@@ -1953,7 +2230,14 @@ async function handleGateway(request, env, pathname) {
         // Backend selalu menerima nama model asli (bukan id publik
         // `label:model:tier`) dan tanpa folder path.
         model: backendModelName(modelConfig.backendModelId || modelId),
+        // Nilai hasil clamp dari context/max output server.
+        max_tokens: tokenLimit.maxTokens,
       };
+      // Jaga dua nama field tetap sinkron untuk backend OpenAI-compatible
+      // baru yang hanya membaca `max_completion_tokens`.
+      if (body.max_completion_tokens !== undefined) {
+        upstreamBody.max_completion_tokens = tokenLimit.maxTokens;
+      }
       // Minta usage di akhir stream supaya kuota tetap terhitung.
       if (body.stream === true) {
         upstreamBody.stream_options = {
@@ -1978,6 +2262,9 @@ async function handleGateway(request, env, pathname) {
       let buffered = '';
       let contentChars = 0;
       let usage = { prompt_tokens: 0, completion_tokens: 0 };
+      // llama-server melaporkan `timings.cache_n` (token prompt dari cache KV)
+      // di chunk akhir — dasar statistik hit/miss per model.
+      let timings = {};
       const tracker = new TransformStream({
         transform(chunk, controller) {
           controller.enqueue(chunk);
@@ -1992,6 +2279,7 @@ async function handleGateway(request, env, pathname) {
             try {
               const parsed = JSON.parse(payload);
               if (parsed && parsed.usage) usage = parsed.usage;
+              if (parsed && parsed.timings) timings = parsed.timings;
               const choice = parsed && parsed.choices && parsed.choices[0];
               const delta = choice && choice.delta;
               if (delta && typeof delta.content === 'string') {
@@ -2003,9 +2291,20 @@ async function handleGateway(request, env, pathname) {
           }
         },
         async flush(controller) {
-          const promptTokens = Number(usage.prompt_tokens) || 0;
+          const cachedTokens = Math.max(0, Number(timings.cache_n) || 0);
+          const promptTokens = Number(usage.prompt_tokens) ||
+            (Math.max(0, Number(timings.prompt_n) || 0) + cachedTokens);
           const completionTokens = Number(usage.completion_tokens) ||
-            Math.ceil(contentChars / 4);
+            Number(timings.predicted_n) || Math.ceil(contentChars / 4);
+          // Statistik per model: berapa request, berapa prompt yang kena
+          // cache, dan berapa token yang dihasilkan.
+          if (promptTokens > 0 || completionTokens > 0) {
+            await recordModelUsage(env, modelId, {
+              promptTokens,
+              cachedTokens,
+              completionTokens,
+            });
+          }
           if (!promptTokens && !completionTokens) return;
           let credits = 0;
           try {
@@ -2037,6 +2336,8 @@ async function handleGateway(request, env, pathname) {
                   piercingblow_usage: true,
                   // Mode menentukan mana yang dipotong: token ATAU kredit.
                   mode: useCredits ? 'credit' : 'token',
+                  // Batas output yang dipakai gateway (dari context server).
+                  maxTokens: tokenLimit.maxTokens,
                   // Mode credit → JANGAN kirim token (biar app tidak ikut
                   // memotong kuota token). Mode token → tanpa kredit.
                   usage: useCredits
@@ -2061,6 +2362,7 @@ async function handleGateway(request, env, pathname) {
       streamHeaders.set('Content-Type', 'text/event-stream; charset=utf-8');
       streamHeaders.set('Cache-Control', 'no-cache');
       streamHeaders.set('X-Accel-Buffering', 'no');
+      streamHeaders.set('X-Max-Tokens', String(tokenLimit.maxTokens));
       return new Response(upstream.body.pipeThrough(tracker), {
         status: upstream.status,
         headers: streamHeaders,
@@ -2084,6 +2386,16 @@ async function handleGateway(request, env, pathname) {
     const promptTokens = usage.prompt_tokens || 0;
     const completionTokens = usage.completion_tokens || 0;
     const totalTokens = promptTokens + completionTokens;
+    // Statistik prompt cache per model (non-stream).
+    const timings = responseData.timings || {};
+    if (promptTokens > 0 || completionTokens > 0 || timings.prompt_n) {
+      await recordModelUsage(env, modelId, {
+        promptTokens: promptTokens ||
+          ((Number(timings.prompt_n) || 0) + (Number(timings.cache_n) || 0)),
+        cachedTokens: Number(timings.cache_n) || 0,
+        completionTokens: completionTokens || Number(timings.predicted_n) || 0,
+      });
+    }
 
     const charged = await chargeUsage(env, account, {
       pricing,
@@ -2109,6 +2421,7 @@ async function handleGateway(request, env, pathname) {
         'X-Token-Used': String(useCredits ? 0 : totalTokens),
         'X-Credit-Used': String(Math.round(creditsUsed * 1e8) / 1e8),
         'X-Usage-Mode': useCredits ? 'credit' : 'token',
+        'X-Max-Tokens': String(tokenLimit.maxTokens),
       },
     });
   }

@@ -111,6 +111,11 @@ Tekan **Tambah server & deteksi model**. Setelah tersimpan:
 - tiap model ditampilkan dengan tier, harga, context, max output, dan status
   **aktif / AI mati**.
 
+Context & max output masing-masing diisi **otomatis** dari server AI
+(llama-server `/props` → `n_ctx` & `n_predict`) saat **Deteksi model**, bukan
+ditetapkan manual. Nilai itu yang dipakai gateway (batu loncatan `max_tokens`),
+dipakai model, dan tampil di tab Model List aplikasi.
+
 ### Edit model
 
 Klik **Edit** pada model → ubah:
@@ -120,7 +125,10 @@ Klik **Edit** pada model → ubah:
   (kalau `/req` diisi, `/1M` diabaikan untuk sisi itu). Mode `/req` punya
   **dua kolom** — harga input dan output — dan total tagihan per panggilan
   adalah jumlah keduanya,
-- **Context size** & **Max output**.
+- **Context size** & **Max output** — keduanya **otomatis terdeteksi** dari
+  server AI (`/props`) saat deteksi model; admin hanya mengubah bila perlu
+  (mis. context menyisakan prompt panjang). Nilai otomatis menentukan batas
+  `max_tokens` yang diterima gateway.
 
 > **Label model** menentukan dompet yang dipotong: berlabel **FREE** →
 > kuota **token**, berlabel **PRO/VIP** → **kredit** (tidak tercampur).
@@ -387,6 +395,14 @@ Worker lalu mendeteksi model secara otomatis dan aplikasi bisa chat lewat
 > llama-server apa adanya. Aplikasi (timeout stream 90 detik) dan gateway
 > tidak perlu diubah. Kalau ingin melewati proxy, pakai `-NoProxy` atau isi
 > `-Target` sendiri.
+>
+> **Antrean saat server sibuk.** Proxy juga melayani max 1 request
+> streaming ke server secara bersamaan (sesuai `--parallel 1`). Request
+> berikutnya masuk antrean, dan klien menerima event SSE
+> `piercingblow_queue` (`active`, `queued`, `position`, `wait_ms`) tiap
+> tick antrean. UI menampilkan **“Antrean ke-N”**, bukan error — saat
+> request sampai slot, event `position: 0` datang dan indikator hilang.
+> Dashboard admin bisa cek antrean lewat `GET /queue` proxy.
 
 > Untuk alamat tetap, pakai *named tunnel* (`cloudflared tunnel` + domain
 > sendiri) supaya IP di dashboard tidak pernah berubah.
@@ -395,7 +411,7 @@ Worker lalu mendeteksi model secara otomatis dan aplikasi bisa chat lewat
 
 ```bash
 flutter analyze     # 0 error
-flutter test        # 97 test
+flutter test        # 100 test
 node --test proxy/*.test.mjs   # config admin + billing worker
 ```
 

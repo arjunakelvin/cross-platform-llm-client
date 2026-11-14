@@ -498,6 +498,8 @@ async with aiohttp.ClientSession() as session:<br>
           <input type="number" id="smMaxOutput" min="0" value="2048">
         </div>
       </div>
+      <div class="hint" id="smAutoLimits"
+        style="margin:-2px 0 10px;line-height:1.5"></div>
       <label>Tier yang boleh akses</label>
       <div style="display:flex;gap:16px;margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:4px;color:var(--text);margin:0">
@@ -822,6 +824,8 @@ async function loadConfig() {
 
 let gatewayServers = [];
 let serverModels = [];
+// Statistik prompt cache + pemakaian per model dari gateway (modelId → data).
+let modelStats = {};
 let managerTimer = null;
 let usageTimer = null;
 // serverId -> { ok, servers, error } dari daemon manager VPS tsb.
@@ -1453,13 +1457,19 @@ function modelRowHtml(model) {
   // Nama model saja — nama file .gguf tidak ditampilkan.
   const title = escapeHtml(model.name || friendlyModelName(model.modelId));
   const server = model.serverName ? ' · ' + escapeHtml(model.serverName) : '';
+  // Cache hit/miss & pemakaian per model (dari endpoint /api/admin/model-stats).
+  const stat = modelStats[String(model.modelId)] || null;
+  const cacheMeta = stat
+    ? ' · cache ' + (stat.hitRate || 0) + '% (hit ' + (stat.hits || 0) +
+      ' / miss ' + (stat.misses || 0) + ') · ' + (stat.requests || 0) + ' req'
+    : '';
   return '<div class="model-row">' +
     '<div><b>' + title + '</b> ' +
     '<span class="tag">' + escapeHtml(tiers) + '</span>' + activeTag +
     hiddenTag +
     '<div class="meta">' + server +
     ' · ctx ' + (model.contextSize || 0) +
-    ' · max ' + (model.maxOutput || 0) +
+    ' · max ' + (model.maxOutput || 0) + cacheMeta +
     ' · id <span class="mono">' +
     escapeHtml(model.publicId || model.modelId) + '</span>' +
     backend + '</div>' +
@@ -1590,12 +1600,18 @@ function renderGatewayServers() {
 
 async function loadGatewayData(silent) {
   try {
-    const [srv, mods] = await Promise.all([
+    const [srv, mods, stats] = await Promise.all([
       api('GET', '/api/admin/servers'),
       api('GET', '/api/admin/server-models'),
+      api('GET', '/api/admin/model-stats').catch(() => ({ models: [] })),
     ]);
     gatewayServers = srv.servers || [];
     serverModels = mods.models || [];
+    // Cache hit/miss & jumlah pemakaian per model.
+    modelStats = {};
+    for (const m of (stats && stats.models) || []) {
+      if (m && m.modelId) modelStats[String(m.modelId)] = m;
+    }
     renderGatewayServers();
     if (!silent) {
       setStatus($('serverModelStatus'),
@@ -1617,6 +1633,17 @@ function fillModelFormFrom(model) {
   $('smName').value = model ? (model.name || '') : '';
   $('smContextSize').value = model ? (model.contextSize || 0) : 4096;
   $('smMaxOutput').value = model ? (model.maxOutput || 0) : 2048;
+  // Context & max output diisi otomatis oleh Worker dari `/props` server saat
+  // deteksi model. Nilai di sini hanya bisa diubah manual kalau perlu.
+  const autoLimits = $('smAutoLimits');
+  if (autoLimits) {
+    autoLimits.innerHTML = model
+      ? 'Nilai context &amp; max output terisi otomatis dari server ' +
+        '(llama-server <span class="mono">/props</span>) saat ' +
+        '<b>Deteksi model</b>. Angka 0 = server belum melaporkannya; ' +
+        'gateway memakai batas aman (4096).'
+      : '';
+  }
   const tiers = (model && model.tierAccess) || ['free', 'pro', 'vip'];
   $('smTierFree').checked = tiers.includes('free');
   $('smTierPro').checked = tiers.includes('pro');

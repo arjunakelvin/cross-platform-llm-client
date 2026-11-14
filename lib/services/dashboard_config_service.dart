@@ -88,6 +88,54 @@ class AdminModelInfo {
   static double _num(Object? value) => value is num ? value.toDouble() : 0;
 }
 
+/// Statistik pemakaian + prompt cache satu model (dari gateway).
+///
+/// `hits` = request yang prompt-nya sebagian dipakai ulang dari cache KV
+/// server; `misses` = prompt yang harus diproses ulang. `hitRate` dihitung
+/// dari request yang punya data token (backend lama tidak melaporkannya).
+class ModelUsageStat {
+  const ModelUsageStat({
+    required this.modelId,
+    required this.requests,
+    required this.hits,
+    required this.misses,
+    required this.hitRate,
+    required this.promptTokens,
+    required this.cachedTokens,
+    required this.completionTokens,
+    required this.lastUsedAt,
+  });
+
+  final String modelId;
+  final int requests;
+  final int hits;
+  final int misses;
+  final double hitRate;
+  final int promptTokens;
+  final int cachedTokens;
+  final int completionTokens;
+  final DateTime? lastUsedAt;
+
+  bool get used => requests > 0 || hits > 0 || misses > 0;
+
+  factory ModelUsageStat.fromMap(Map<String, dynamic> map) {
+    final lastUsed = (map['lastUsedAt'] as num?)?.toInt() ?? 0;
+    return ModelUsageStat(
+      modelId: (map['modelId'] ?? '').toString(),
+      requests: (map['requests'] as num?)?.toInt() ?? 0,
+      hits: (map['hits'] as num?)?.toInt() ?? 0,
+      misses: (map['misses'] as num?)?.toInt() ?? 0,
+      hitRate: (map['hitRate'] as num?)?.toDouble() ?? 0,
+      promptTokens: (map['promptTokens'] as num?)?.toInt() ?? 0,
+      cachedTokens: (map['cachedTokens'] as num?)?.toInt() ?? 0,
+      completionTokens: (map['completionTokens'] as num?)?.toInt() ?? 0,
+      lastUsedAt: lastUsed > 0
+          ? DateTime.fromMillisecondsSinceEpoch(lastUsed)
+          : null,
+    );
+  }
+}
+
 /// Ubah nama file model (`qwen2.5-coder-1.5b-instruct-q4_k_m.gguf`) menjadi
 /// nama model yang enak dibaca (`Qwen2.5 Coder 1.5B`).
 ///
@@ -175,6 +223,9 @@ class DashboardConfigService extends GetxService {
   final cacheMisses = 0.obs;
   final cacheHours = <Map<String, dynamic>>[].obs;
 
+  /// Statistik pemakaian + prompt cache per model (kunci = modelId).
+  final modelStats = <String, ModelUsageStat>{}.obs;
+
   final isLoading = false.obs;
   final loadedAt = Rxn<DateTime>();
 
@@ -248,6 +299,16 @@ class DashboardConfigService extends GetxService {
               .map((e) => Map<String, dynamic>.from(e))
               .toList()
           : const <Map<String, dynamic>>[]);
+      // Statistik per model: hit/miss prompt cache + jumlah pemakaian.
+      final models = data['models'];
+      final parsed = <String, ModelUsageStat>{};
+      if (models is List) {
+        for (final item in models.whereType<Map>()) {
+          final stat = ModelUsageStat.fromMap(Map<String, dynamic>.from(item));
+          if (stat.modelId.isNotEmpty) parsed[stat.modelId] = stat;
+        }
+      }
+      modelStats.assignAll(parsed);
     } catch (_) {
       // Statistik bersifat tambahan; kegagalan tidak mengganggu config.
     }

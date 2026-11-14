@@ -11,6 +11,46 @@ import 'hive_service.dart';
 import 'app_log_service.dart';
 import 'secure_key_store.dart';
 
+/// Posisi permintaan di antrean server AI.
+///
+/// Dikirim proxy sebagai event SSE `piercingblow_queue` selama request masih
+/// menunggu slot inferensi. Dipakai UI untuk menampilkan "Antrean ke-N" supaya
+/// pengguna tidak mengira halaman error saat server sedang sibuk.
+class QueueStatus {
+  /// Jumlah request yang sedang diproses server.
+  final int active;
+
+  /// Jumlah request yang menunggu di belakang kita (termasuk kita).
+  final int queued;
+
+  /// Posisi kita: 1 = berikutnya diproses, 0 = tidak menunggu.
+  final int position;
+
+  /// Perkiraan waktu tunggu (milidetik), 0 kalau tidak diketahui.
+  final int waitMs;
+
+  const QueueStatus({
+    this.active = 0,
+    this.queued = 0,
+    this.position = 0,
+    this.waitMs = 0,
+  });
+
+  /// Tidak ada antrean / request sudah mulai diproses.
+  const QueueStatus.idle()
+      : active = 0,
+        queued = 0,
+        position = 0,
+        waitMs = 0;
+
+  bool get isWaiting => position > 0;
+
+  @override
+  String toString() =>
+      'QueueStatus(active: $active, queued: $queued, position: $position, '
+      'waitMs: $waitMs)';
+}
+
 /// Cloud API service supporting native and OpenAI-compatible providers.
 class CloudService extends GetxService {
   final HiveService _hive = Get.find<HiveService>();
@@ -176,6 +216,7 @@ class CloudService extends GetxService {
     double? temperature,
     int? maxTokens,
     void Function(String token)? onToken,
+    void Function(QueueStatus status)? onQueue,
   }) async {
     // Usage dari request sebelumnya tidak boleh ikut dipakai.
     lastGatewayTokens = null;
@@ -207,6 +248,7 @@ class CloudService extends GetxService {
             temperature,
             maxTokens,
             onToken: onToken,
+            onQueue: onQueue,
           );
         }
         if (_provider == 'local') {
@@ -216,6 +258,7 @@ class CloudService extends GetxService {
             temperature,
             maxTokens,
             onToken: onToken,
+            onQueue: onQueue,
           );
         }
         return await _streamOpenAICompatible(
@@ -227,6 +270,7 @@ class CloudService extends GetxService {
           maxTokens: maxTokens,
           extraHeaders: _openAICompatibleExtraHeaders,
           onToken: onToken,
+          onQueue: onQueue,
         );
       }
 
@@ -973,6 +1017,7 @@ class CloudService extends GetxService {
     double? temperature,
     int? maxTokens, {
     void Function(String token)? onToken,
+    void Function(QueueStatus status)? onQueue,
   }) async {
     final label = _providerLabel;
     final headers = _openAICompatibleExtraHeaders;
@@ -999,6 +1044,7 @@ class CloudService extends GetxService {
           extraHeaders: headers,
           modelOverride: modelOverride,
           onToken: onToken,
+          onQueue: onQueue,
           authOverride: auth,
         );
       }
@@ -1051,6 +1097,7 @@ class CloudService extends GetxService {
     double? temperature,
     int? maxTokens, {
     void Function(String token)? onToken,
+    void Function(QueueStatus status)? onQueue,
   }) async {
     final label =
         _hive.getSetting(AppConstants.keyCustomCloudName) ?? 'Custom API';
@@ -1075,6 +1122,7 @@ class CloudService extends GetxService {
                 maxTokens: maxTokens,
                 extraHeaders: customHeaders,
                 onToken: onToken,
+                onQueue: onQueue,
               )
             : await _sendOpenAICompatible(
                 endpoint: endpoint,
@@ -1190,6 +1238,7 @@ class CloudService extends GetxService {
     required double? temperature,
     required int? maxTokens,
     required void Function(String token) onToken,
+    void Function(QueueStatus status)? onQueue,
     Map<String, String> extraHeaders = const {},
     String? modelOverride,
     String? authOverride,
@@ -1285,6 +1334,18 @@ class CloudService extends GetxService {
           continue;
         }
 
+        // Event antrean dari proxy: berapa request aktif dan posisi kita.
+        // Dikirim berulang selama menunggu, lalu `position: 0` saat mulai.
+        if (data['piercingblow_queue'] == true) {
+          onQueue?.call(QueueStatus(
+            active: (data['active'] as num?)?.toInt() ?? 0,
+            queued: (data['queued'] as num?)?.toInt() ?? 0,
+            position: (data['position'] as num?)?.toInt() ?? 0,
+            waitMs: (data['wait_ms'] as num?)?.toInt() ?? 0,
+          ));
+          continue;
+        }
+
         final error = data['error'];
         if (error != null) {
           streamError = error is Map
@@ -1356,6 +1417,8 @@ class CloudService extends GetxService {
       }
       return text;
     } finally {
+      // Request selesai/gagal/dibatalkan → indikator antrean harus hilang.
+      onQueue?.call(const QueueStatus.idle());
       if (identical(_activeStreamClient, client)) _activeStreamClient = null;
       client.close();
     }

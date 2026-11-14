@@ -81,6 +81,8 @@ class ChatController extends GetxController {
   final streamingResponse = ''.obs;
   final isStreaming = false.obs;
   final streamingAttachmentType = Rxn<String>();
+  // Posisi antrean server AI (event SSE dari proxy). Null = tidak antre.
+  final queueStatus = Rxn<QueueStatus>();
 
   // Image generation progress (lightweight, replaces text-heavy updates)
   final imageGenStep = 0.obs;
@@ -680,6 +682,7 @@ class ChatController extends GetxController {
     streamingAttachmentType.value =
         (imagePath != null || fileType == 'audio') ? fileType : null;
     streamingResponse.value = '';
+    queueStatus.value = null;
     _followStreaming = true;
     _scrollToBottom(force: true);
 
@@ -844,8 +847,16 @@ class ChatController extends GetxController {
         rawResponse = await cloud.sendMessage(
           messages: apiMessages,
           imageBase64: imgBase64, // already encoded before clearImage()
+          onQueue: (status) {
+            if (generationId != _generationSerial) return;
+            // `position: 0` = request sudah mulai diproses → sembunyikan
+            // indikator antrean, bukan menampilkan "Antrean ke-0".
+            queueStatus.value = status.isWaiting ? status : null;
+          },
           onToken: (token) {
             if (generationId != _generationSerial) return;
+            // Token pertama berarti request sudah keluar dari antrean.
+            queueStatus.value = null;
             streamingResponse.value += token;
             trackThoughtTiming();
             _scrollToBottom();
@@ -867,6 +878,7 @@ class ChatController extends GetxController {
       isStreaming.value = false;
       streamingAttachmentType.value = null;
       streamingResponse.value = '';
+      queueStatus.value = null;
       imageGenStep.value = 0;
       imageGenTotal.value = 0;
       imageGenDecoding.value = false;
@@ -976,6 +988,7 @@ class ChatController extends GetxController {
       isStreaming.value = false;
       streamingAttachmentType.value = null;
       streamingResponse.value = '';
+      queueStatus.value = null;
       imageGenStep.value = 0;
       imageGenTotal.value = 0;
       imageGenDecoding.value = false;
@@ -1015,6 +1028,7 @@ class ChatController extends GetxController {
     isStreaming.value = false;
     streamingAttachmentType.value = null;
     streamingResponse.value = '';
+    queueStatus.value = null;
     Get.find<ImageGenerationNotificationService>().cancel();
     imageGenStep.value = 0;
     imageGenTotal.value = 0;

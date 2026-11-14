@@ -170,3 +170,86 @@ test('harga /req menjumlahkan input + output saat cek saldo', async () => {
   assert.equal(body.billing, 'credit');
   assert.equal(body.required, 0.03);
 });
+
+test('gateway memblokir prompt yang melebihi context (413, bukan error backend)', async () => {
+  const { store, env } = makeEnv();
+
+  store.set('mgr_servers', JSON.stringify([
+    { id: 'server-1', name: 'VPS 1', enabled: true, baseUrl: 'http://10.0.0.9:8080' },
+  ]));
+  store.set('server_models', JSON.stringify([{
+    modelId: MODEL_ID,
+    backendModelId: 'qwen.gguf',
+    name: 'Qwen 3B',
+    serverId: 'server-1',
+    tierAccess: ['free'],
+    pricing: {},
+    contextSize: 4096,
+    maxOutput: 2048,
+    enabled: true,
+    active: true,
+  }]));
+  store.set('account:u1', JSON.stringify({
+    id: 'u1',
+    name: 'user',
+    tier: 'free',
+    status: 'active',
+    tokenBalance: 100000,
+    tokenUsed: 0,
+    creditBalance: 100,
+    creditUsed: 0,
+  }));
+  store.set(`session:${SESSION}`, 'u1');
+
+  const longPrompt = 'x'.repeat(60_000);
+  const res = await call(env, '/api/gateway/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${SESSION}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: MODEL_ID,
+      messages: [{ role: 'user', content: longPrompt }],
+    }),
+  });
+  const body = await res.json();
+
+  assert.equal(res.status, 413);
+  assert.ok(String(body.error).toLowerCase().includes('terlalu panjang'));
+  assert.equal(Number(body.promptTokens), 15010);
+});
+
+test('cache-stats mengembalikan statistik per model (hit/miss/pemakaian)', async () => {
+  const { env } = makeEnv();
+
+  const res = await call(env, '/api/auth/cache-stats');
+  const body = await res.json();
+  assert.equal(res.status, 200);
+  assert.ok(Array.isArray(body.models));
+});
+
+test('admin model-stats mengembalikan ringkasan per model', async () => {
+  const { store, env } = makeEnv();
+  store.set('server_models', JSON.stringify([{
+    modelId: MODEL_ID,
+    backendModelId: 'qwen.gguf',
+    name: 'Qwen 3B',
+    serverId: 'server-1',
+    tierAccess: ['free'],
+    pricing: {},
+    contextSize: 4096,
+    maxOutput: 2048,
+    enabled: true,
+    active: true,
+  }]));
+
+  const res = await call(env, '/api/admin/model-stats', {
+    headers: { 'X-Admin-Key': ADMIN_KEY },
+  });
+  const body = await res.json();
+  assert.equal(res.status, 200);
+  assert.ok(Array.isArray(body.models));
+  assert.equal(body.models.length, 1);
+  assert.equal(body.models[0].modelId, MODEL_ID);
+});

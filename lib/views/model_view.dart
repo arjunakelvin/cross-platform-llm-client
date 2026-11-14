@@ -14,7 +14,6 @@ import '../services/discord_service.dart';
 import '../services/download_service.dart';
 import '../services/inference_service.dart';
 import '../services/local_image_service.dart';
-import '../widgets/cache_stats_card.dart';
 
 const _tabular = [FontFeature.tabularFigures()];
 
@@ -657,12 +656,9 @@ class ModelView extends GetView<ModelController> {
               ),
             ],
           ),
-          // Statistik cache model list dipindah ke sini (tab Model List),
-          // bukan di bagian API key.
-          const Padding(
-            padding: EdgeInsets.fromLTRB(4, 14, 4, 2),
-            child: CacheStatsCard(),
-          ),
+          // Statistik cache sekarang per model (di setiap baris model),
+          // bukan satu kartu global: admin/user bisa melihat model mana
+          // yang sering dipakai dan efektivitas prompt cache-nya.
           for (final entry in groups.entries) ...[
             SectionHeader(
               entry.key.name,
@@ -696,6 +692,16 @@ class ModelView extends GetView<ModelController> {
     });
   }
 
+  /// Ringkasan pemakaian + prompt cache untuk satu model.
+  static String _cacheSummary(ModelUsageStat stat) {
+    if (stat.requests <= 0 && stat.hits <= 0 && stat.misses <= 0) {
+      return 'Belum dipakai';
+    }
+    final rate = stat.hitRate.toStringAsFixed(0);
+    return 'Pemakaian ${_fmtThousands(stat.requests)}x · cache $rate% · '
+        'hit ${_fmtThousands(stat.hits)} / miss ${_fmtThousands(stat.misses)}';
+  }
+
   /// Angka dengan pemisah ribuan, contoh: 32,768.
   static String _fmtThousands(int value) {
     final s = value.toString();
@@ -713,8 +719,11 @@ class ModelView extends GetView<ModelController> {
     BuildContext context,
     AdminModelInfo model,
     String tier,
-  ) {    final t = AppTokens.of(context);
+  ) {
+    final t = AppTokens.of(context);
     final settings = Get.find<SettingsController>();
+    final config = Get.find<DashboardConfigService>();
+    final stat = config.modelStats[model.modelId];
     final isActive = settings.cloudProvider.value == 'local' &&
         settings.localCloudModel.value == model.modelId;
     final meta = [
@@ -788,6 +797,18 @@ class ModelView extends GetView<ModelController> {
                     Text(
                       specs,
                       style: t.small.copyWith(color: t.muted),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                  // Pemakaian & prompt cache model ini (dihitung gateway).
+                  if (stat != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      _cacheSummary(stat),
+                      style: t.small.copyWith(
+                        color: stat.requests > 0 ? t.text : t.muted,
+                      ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
