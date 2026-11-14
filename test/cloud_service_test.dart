@@ -50,6 +50,7 @@ void main() {
 
   tearDown(() async {
     CloudService.streamIdleTimeout = const Duration(seconds: 60);
+    CloudService.streamConnectTimeout = const Duration(seconds: 90);
     await server.close(force: true);
     Get.reset();
     await Hive.deleteFromDisk();
@@ -123,6 +124,36 @@ void main() {
       await Future.delayed(const Duration(seconds: 5));
     };
     final result = await send([]).timeout(const Duration(seconds: 3));
+    expect(result, startsWith('ERROR:'));
+    expect(result, contains("didn't respond in time"));
+  });
+
+  test('a slow first byte (long prompt prefill) still completes', () async {
+    // Self-hosted models on CPU can take a long time before the first token;
+    // the old 30 s connect timeout cancelled the request mid-prefill.
+    CloudService.streamConnectTimeout = const Duration(seconds: 3);
+    respond = (res) async {
+      await Future.delayed(const Duration(milliseconds: 600));
+      res.write(_chunk('Slow ', finish: 'stop'));
+      res.write('data: [DONE]\n\n');
+      await res.close();
+    };
+    final tokens = <String>[];
+    expect(await send(tokens).timeout(const Duration(seconds: 5)), 'Slow ');
+    expect(tokens.join(), 'Slow ');
+  });
+
+  test('a provider that never sends headers times out', () async {
+    CloudService.streamConnectTimeout = const Duration(milliseconds: 200);
+    respond = (res) async {
+      try {
+        await Future.delayed(const Duration(seconds: 1));
+        await res.close();
+      } catch (_) {
+        // The test already finished and closed the server.
+      }
+    };
+    final result = await send([]).timeout(const Duration(seconds: 5));
     expect(result, startsWith('ERROR:'));
     expect(result, contains("didn't respond in time"));
   });

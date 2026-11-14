@@ -377,6 +377,17 @@ Worker lalu mendeteksi model secara otomatis dan aplikasi bisa chat lewat
 `piercingblow.ai.id` → tunnel → AI server lokal. Kalau tunnel di-restart,
  subdomain-nya berubah → masukkan lagi URL baru di dashboard.
 
+> **Prompt panjang di CPU.** Cloudflare memutus respons yang tidak mengirim
+> byte selama ~125 detik. Model 7B di CPU bisa butuh beberapa menit hanya untuk
+> memproses prompt, sehingga chat tampak "kadang masuk kadang tidak" (log
+> cloudflared: `stream canceled by remote`). Karena itu launcher dan
+> `start-tunnel.ps1` menjalankan `server/keepalive_proxy.py` di port AI+1 dan
+> mengarahkan cloudflared ke sana: proxy langsung mengirim header SSE +
+> komentar `: keepalive` tiap 10 detik, lalu meneruskan token dari
+> llama-server apa adanya. Aplikasi (timeout stream 90 detik) dan gateway
+> tidak perlu diubah. Kalau ingin melewati proxy, pakai `-NoProxy` atau isi
+> `-Target` sendiri.
+
 > Untuk alamat tetap, pakai *named tunnel* (`cloudflared tunnel` + domain
 > sendiri) supaya IP di dashboard tidak pernah berubah.
 

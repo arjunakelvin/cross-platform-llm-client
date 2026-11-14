@@ -113,6 +113,14 @@ class CloudService extends GetxService {
   // endpoint) leaves the chat loading forever.
   static const _connectTimeout = Duration(seconds: 30);
   static const _responseTimeout = Duration(seconds: 120);
+  /// Max wait for the first byte of a streamed reply. A self-hosted model on
+  /// CPU can spend minutes on prompt processing before the first token, and
+  /// the gateway only forwards headers once the backend answers, so this has
+  /// to be far longer than [_connectTimeout] (llama-server pings every ~30 s
+  /// during prefill, but the edge may not flush anything before that). Not
+  /// const so tests can shorten it; [streamIdleTimeout] still catches a
+  /// stream that dies mid-reply.
+  static Duration streamConnectTimeout = const Duration(seconds: 90);
   /// Max gap between streamed chunks. Not const so tests can shorten it.
   static Duration streamIdleTimeout = const Duration(seconds: 60);
 
@@ -1204,7 +1212,8 @@ class CloudService extends GetxService {
     final client = http.Client();
     _activeStreamClient = client;
     try {
-      final response = await client.send(request).timeout(_connectTimeout);
+      final response =
+          await client.send(request).timeout(streamConnectTimeout);
       if (response.statusCode != 200) {
         final body = await response.stream.bytesToString();
         return _friendlyApiError(providerLabel, response.statusCode, body);
