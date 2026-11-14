@@ -165,6 +165,10 @@ class DashboardConfigService extends GetxService {
   /// Tier default backend, dipakai saat user belum login.
   final defaultTier = 'free'.obs;
 
+  /// System prompt global dari dashboard admin. Kosong = aplikasi memakai
+  /// prompt bawaannya (model uncensored tetap punya prompt sendiri).
+  final systemPrompt = ''.obs;
+
   /// Statistik cache daftar model (24 jam terakhir) dari server.
   final cacheHitRate = 0.0.obs;
   final cacheHits = 0.obs;
@@ -358,6 +362,7 @@ class DashboardConfigService extends GetxService {
     }
     defaultTier.value =
         (data['defaultTier'] ?? 'free').toString().trim().toLowerCase();
+    systemPrompt.value = (data['systemPrompt'] ?? '').toString().trim();
     loadedAt.value = DateTime.now();
     _loaded = true;
   }

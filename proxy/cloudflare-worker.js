@@ -52,6 +52,9 @@ const DEFAULT_CONFIG = {
   // yang dipakai web client untuk start/stop server AI.
   managerUrl: '',
   managerSecretKey: '',
+  // System prompt global dari dashboard admin. Kosong = aplikasi memakai
+  // prompt bawaannya sendiri (model uncensored punya prompt khusus).
+  systemPrompt: '',
 };
 
 function isAllowedOrigin(origin) {
@@ -210,6 +213,8 @@ function publicConfig(request, config) {
     // endpoint publik — dikirim ke user yang sudah login lewat /api/auth/me.
     aiServerUrl: config.aiServerUrl || '',
     managerUrl: config.managerUrl || '',
+    // Prompt global admin ikut ke aplikasi lewat config publik (bukan rahasia).
+    systemPrompt: (config.systemPrompt || '').trim(),
   };
 }
 
@@ -496,6 +501,7 @@ async function handleAdmin(request, env, pathname) {
         localCloudKey: config.localCloudKey || '',
         managerUrl: config.managerUrl || '',
         managerSecretKey: config.managerSecretKey || '',
+        systemPrompt: config.systemPrompt || '',
       });
     }
     if (request.method === 'PATCH') {
@@ -558,6 +564,11 @@ async function handleAdmin(request, env, pathname) {
       }
       if (typeof body.managerSecretKey === 'string') {
         next.managerSecretKey = body.managerSecretKey.trim();
+      }
+      // Prompt global: string kosong = kembali ke prompt bawaan aplikasi.
+      // Dibatasi supaya KV tidak bisa diisi teks raksasa.
+      if (typeof body.systemPrompt === 'string') {
+        next.systemPrompt = body.systemPrompt.trim().slice(0, 12000);
       }
       if (!next.tiers.includes(next.defaultTier)) {
         next.tiers.unshift(next.defaultTier);

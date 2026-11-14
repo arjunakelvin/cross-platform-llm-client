@@ -1223,10 +1223,14 @@ class SettingsController extends GetxController {
   }
 
   String effectiveSystemPromptForModel(String modelName) {
-    final prompt = globalSystemPrompt.value.trim();
-    final hasCustomPrompt =
-        prompt.isNotEmpty && prompt != AppConstants.systemPrompt;
-    if (hasCustomPrompt) return prompt;
+    // Prompt global dari dashboard admin adalah satu-satunya sumber prompt
+    // yang bisa diubah user/admin. Kalau kosong, pakai logika lama: model
+    // uncensored punya prompt sendiri, sisanya prompt bawaan aplikasi.
+    if (Get.isRegistered<DashboardConfigService>()) {
+      final adminPrompt =
+          Get.find<DashboardConfigService>().systemPrompt.value.trim();
+      if (adminPrompt.isNotEmpty) return adminPrompt;
+    }
     if (AppConstants.isUncensoredModelName(modelName)) {
       return AppConstants.uncensoredSystemPrompt;
     }

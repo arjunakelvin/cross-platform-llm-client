@@ -117,7 +117,9 @@ Klik **Edit** pada model → ubah:
 
 - **Tier** yang boleh akses (Free / Pro / VIP),
 - **Harga input** & **output**: `$ per request` **atau** `$ per 1M token`
-  (kalau `/req` diisi, `/1M` diabaikan untuk sisi itu),
+  (kalau `/req` diisi, `/1M` diabaikan untuk sisi itu). Mode `/req` punya
+  **dua kolom** — harga input dan output — dan total tagihan per panggilan
+  adalah jumlah keduanya,
 - **Context size** & **Max output**.
 
 > **Label model** menentukan dompet yang dipotong: berlabel **FREE** →
@@ -128,6 +130,18 @@ Klik **Edit** pada model → ubah:
 > disimpan, tapi modelnya tidak muncul di tab Model List pengguna. Nyalakan
 > AI-nya (tombol **Start AI** di kartu server), lalu tekan **Deteksi model**
 > supaya modelnya aktif lagi.
+
+### System prompt
+
+Menu **System prompt** di sidebar dashboard mengatur satu prompt global untuk
+semua model di aplikasi (lokal maupun cloud). Prompt ini **menimpa** prompt
+bawaan dan tidak bisa diubah dari Settings aplikasi.
+
+- Kosong → aplikasi memakai prompt bawaannya; model **uncensored** tetap
+  memakai prompt khususnya sendiri.
+- Diisi → prompt itu yang dikirim ke semua model.
+- Disimpan di KV worker (`config.systemPrompt`) dan ikut di
+  `GET /api/auth/config`, jadi aplikasi menariknya otomatis.
 
 ### Monitoring & log
 

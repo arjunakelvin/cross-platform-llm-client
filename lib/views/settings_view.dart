@@ -77,16 +77,6 @@ class SettingsView extends GetView<SettingsController> {
               ),
               _navRow(
                 context,
-                icon: Icons.chat_bubble_outline_rounded,
-                title: 'System prompt',
-                value: controller.globalSystemPrompt.value.trim().isEmpty
-                    ? 'Default'
-                    : 'Custom',
-                builder: (ctx) => _buildSystemPromptGroup(ctx),
-                reactive: false,
-              ),
-              _navRow(
-                context,
                 icon: Icons.tune_rounded,
                 title: 'Model parameters',
                 value: controller.temperature.value.toStringAsFixed(2),
@@ -671,32 +661,6 @@ class SettingsView extends GetView<SettingsController> {
             const SizedBox(height: 12),
           ],
         ),
-      ),
-    ]);
-  }
-
-  Widget _buildSystemPromptGroup(BuildContext context) {
-    final t = AppTokens.of(context);
-    return Column(children: [
-      TextField(
-        controller: controller.globalSystemPromptController,
-        minLines: 5,
-        maxLines: 12,
-        style: t.body,
-        decoration:
-            appInputDecoration(context, hint: AppConstants.systemPrompt),
-        onSubmitted: (v) => controller.setGlobalSystemPrompt(v),
-      ),
-      _fieldFooter(
-        context,
-        note: 'Applies to local and cloud models.',
-        onSave: () async {
-          await controller.setGlobalSystemPrompt(
-              controller.globalSystemPromptController.text);
-          if (context.mounted) {
-            _confirmSaved(context, 'System prompt saved');
-          }
-        },
       ),
     ]);
   }
