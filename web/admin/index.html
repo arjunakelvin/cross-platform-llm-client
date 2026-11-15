@@ -301,6 +301,8 @@
           <span class="ico">◉</span> Login Discord</button>
         <button class="nav-item" data-view="tiers">
           <span class="ico">◈</span> Tier &amp; kuota</button>
+        <button class="nav-item" data-view="plans">
+          <span class="ico">★</span> Plans &amp; ACC</button>
         <button class="nav-item" data-view="bot">
           <span class="ico">⚙</span> API bot</button>
         <span class="nav-label" style="margin-top:10px">Monitoring</span>
@@ -886,6 +888,84 @@ async with aiohttp.ClientSession() as session:<br>
     </div>
     </section>
 
+    <section class="view" id="view-plans">
+    <div class="card">
+      <h2>Plans &amp; ACC pembayaran</h2>
+      <p class="hint" style="margin:0 0 10px">
+        User melihat daftar paket ini di tab <b>Plans</b> aplikasi. Setelah user
+        transfer ke ACC ShopeePay/GoPay dan mengunggah bukti, pesanan muncul di
+        <b>Pesanan</b> di bawah — tekan <b>Approve</b> untuk otomatis menambah
+        kredit/token/tier ke akun, atau <b>Reject</b> kalau bukti tidak sesuai.</p>
+
+      <h3 style="margin:12px 0 8px">ACC pembayaran (ShopeePay/GoPay)</h3>
+      <div class="row">
+        <div style="flex:1 1 200px">
+          <label for="wpShopee">ShopeePay (nomor HP/VA)</label>
+          <input type="text" id="wpShopee" placeholder="08xxxxxxxxxx" autocomplete="off">
+        </div>
+        <div style="flex:1 1 200px">
+          <label for="wpShopeeNote">Atas nama</label>
+          <input type="text" id="wpShopeeNote" placeholder="A/N …" autocomplete="off">
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div style="flex:1 1 200px">
+          <label for="wpGopay">GoPay (nomor HP/VA)</label>
+          <input type="text" id="wpGopay" placeholder="08xxxxxxxxxx" autocomplete="off">
+        </div>
+        <div style="flex:1 1 200px">
+          <label for="wpGopayNote">Atas nama</label>
+          <input type="text" id="wpGopayNote" placeholder="A/N …" autocomplete="off">
+        </div>
+      </div>
+      <div style="margin-top:10px; display:flex; gap:8px; align-items:center">
+        <button id="saveWallets">Simpan ACC</button>
+        <span class="status" id="walletsStatus"></span>
+      </div>
+
+      <h3 style="margin:18px 0 8px">Daftar paket</h3>
+      <div class="table-scroll">
+        <table>
+          <thead><tr>
+            <th>#</th><th>Nama</th><th>Jenis</th>
+            <th>Harga (Rp)</th><th>Kredit ($)</th><th>Token bonus</th>
+            <th>Tier</th><th>Req/hari</th><th>Deskripsi</th><th>Aktif</th><th></th>
+          </tr></thead>
+          <tbody id="planRows">
+            <tr><td colspan="11" style="color:var(--muted)">Memuat paket…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+        <button id="addPlanRow">+ Tambah plan</button>
+        <button class="primary" id="savePlans">Simpan semua plan</button>
+        <span class="status" id="plansStatus"></span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>Pesanan</h2>
+      <div style="display:flex; gap:8px; align-items:center; margin:4px 0 10px">
+        <button class="ordersTab primary" data-orders="pending">Pending</button>
+        <button class="ordersTab" data-orders="paid">Paid</button>
+        <button class="ordersTab" data-orders="rejected">Rejected</button>
+        <span style="color:var(--muted); font-size:12px">Klik bukti untuk memperbesar.</span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr>
+            <th>Waktu</th><th>Akun</th><th>Paket</th><th>Metode</th>
+            <th>Nominal</th><th>Status</th><th>Bukti</th><th>Aksi</th>
+          </tr></thead>
+          <tbody id="planOrderRows">
+            <tr><td colspan="8" style="color:var(--muted)">Memuat…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="status" id="planOrdersStatus"></div>
+    </div>
+    </section>
+
     <section class="view" id="view-prompt">
     <div class="card">
       <h2>System prompt global</h2>
@@ -926,6 +1006,7 @@ const ADMIN_VIEWS = {
   accounts: 'Akun',
   discord: 'Login Discord',
   tiers: 'Tier & kuota',
+  plans: 'Plans & ACC',
   bot: 'API bot',
   logs: 'Log',
   prompt: 'System prompt',
@@ -955,6 +1036,9 @@ function showView(name) {
   } else if (name === 'logs') {
     loadApiKeyLogs();
     loadUsageLogs();
+  } else if (name === 'plans') {
+    loadPlansAdmin();
+    loadPlanOrders(ordersFilter);
   }
 }
 
@@ -1010,6 +1094,180 @@ function escapeHtml(s) {
   }[c]));
 }
 function escapeAttr(s) { return escapeHtml(s); }
+
+// ─── Plans: paket berbayar + ACC pembayaran + pesanan ───────────────────
+let ordersFilter = 'pending';
+
+function formatRupiah(v) {
+  const n = Number(v) || 0;
+  return 'Rp' + Math.floor(n).toLocaleString('id-ID');
+}
+
+function fmtProofCell(o) {
+  if (!o.proof) return '<td style="color:var(--muted)">—</td>';
+  const src = o.proof;
+  return '<td><img loading="lazy" alt="bukti" src="' + src + '" ' +
+    'style="max-height:120px; max-width:150px; border-radius:8px; cursor:zoom-in" ' +
+    'onclick="window.open(this.src, \'_blank\')"></td>';
+}
+
+function planRowHtml(p, i) {
+  return (
+    '<tr data-id="' + escapeAttr(p.id) + '" data-sort="' + (i + 1) + '">' +
+      '<td class="mono">' + escapeHtml(String(i + 1)) + '</td>' +
+      '<td><input type="text" data-f="name" style="min-width:120px" value="' +
+        escapeAttr(p.name || '') + '"></td>' +
+      '<td><select data-f="kind" style="min-width:110px">' +
+        '<option value="credit"' + (p.kind === 'credit' ? ' selected' : '') +
+          '>Credit</option>' +
+        '<option value="membership"' + (p.kind === 'membership' ? ' selected' : '') +
+          '>Membership</option>' +
+      '</select></td>' +
+      '<td><input type="number" data-f="priceIdr" min="0" step="1000"' +
+        ' style="min-width:96px" value="' + (p.priceIdr ?? 0) + '"></td>' +
+      '<td><input type="number" data-f="credits" min="0" step="0.01"' +
+        ' style="min-width:72px" value="' + (p.credits ?? 0) + '"></td>' +
+      '<td><input type="number" data-f="tokenBonus" min="0" step="1000000"' +
+        ' style="min-width:110px" value="' + (p.tokenBonus ?? 0) + '"></td>' +
+      '<td><select data-f="tier" style="min-width:88px">' +
+        '<option value="none"' + (p.tier === 'none' ? ' selected' : '') + '>—</option>' +
+        '<option value="vip"' + (p.tier === 'vip' ? ' selected' : '') + '>VIP</option>' +
+        '<option value="pro"' + (p.tier === 'pro' ? ' selected' : '') + '>PRO</option>' +
+      '</select></td>' +
+      '<td><input type="number" data-f="dailyReqLimit" min="0" step="1"' +
+        ' style="min-width:76px" value="' + (p.dailyReqLimit ?? 0) + '"></td>' +
+      '<td><input type="text" data-f="description" style="min-width:140px" value="' +
+        escapeAttr(p.description || '') + '"></td>' +
+      '<td><input type="checkbox" data-f="active"' +
+        (p.active !== false ? ' checked' : '') + '></td>' +
+      '<td><button class="delPlan">Hapus</button></td>' +
+    '</tr>'
+  );
+}
+
+function renderPlanRows(plans) {
+  const rows = $('planRows');
+  if (!plans || plans.length === 0) {
+    rows.innerHTML = '<tr><td colspan="11" style="color:var(--muted)">' +
+      'Belum ada plan. Klik "+ Tambah plan".</td></tr>';
+    return;
+  }
+  rows.innerHTML = plans.map((p, i) => planRowHtml(p, i)).join('');
+}
+
+function collectPlans() {
+  const plans = [];
+  document.querySelectorAll('#planRows tr[data-id]').forEach((tr, i) => {
+    const get = (f) => {
+      const el = tr.querySelector('[data-f="' + f + '"]');
+      return el ? el.value : '';
+    };
+    const activeEl = tr.querySelector('[data-f="active"]');
+    plans.push({
+      id: tr.dataset.id || ('plan-' + i),
+      sort: i + 1,
+      name: get('name').trim(),
+      kind: get('kind') || 'credit',
+      priceIdr: Math.max(0, Math.floor(Number(get('priceIdr')) || 0)),
+      credits: Math.max(0, Number(get('credits')) || 0),
+      tokenBonus: Math.max(0, Math.floor(Number(get('tokenBonus')) || 0)),
+      tier: get('tier') || 'none',
+      dailyReqLimit: Math.max(0, Math.floor(Number(get('dailyReqLimit')) || 0)),
+      description: get('description').trim(),
+      active: activeEl ? activeEl.checked : true,
+    });
+  });
+  return plans;
+}
+
+async function loadPlansAdmin() {
+  try {
+    const data = await api('GET', '/api/admin/plans');
+    const plans = (data.plans || []).slice()
+      .sort((a, b) => (a.sort || 0) - (b.sort || 0));
+    renderPlanRows(plans);
+    const byType = {};
+    for (const w of (data.wallets || [])) byType[w.type] = w;
+    const s = byType['shopeepay'] || {};
+    const g = byType['gopay'] || {};
+    $('wpShopee').value = s.account || '';
+    $('wpShopeeNote').value = s.note || '';
+    $('wpGopay').value = g.account || '';
+    $('wpGopayNote').value = g.note || '';
+    setStatus($('plansStatus'), '', true);
+  } catch (err) {
+    setStatus($('plansStatus'), 'Gagal memuat: ' + (err.message || err), false);
+  }
+}
+
+function walletFromInputs() {
+  const wallets = [];
+  const add = (type, account, note, label) => {
+    const acc = String(account || '').trim();
+    if (!acc) return;
+    wallets.push({
+      id: type + '-' + Date.now().toString(36),
+      type,
+      label,
+      account: acc,
+      note: String(note || '').trim(),
+      active: true,
+    });
+  };
+  add('shopeepay', $('wpShopee').value, $('wpShopeeNote').value, 'ShopeePay');
+  add('gopay', $('wpGopay').value, $('wpGopayNote').value, 'GoPay');
+  return wallets;
+}
+
+function renderPlanOrders(orders) {
+  const rows = $('planOrderRows');
+  if (!orders || orders.length === 0) {
+    rows.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">' +
+      'Belum ada pesanan ' + escapeHtml(ordersFilter) + '.</td></tr>';
+    return;
+  }
+  rows.innerHTML = orders.map((o) => (
+    '<tr>' +
+      '<td class="mono">' +
+        escapeHtml(new Date(o.createdAt).toLocaleString('id-ID', {
+          day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+        })) + '</td>' +
+      '<td>' + escapeHtml(o.accountName || o.accountDiscordId || o.accountId) + '</td>' +
+      '<td>' + escapeHtml(o.planName || o.planId) + '</td>' +
+      '<td>' + escapeHtml(o.method) + '</td>' +
+      '<td class="mono">' + formatRupiah(o.priceIdr) + '</td>' +
+      '<td><span class="pill ' +
+        (o.status === 'paid' ? 'active' :
+         o.status === 'rejected' ? 'banned' : 'info') + '">' +
+        escapeHtml(o.status) + '</span></td>' +
+      fmtProofCell(o) +
+      '<td style="white-space:nowrap">' +
+        (o.status === 'pending'
+          ? '<button class="approvePlan btn-small" data-id="' +
+              escapeAttr(o.id) + '">Approve</button> ' +
+            '<button class="rejectPlan btn-small" data-id="' +
+              escapeAttr(o.id) + '">Reject</button>'
+          : '<span style="color:var(--muted)">—</span>') +
+      '</td>' +
+    '</tr>'
+  )).join('');
+}
+
+async function loadPlanOrders(filter) {
+  ordersFilter = filter || ordersFilter;
+  document.querySelectorAll('.ordersTab').forEach((b) => {
+    const on = b.dataset.orders === ordersFilter;
+    b.classList.toggle('primary', on);
+  });
+  try {
+    const data = await api(
+      'GET', '/api/admin/plan-orders?status=' + encodeURIComponent(ordersFilter));
+    renderPlanOrders(data.orders || []);
+    setStatus($('planOrdersStatus'), '', true);
+  } catch (err) {
+    setStatus($('planOrdersStatus'), 'Gagal memuat: ' + (err.message || err), false);
+  }
+}
 
 function fillTierSelects() {
   const tiers = (config && config.tiers) || ['free'];
@@ -1527,6 +1785,97 @@ $('clearSystemPrompt').addEventListener('click', () => {
     + 'bawaannya.')) return;
   $('sysPrompt').value = '';
   saveSystemPrompt('');
+});
+
+// ─── Plans & ACC ─────────────────────────────────────────────────
+$('saveWallets').addEventListener('click', async () => {
+  const wallets = walletFromInputs();
+  if (wallets.length === 0) {
+    setStatus($('walletsStatus'),
+      'Isi minimal satu ACC (ShopeePay/GoPay).', false);
+    return;
+  }
+  try {
+    await api('POST', '/api/admin/wallets', { wallets });
+    setStatus($('walletsStatus'), 'ACC pembayaran disimpan.', true);
+  } catch (e) {
+    setStatus($('walletsStatus'), String(e.message || e), false);
+  }
+});
+
+$('addPlanRow').addEventListener('click', () => {
+  const tbody = $('planRows');
+  if (tbody.querySelector('td[colspan]')) tbody.innerHTML = '';
+  const blank = {
+    id: 'plan-' + Date.now().toString(36),
+    name: '', kind: 'credit', priceIdr: 0, credits: 1, tokenBonus: 0,
+    tier: 'none', dailyReqLimit: 0, description: '', active: true,
+  };
+  const tr = document.createElement('tr');
+  tr.dataset.id = blank.id;
+  tr.innerHTML = planRowHtml(blank, tbody.children.length + 1);
+  tbody.appendChild(tr);
+});
+
+$('savePlans').addEventListener('click', async () => {
+  const plans = collectPlans().filter((p) => p.name);
+  if (plans.length === 0) {
+    setStatus($('plansStatus'), 'Minimal satu plan dengan nama.', false);
+    return;
+  }
+  try {
+    await api('POST', '/api/admin/plans', { plans });
+    await loadPlansAdmin();
+    setStatus($('plansStatus'), 'Plan disimpan.', true);
+  } catch (e) {
+    setStatus($('plansStatus'), String(e.message || e), false);
+  }
+});
+
+$('planRows').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('.delPlan');
+  if (!btn) return;
+  const tr = btn.closest('tr');
+  if (tr) tr.remove();
+});
+
+document.querySelectorAll('.ordersTab').forEach((btn) => {
+  btn.addEventListener('click', () => loadPlanOrders(btn.dataset.orders));
+});
+
+$('planOrderRows').addEventListener('click', async (ev) => {
+  const approveBtn = ev.target.closest('.approvePlan');
+  const rejectBtn = ev.target.closest('.rejectPlan');
+  const target = approveBtn || rejectBtn;
+  if (!target) return;
+  const id = target.dataset.id;
+  if (approveBtn) {
+    if (!confirm('Setujui pesanan ini? Kredit/token/tier akan ditambahkan ke akun.')) {
+      return;
+    }
+    try {
+      await api('POST',
+        `/api/admin/plan-orders/${encodeURIComponent(id)}/approve`);
+      await loadPlanOrders('pending');
+      setStatus($('planOrdersStatus'),
+        'Pesanan disetujui — saldo masuk ke akun.', true);
+    } catch (e) {
+      setStatus($('planOrdersStatus'), String(e.message || e), false);
+    }
+    return;
+  }
+  const reason = prompt('Alasan penolakan:',
+    'Bukti tidak valid / nominal tidak sesuai.');
+  if (reason === null) return;
+  try {
+    await api('POST',
+      `/api/admin/plan-orders/${encodeURIComponent(id)}/reject`,
+      { reason });
+    await loadPlanOrders('pending');
+    setStatus($('planOrdersStatus'), 'Pesanan ditolak.', true);
+  } catch (e) {
+    setStatus($('planOrdersStatus'), String(e.message || e), false);
+  }
 });
 
 $('tiers').addEventListener('change', () => {

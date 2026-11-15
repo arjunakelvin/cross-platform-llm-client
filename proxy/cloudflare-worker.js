@@ -51,6 +51,127 @@ const FREE_DAILY_REQUEST_LIMIT = 15;
 // mendapat jatah baru (reset counter UTC tengah malam tetap berlaku).
 const GUEST_DAILY_REQUEST_LIMIT = 5;
 
+// ─────────────────────────────────────────────────────────────
+// Plan berbayar (credit pack + membership VIP/Pro). Diatur admin di
+// dashboard (Plans). User membayar manual ke wallet ShopeePay/GoPay
+// admin lalu mengunggah bukti; admin approve di dashboard → kredit /
+// token / tier otomatis masuk ke akun.
+// ─────────────────────────────────────────────────────────────
+const PLAN_KINDS = ['credit', 'membership'];
+const PLAN_TIERS = ['none', 'vip', 'pro'];
+const WALLET_TYPES = ['shopeepay', 'gopay'];
+
+const DEFAULT_PLANS = [
+  { id: 'credit-starter', kind: 'credit', name: 'Starter', priceIdr: 50000,
+    credits: 5, tokenBonus: 5000000, tier: 'none', dailyReqLimit: 0,
+    description: '$5 kredit + 5M token bonus', active: true, sort: 1 },
+  { id: 'credit-popular', kind: 'credit', name: 'Popular', priceIdr: 100000,
+    credits: 12, tokenBonus: 15000000, tier: 'none', dailyReqLimit: 0,
+    description: '$12 kredit + 15M token bonus', active: true, sort: 2 },
+  { id: 'credit-best', kind: 'credit', name: 'Best Value', priceIdr: 250000,
+    credits: 30, tokenBonus: 50000000, tier: 'none', dailyReqLimit: 0,
+    description: '$30 kredit + 50M token bonus', active: true, sort: 3 },
+  { id: 'membership-vip', kind: 'membership', name: 'VIP', priceIdr: 150000,
+    credits: 2, tokenBonus: 10000000, tier: 'vip', dailyReqLimit: 30,
+    description: 'Membership VIP — tier VIP, +30 req/hari, $2 kredit + 10M token',
+    active: true, sort: 4 },
+  { id: 'membership-pro', kind: 'membership', name: 'PRO', priceIdr: 300000,
+    credits: 5, tokenBonus: 20000000, tier: 'pro', dailyReqLimit: 45,
+    description: 'Membership PRO — tier PRO, +45 req/hari, $5 kredit + 20M token',
+    active: true, sort: 5 },
+];
+
+const DEFAULT_WALLETS = [
+  { id: 'shopeepay-1', type: 'shopeepay', label: 'ShopeePay',
+    account: '', note: '', active: true },
+  { id: 'gopay-1', type: 'gopay', label: 'GoPay',
+    account: '', note: '', active: true },
+];
+
+function cleanPlan(input, fallbackId) {
+  const src = input && typeof input === 'object' ? input : {};
+  const tier = String(src.tier || 'none').trim().toLowerCase();
+  const kind = String(src.kind || 'credit').trim().toLowerCase();
+  const name = String(src.name || '').trim().slice(0, 80);
+  const description = String(src.description || '').trim().slice(0, 160);
+  if (!name) return null;
+  const id = String(src.id || fallbackId || '').trim().slice(0, 64);
+  if (!id) return null;
+  return {
+    id,
+    kind: PLAN_KINDS.includes(kind) ? kind : 'credit',
+    name,
+    priceIdr: Math.max(0, Math.floor(Number(src.priceIdr) || 0)),
+    credits: Math.max(0, Number(src.credits) || 0),
+    tokenBonus: Math.max(0, Math.floor(Number(src.tokenBonus) || 0)),
+    tier: PLAN_TIERS.includes(tier) ? tier : 'none',
+    dailyReqLimit: Math.max(0, Math.floor(Number(src.dailyReqLimit) || 0)),
+    description,
+    active: src.active !== false,
+    sort: Math.floor(Number(src.sort) || 0),
+  };
+}
+
+function cleanWallet(input, fallbackId) {
+  const src = input && typeof input === 'object' ? input : {};
+  const type = String(src.type || '').trim().toLowerCase();
+  if (!WALLET_TYPES.includes(type)) return null;
+  const account = String(src.account || '').trim().slice(0, 64);
+  if (!account) return null;
+  return {
+    id: String(src.id || fallbackId || '').trim().slice(0, 64) ||
+        `${type}-${Date.now().toString(36)}`,
+    type,
+    label: String(src.label || (type === 'shopeepay' ? 'ShopeePay' : 'GoPay'))
+      .trim().slice(0, 40),
+    account,
+    note: String(src.note || '').trim().slice(0, 160),
+    active: src.active !== false,
+  };
+}
+
+async function getPlans(env) {
+  const stored = await getJson(env.PB_KV, 'plans', null);
+  if (!Array.isArray(stored) || stored.length === 0) {
+    // Seed default sekali supaya dashboard langsung menampilkan paket.
+    await env.PB_KV.put('plans', JSON.stringify(DEFAULT_PLANS));
+    return DEFAULT_PLANS.map((p) => ({ ...p }));
+  }
+  const cleaned = [];
+  const seen = new Set();
+  for (let i = 0; i < stored.length && cleaned.length < 50; i++) {
+    const plan = cleanPlan(stored[i], `plan-${i}`);
+    if (!plan || seen.has(plan.id)) continue;
+    seen.add(plan.id);
+    cleaned.push(plan);
+  }
+  return cleaned;
+}
+
+async function getWallets(env) {
+  const stored = await getJson(env.PB_KV, 'payment_wallets', null);
+  if (!Array.isArray(stored) || stored.length === 0) {
+    await env.PB_KV.put('payment_wallets', JSON.stringify(DEFAULT_WALLETS));
+    return DEFAULT_WALLETS.map((w) => ({ ...w }));
+  }
+  const cleaned = [];
+  for (let i = 0; i < stored.length && cleaned.length < 20; i++) {
+    const wallet = cleanWallet(stored[i], `wallet-${i}`);
+    if (wallet) cleaned.push(wallet);
+  }
+  return cleaned;
+}
+
+async function getPlanOrders(env) {
+  const stored = await getJson(env.PB_KV, 'plan_orders', []);
+  return Array.isArray(stored) ? stored : [];
+}
+
+async function savePlanOrders(env, orders) {
+  // Simpan paling banyak 200 pesanan terakhir.
+  await env.PB_KV.put('plan_orders', JSON.stringify(orders.slice(0, 200)));
+}
+
 const DEFAULT_CONFIG = {
   discord: { enabled: false, clientId: '', clientSecret: '', redirectUri: '' },
   tiers: ['free', 'pro', 'vip'],
@@ -1719,6 +1840,163 @@ async function handleAdmin(request, env, pathname) {
     }
   }
 
+  // ─── Plans: paket berbayar (credit pack + membership) ────────────────
+  if (pathname === '/api/admin/plans') {
+    if (request.method === 'GET') {
+      return jsonResponse(request, 200, {
+        plans: await getPlans(env),
+        wallets: await getWallets(env),
+      });
+    }
+    if (request.method === 'POST') {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse(request, 400, { error: 'Invalid JSON body.' });
+      }
+      const raw = Array.isArray(body && body.plans) ? body.plans : null;
+      if (!raw) {
+        return jsonResponse(request, 400, { error: '"plans" harus array.' });
+      }
+      const cleaned = [];
+      const seen = new Set();
+      for (let i = 0; i < raw.length && cleaned.length < 50; i++) {
+        const plan = cleanPlan(raw[i], `plan-${i}`);
+        if (!plan || seen.has(plan.id)) continue;
+        seen.add(plan.id);
+        cleaned.push(plan);
+      }
+      if (cleaned.length === 0) {
+        return jsonResponse(request, 400, { error: 'Minimal satu plan.' });
+      }
+      // Sort biar urutan di UI konsisten.
+      cleaned.sort((a, b) => a.sort - b.sort);
+      await env.PB_KV.put('plans', JSON.stringify(cleaned));
+      return jsonResponse(request, 200, { ok: true, plans: cleaned });
+    }
+  }
+
+  // ─── Plans: wallet ACC pembayaran (ShopeePay/GoPay) ─────────────────
+  if (pathname === '/api/admin/wallets') {
+    if (request.method === 'GET') {
+      return jsonResponse(request, 200, { wallets: await getWallets(env) });
+    }
+    if (request.method === 'POST') {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse(request, 400, { error: 'Invalid JSON body.' });
+      }
+      const raw = Array.isArray(body && body.wallets) ? body.wallets : null;
+      if (!raw) {
+        return jsonResponse(request, 400, { error: '"wallets" harus array.' });
+      }
+      const cleaned = [];
+      for (let i = 0; i < raw.length && cleaned.length < 20; i++) {
+        const wallet = cleanWallet(raw[i], `wallet-${i}`);
+        if (wallet) cleaned.push(wallet);
+      }
+      // Wajib ada minimal satu wallet aktif dengan nomor/VA agar user bisa bayar.
+      if (cleaned.length === 0) {
+        return jsonResponse(request, 400, {
+          error: 'Minimal satu wallet dengan nomor/va harus diisi.',
+        });
+      }
+      await env.PB_KV.put('payment_wallets', JSON.stringify(cleaned));
+      return jsonResponse(request, 200, { ok: true, wallets: cleaned });
+    }
+  }
+
+  // ─── Plans: pesanan pembelian ───────────────────────────────────────
+  if (pathname === '/api/admin/plan-orders' && request.method === 'GET') {
+    const url = new URL(request.url);
+    const status = (url.searchParams.get('status') || 'all').toLowerCase();
+    const all = await getPlanOrders(env);
+    const filtered = status === 'all'
+      ? all
+      : all.filter((o) => o.status === status);
+    // Bukti dikirim sebagai data URL — tampilkan tapi potong agar respons ringan.
+    const orders = filtered.map((o) => ({
+      ...o,
+      proof: o.proof
+        ? (o.proof.length > 120000 ? o.proof.slice(0, 120000) + '#truncated' : o.proof)
+        : '',
+    }));
+    return jsonResponse(request, 200, { orders });
+  }
+
+  if (pathname.startsWith('/api/admin/plan-orders/')) {
+    const parts = pathname.split('/').filter(Boolean);
+    // ['api', 'admin', 'plan-orders', '<id>', '<action>']
+    const id = decodeURIComponent(parts[3] || '');
+    const action = parts[4] || '';
+    if (!id) {
+      return jsonResponse(request, 400, { error: 'Order id wajib.' });
+    }
+    const orders = await getPlanOrders(env);
+    const idx = orders.findIndex((o) => o.id === id);
+    if (idx < 0) {
+      return jsonResponse(request, 404, { error: 'Pesanan tidak ditemukan.' });
+    }
+    if (action === 'approve' && request.method === 'POST') {
+      if (orders[idx].status !== 'pending') {
+        return jsonResponse(request, 409, { error: 'Pesanan sudah diproses.' });
+      }
+      const grants = orders[idx].grants || {};
+      const key = `account:${orders[idx].accountId}`;
+      const existing = await getJson(env.PB_KV, key, null);
+      if (!existing) {
+        return jsonResponse(request, 404, { error: 'Akun tidak ditemukan.' });
+      }
+      const credits = Math.max(0, Number(grants.credits) || 0);
+      const tokenBonus = Math.max(0, Math.floor(Number(grants.tokenBonus) || 0));
+      const tier = PLAN_TIERS.includes(String(grants.tier)) ? grants.tier : 'none';
+      const dailyReqLimit = Math.max(0, Math.floor(Number(grants.dailyReqLimit) || 0));
+      existing.creditBalance =
+        Math.round((Number(existing.creditBalance || 0) + credits) * 1e8) / 1e8;
+      existing.tokenBalance =
+        Math.floor(Number(existing.tokenBalance || 0) + tokenBonus);
+      if (tier !== 'none') existing.tier = tier;
+      if (dailyReqLimit > 0) existing.dailyRequestLimit = dailyReqLimit;
+      existing.planLastPurchaseAt = Date.now();
+      await env.PB_KV.put(key, JSON.stringify(existing));
+      orders[idx].status = 'paid';
+      orders[idx].approvedAt = Date.now();
+      orders[idx].updatedAt = Date.now();
+      await savePlanOrders(env, orders);
+      return jsonResponse(request, 200, {
+        ok: true,
+        order: { id: orders[idx].id, status: orders[idx].status },
+        account: existing,
+      });
+    }
+    if (action === 'reject' && request.method === 'POST') {
+      if (orders[idx].status !== 'pending') {
+        return jsonResponse(request, 409, { error: 'Pesanan sudah diproses.' });
+      }
+      let reason = 'Ditolak admin.';
+      try {
+        const body = await request.json().catch(() => ({}));
+        if (body && typeof body.reason === 'string') {
+          reason = body.reason.slice(0, 200);
+        }
+      } catch {
+        // biarkan default
+      }
+      orders[idx].status = 'rejected';
+      orders[idx].reason = reason;
+      orders[idx].updatedAt = Date.now();
+      await savePlanOrders(env, orders);
+      return jsonResponse(request, 200, {
+        ok: true,
+        order: { id: orders[idx].id, status: orders[idx].status },
+      });
+    }
+    return jsonResponse(request, 404, { error: 'Aksi tidak dikenal.' });
+  }
+
   return jsonResponse(request, 404, { error: 'Unknown admin endpoint.' });
 }
 
@@ -3040,6 +3318,164 @@ async function handleGateway(request, env, pathname) {
       models: withPublicId,
       tier: userTier,
       cached: cached.hit,
+    });
+  }
+
+  // GET /api/gateway/plans — daftar paket aktif (tanpa secret).
+  if (pathname === '/api/gateway/plans' && request.method === 'GET') {
+    const plans = (await getPlans(env)).filter((p) => p.active !== false);
+    return jsonResponse(request, 200, {
+      object: 'list',
+      data: plans.map((p) => ({
+        id: p.id,
+        name: p.name,
+        kind: p.kind,
+        priceIdr: p.priceIdr,
+        credits: p.credits,
+        tokenBonus: p.tokenBonus,
+        tier: p.tier,
+        dailyReqLimit: p.dailyReqLimit,
+        description: p.description,
+      })),
+    });
+  }
+
+  // POST /api/gateway/plans/order — buat pesanan paket (menunggu bayar).
+  if (pathname === '/api/gateway/plans/order' && request.method === 'POST') {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return jsonResponse(request, 400, { error: 'Invalid JSON body.' });
+    }
+    const planId = String((body && body.planId) || '').trim();
+    const method = String((body && body.method) || '').trim().toLowerCase();
+    if (!WALLET_TYPES.includes(method)) {
+      return jsonResponse(request, 400, {
+        error: 'Metode pembayaran tidak didukung. Gunakan: shopeepay / gopay.',
+      });
+    }
+    const plans = await getPlans(env);
+    const plan = plans.find((p) => p.id === planId && p.active !== false);
+    if (!plan) {
+      return jsonResponse(request, 404, { error: 'Paket tidak ditemukan / nonaktif.' });
+    }
+    const wallets = (await getWallets(env)).filter((w) => w.active && w.account);
+    if (wallets.length === 0) {
+      return jsonResponse(request, 503, {
+        error: 'Pembayaran belum dikonfigurasi admin. Kami beri tahu setelah aktif.',
+      });
+    }
+    const orders = await getPlanOrders(env);
+    const id = `po_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
+    const order = {
+      id,
+      accountId: account.id,
+      accountName: account.name || '',
+      accountDiscordId: account.discordId || '',
+      planId: plan.id,
+      planName: plan.name,
+      kind: plan.kind,
+      priceIdr: plan.priceIdr,
+      method,
+      status: 'pending',
+      proof: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      grants: {
+        credits: plan.credits,
+        tokenBonus: plan.tokenBonus,
+        tier: plan.tier,
+        dailyReqLimit: plan.dailyReqLimit,
+      },
+    };
+    orders.unshift(order);
+    await savePlanOrders(env, orders);
+    return jsonResponse(request, 200, {
+      order: {
+        id: order.id,
+        planId: order.planId,
+        planName: order.planName,
+        priceIdr: order.priceIdr,
+        method,
+        status: 'pending',
+        createdAt: order.createdAt,
+      },
+      wallets: wallets.map((w) => ({
+        type: w.type,
+        label: w.label,
+        account: w.account,
+        note: w.note || '',
+      })),
+      message: 'Transfer sesuai nominal, lalu unggah bukti pembayaran di halaman Plans.',
+    });
+  }
+
+  // POST /api/gateway/plans/order/proof — unggah bukti pembayaran.
+  if (pathname === '/api/gateway/plans/order/proof' && request.method === 'POST') {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return jsonResponse(request, 400, { error: 'Invalid JSON body.' });
+    }
+    const orderId = String((body && body.orderId) || '').trim();
+    const dataUrl = String((body && body.dataUrl) || '');
+    if (!orderId) {
+      return jsonResponse(request, 400, { error: 'orderId wajib.' });
+    }
+    if (!/^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) {
+      return jsonResponse(request, 400, {
+        error: 'Bukti harus berupa gambar JPEG/PNG/WebP (data URL).',
+      });
+    }
+    if (dataUrl.length > 450000) {
+      return jsonResponse(request, 413, {
+        error: 'Bukti terlalu besar. Kompres dulu (maks ~320 KB).',
+      });
+    }
+    const orders = await getPlanOrders(env);
+    const idx = orders.findIndex(
+      (o) => o.id === orderId && o.accountId === account.id);
+    if (idx < 0) {
+      return jsonResponse(request, 404, { error: 'Pesanan tidak ditemukan.' });
+    }
+    if (orders[idx].status !== 'pending') {
+      return jsonResponse(request, 409, {
+        error: 'Pesanan sudah diproses admin.',
+      });
+    }
+    orders[idx].proof = dataUrl;
+    orders[idx].updatedAt = Date.now();
+    await savePlanOrders(env, orders);
+    return jsonResponse(request, 200, {
+      ok: true,
+      order: {
+        id: orders[idx].id,
+        status: orders[idx].status,
+        updatedAt: orders[idx].updatedAt,
+      },
+    });
+  }
+
+  // GET /api/gateway/plans/orders — pesanan milik user ini.
+  if (pathname === '/api/gateway/plans/orders' && request.method === 'GET') {
+    const orders = await getPlanOrders(env);
+    return jsonResponse(request, 200, {
+      orders: orders
+        .filter((o) => o.accountId === account.id)
+        .slice(0, 20)
+        .map((o) => ({
+          id: o.id,
+          planId: o.planId,
+          planName: o.planName,
+          priceIdr: o.priceIdr,
+          method: o.method,
+          status: o.status,
+          hasProof: !!(o.proof && o.proof.length > 0),
+          createdAt: o.createdAt,
+          updatedAt: o.updatedAt,
+        })),
     });
   }
 

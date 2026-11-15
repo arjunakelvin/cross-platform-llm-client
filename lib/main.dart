@@ -21,6 +21,7 @@ import 'services/secure_key_store.dart';
 import 'services/inference_service.dart';
 import 'services/cloud_service.dart';
 import 'services/dashboard_config_service.dart';
+import 'services/plans_service.dart';
 import 'services/web_update_service.dart';
 import 'services/download_service.dart';
 import 'services/update_service.dart';
@@ -112,15 +113,16 @@ void main() {
     Get.put(CloudModelController());
     Get.put(DiscordService(), permanent: true);
 
-    Get.put(InferenceService());  // Auto-start the AI server on desktop.
-  if (!kIsWeb) {
-    autoStartDesktopAI();
-  }
+    Get.put(InferenceService()); // Auto-start the AI server on desktop.
+    if (!kIsWeb) {
+      autoStartDesktopAI();
+    }
     Get.put(ServerController(), permanent: true);
     Get.put(CloudService());
     Get.put(DownloadService());
     // Config dari dashboard admin (server, model, alamat AI server).
     Get.put(DashboardConfigService(), permanent: true).ensureLoaded();
+    Get.put(PlansService(), permanent: true);
     // Web: muat ulang otomatis kalau ada bundle baru di server.
     Get.put(WebUpdateService(), permanent: true)..start();
 
@@ -184,13 +186,14 @@ void main() {
     }
     if (UpdateService.isSupported) Get.put(UpdateService(), permanent: true);
     Get.put(LocalImageService());
-    final crashReporting = await Get.putAsync(() => CrashReportingService().init().timeout(
-          const Duration(seconds: 10),
-          onTimeout: () {
-            appLog.error('CrashReportingService.init timed out');
-            return CrashReportingService();
-          },
-        ));
+    final crashReporting =
+        await Get.putAsync(() => CrashReportingService().init().timeout(
+              const Duration(seconds: 10),
+              onTimeout: () {
+                appLog.error('CrashReportingService.init timed out');
+                return CrashReportingService();
+              },
+            ));
     FlutterError.onError = (details) {
       FlutterError.presentError(details);
       print('[main] FlutterError: ${details.exceptionAsString()}\n'
@@ -212,9 +215,7 @@ void main() {
     };
     final imageNotifications = Get.put(ImageGenerationNotificationService());
     try {
-      await imageNotifications
-          .init()
-          .timeout(const Duration(seconds: 3));
+      await imageNotifications.init().timeout(const Duration(seconds: 3));
       await imageNotifications
           .configureBackgroundService()
           .timeout(const Duration(seconds: 3));

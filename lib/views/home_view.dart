@@ -6,6 +6,7 @@ import '../controllers/home_controller.dart';
 import '../widgets/chat_drawer.dart';
 import 'chat_view.dart';
 import 'model_view.dart';
+import 'plans_view.dart';
 import 'server_view.dart';
 import 'settings_view.dart';
 import '../core/haptics.dart';
@@ -22,6 +23,10 @@ class HomeView extends GetView<HomeController> {
         icon: Icons.layers_outlined,
         activeIcon: Icons.layers_rounded,
         label: 'Models'),
+    _NavItem(
+        icon: Icons.sell_outlined,
+        activeIcon: Icons.sell_rounded,
+        label: 'Plans'),
     if (!kIsWeb)
       _NavItem(
           icon: Icons.lan_outlined,
@@ -56,11 +61,13 @@ class HomeView extends GetView<HomeController> {
                   ? const [
                       ChatView(),
                       ModelView(),
+                      PlansView(),
                       SettingsView(),
                     ]
                   : const [
                       ChatView(),
                       ModelView(),
+                      PlansView(),
                       ServerView(),
                       SettingsView(),
                     ],
