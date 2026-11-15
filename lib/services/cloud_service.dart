@@ -64,7 +64,8 @@ class CloudService extends GetxService {
   }
 
   String get _provider =>
-      _hive.getSetting(AppConstants.keyCloudProvider, defaultValue: 'openrouter') ??
+      _hive.getSetting(AppConstants.keyCloudProvider,
+          defaultValue: 'openrouter') ??
       'openrouter';
 
   String get _apiKey {
@@ -153,6 +154,7 @@ class CloudService extends GetxService {
   // endpoint) leaves the chat loading forever.
   static const _connectTimeout = Duration(seconds: 30);
   static const _responseTimeout = Duration(seconds: 120);
+
   /// Max wait for the first byte of a streamed reply. A self-hosted model on
   /// CPU can spend minutes on prompt processing before the first token, and
   /// the gateway only forwards headers once the backend answers, so this has
@@ -161,6 +163,7 @@ class CloudService extends GetxService {
   /// const so tests can shorten it; [streamIdleTimeout] still catches a
   /// stream that dies mid-reply.
   static Duration streamConnectTimeout = const Duration(seconds: 90);
+
   /// Max gap between streamed chunks. Not const so tests can shorten it.
   static Duration streamIdleTimeout = const Duration(seconds: 60);
 
@@ -198,8 +201,7 @@ class CloudService extends GetxService {
       lastGatewayTokens = int.tryParse(rawTokens) ?? lastGatewayTokens;
     }
     if (rawCredits != null) {
-      lastGatewayCredits =
-          double.tryParse(rawCredits) ?? lastGatewayCredits;
+      lastGatewayCredits = double.tryParse(rawCredits) ?? lastGatewayCredits;
     }
   }
 
@@ -222,6 +224,10 @@ class CloudService extends GetxService {
     void Function(String token)? onToken,
     void Function(QueueStatus status)? onQueue,
   }) async {
+    // Pakai Max Output admin (per model) kalau user tidak override. Tanpa
+    // ini, request gateway selalu memakai default AppConstants.defaultMaxTokens
+    // (4096) walau model dashboard disetel lebih besar.
+    maxTokens = maxTokens ?? _modelMaxOutput;
     // Usage dari request sebelumnya tidak boleh ikut dipakai.
     lastGatewayTokens = null;
     lastGatewayCredits = null;
@@ -351,8 +357,7 @@ class CloudService extends GetxService {
           .replaceAll(RegExp(r'/+$'), '');
 
   /// API key milik user (dibuat di Settings → AI API key).
-  String get _userApiKey =>
-      _secure.read(AppConstants.keyUserApiKey).trim();
+  String get _userApiKey => _secure.read(AppConstants.keyUserApiKey).trim();
 
   /// Session token login (dipakai untuk authenticate ke gateway kalau user
   /// belum membuat AI API key sendiri).
@@ -380,6 +385,23 @@ class CloudService extends GetxService {
       }
     }
     return publicId;
+  }
+
+  /// Max output token untuk model yang dipilih dari daftar dashboard
+  /// (Server Manager / AI provider). Diatur admin di dashboard. Kalau
+  /// disetel, gateway akan mencap sesuai `min(diminta, maxOutput, sisa
+  /// context)`. Tanpa ini, permintaan selalu menumpuk ke default 4096
+  /// sehingga model reasoning bisa menghabiskan budget di fase thinking.
+  int? get _modelMaxOutput {
+    final publicId = _model;
+    if (publicId.isEmpty) return null;
+    if (!Get.isRegistered<DashboardConfigService>()) return null;
+    for (final model in Get.find<DashboardConfigService>().models) {
+      if (model.modelId == publicId) {
+        return model.maxOutput > 0 ? model.maxOutput : null;
+      }
+    }
+    return null;
   }
 
   /// Base URL of the Local AI server (admin-managed from the dashboard).
@@ -740,7 +762,8 @@ class CloudService extends GetxService {
     );
 
     if (response.statusCode != 200) {
-      return _friendlyApiError('NVIDIA NIM', response.statusCode, response.body);
+      return _friendlyApiError(
+          'NVIDIA NIM', response.statusCode, response.body);
     }
 
     final data = jsonDecode(response.body);
@@ -847,11 +870,10 @@ class CloudService extends GetxService {
   /// Fetches the custom provider's model list (`GET <base>/models`), using
   /// the direct endpoint or user-configured proxy.
   Future<http.Response> fetchCustomModelList() async {
-    final baseUrl =
-        (_hive.getSetting(AppConstants.keyCustomCloudBaseUrl) ?? '')
-            .toString()
-            .trim()
-            .replaceAll(RegExp(r'/+$'), '');
+    final baseUrl = (_hive.getSetting(AppConstants.keyCustomCloudBaseUrl) ?? '')
+        .toString()
+        .trim()
+        .replaceAll(RegExp(r'/+$'), '');
     final customKey = _secure.read(AppConstants.keyCustomCloudKey).trim();
     final endpoints = _customEndpointsFor('$baseUrl/models');
     Object? lastError;
@@ -1191,7 +1213,8 @@ class CloudService extends GetxService {
     );
 
     if (response.statusCode != 200) {
-      return _friendlyApiError(providerLabel, response.statusCode, response.body);
+      return _friendlyApiError(
+          providerLabel, response.statusCode, response.body);
     }
     _captureGatewayUsage(response.headers);
 
@@ -1209,7 +1232,8 @@ class CloudService extends GetxService {
         return _friendlyApiError(providerLabel, 200, response.body);
       }
       final message = data['choices'][0]['message'];
-      final content = message is Map ? message['content']?.toString() ?? '' : '';
+      final content =
+          message is Map ? message['content']?.toString() ?? '' : '';
       if (content.isNotEmpty) return content;
       // Reasoning models can spend the whole reply thinking; show the
       // thought instead of an empty message.
@@ -1221,12 +1245,14 @@ class CloudService extends GetxService {
       if (reasoning.isNotEmpty) {
         return '$_thinkOpen$reasoning$_thinkClose\n\n'
             '⚠️ $providerLabel used all its output '
-            'tokens on thinking. Increase Max Tokens in Settings.';
+            'tokens on thinking. Increase Max Output for this model in the '
+            'admin dashboard (Server Manager / AI provider) and try again.';
       }
       return 'ERROR: $providerLabel returned an empty response.';
     } catch (_) {
       if (_looksLikeHtml(response.body)) {
-        return _friendlyApiError(providerLabel, response.statusCode, response.body);
+        return _friendlyApiError(
+            providerLabel, response.statusCode, response.body);
       }
       final body = response.body.length > 300
           ? '${response.body.substring(0, 300)}…'
@@ -1266,8 +1292,7 @@ class CloudService extends GetxService {
     final client = http.Client();
     _activeStreamClient = client;
     try {
-      final response =
-          await client.send(request).timeout(streamConnectTimeout);
+      final response = await client.send(request).timeout(streamConnectTimeout);
       if (response.statusCode != 200) {
         final body = await response.stream.bytesToString();
         return _friendlyApiError(providerLabel, response.statusCode, body);
@@ -1331,8 +1356,8 @@ class CloudService extends GetxService {
           if (isCredit) {
             lastGatewayTokens = 0;
           } else if (rawUsage is Map) {
-            lastGatewayTokens =
-                (rawUsage['total_tokens'] as num?)?.toInt() ?? lastGatewayTokens;
+            lastGatewayTokens = (rawUsage['total_tokens'] as num?)?.toInt() ??
+                lastGatewayTokens;
           }
           final credits = (data['credits'] as num?)?.toDouble();
           if (credits != null) lastGatewayCredits = credits;
@@ -1417,7 +1442,8 @@ class CloudService extends GetxService {
       }
       if (!hasContent && reasoningBuffer.isNotEmpty) {
         return '$text\n\n⚠️ $providerLabel used all its output tokens on '
-            'thinking. Increase Max Tokens in Settings and try again.';
+            'thinking. Increase Max Output for this model in the admin '
+            'dashboard (Server Manager / AI provider) and try again.';
       }
       if (!finished) {
         return '$text\n\n⚠️ The response was cut off before it finished.';

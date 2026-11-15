@@ -4,12 +4,10 @@ import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import '../controllers/settings_controller.dart';
 import '../services/discord_service.dart';
-import '../core/constants.dart';
 import '../core/ui.dart';
 import '../widgets/account_info_sheet.dart';
 import '../widgets/home_empty_state.dart' show providerLabel;
 import '../services/inference_service.dart';
-import '../services/hive_service.dart';
 import '../services/local_image_service.dart';
 import '../services/update_service.dart';
 import '../services/device_info_service.dart';
@@ -20,7 +18,6 @@ import '../ffi/sd_ffi_bindings.dart'
 import '../services/cluster_service.dart';
 import 'cluster_view.dart';
 import 'log_view.dart';
-import '../core/haptics.dart';
 
 const _tabular = [FontFeature.tabularFigures()];
 
@@ -77,14 +74,12 @@ class SettingsView extends GetView<SettingsController> {
               ),
               _navRow(
                 context,
-                icon: Icons.tune_rounded,
-                title: 'Model parameters',
-                value: controller.temperature.value.toStringAsFixed(2),
+                icon: Icons.short_text_rounded,
+                title: 'Stop sequences',
+                value: '${controller.stopSequences.length}',
                 builder: (ctx) => Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      _buildModelParametersGroup(ctx),
-                      const SectionHeader('Stop sequences'),
                       _buildStopSequencesGroup(ctx),
                     ]),
               ),
@@ -144,7 +139,7 @@ class SettingsView extends GetView<SettingsController> {
                 title: 'AI server (Local AI)',
                 subtitle: controller.localServerUrl.value.isEmpty
                     ? 'Belum dikonfigurasi'
-                    : 'Server lokal · dikonfigurasi otomatis',
+                    : 'Server lokal Ã‚Â· dikonfigurasi otomatis',
                 trailing: TextButton(
                   onPressed: controller.syncAiServerFromDashboard,
                   child: const Text('Sync'),
@@ -178,7 +173,7 @@ class SettingsView extends GetView<SettingsController> {
                 title: 'AI-Agent PiercingBlow',
                 subtitle: controller.appVersion.value.isEmpty
                     ? 'by distro-kelvin'
-                    : 'Version ${controller.appVersion.value} · by distro-kelvin',
+                    : 'Version ${controller.appVersion.value} Ã‚Â· by distro-kelvin',
               ),
             ]),
           ],
@@ -261,11 +256,11 @@ class SettingsView extends GetView<SettingsController> {
       String subtitle;
       if (isLoggedIn) {
         subtitle = '@${user.username}'
-            '${tier.isNotEmpty ? ' · Tier: ${tier.toUpperCase()}' : ''}'
-            ' · Ketuk untuk info akun & ID';
+            '${tier.isNotEmpty ? ' Ã‚Â· Tier: ${tier.toUpperCase()}' : ''}'
+            ' Ã‚Â· Ketuk untuk info akun & ID';
       } else {
         subtitle = discordService.isReady
-            ? 'Tamu (10M token) · Login Discord untuk +10M bonus'
+            ? 'Tamu (10M token) Ã‚Â· Login Discord untuk +10M bonus'
             : 'Informasi kuota token & profil user';
       }
 
@@ -322,7 +317,7 @@ class SettingsView extends GetView<SettingsController> {
       final ratio = controller.tokenUsageRatio;
       // Bar menampilkan SISA kuota: memendek saat terpakai.
       final left = (1 - ratio).clamp(0.0, 1.0);
-      // Level: hijau (banyak sisa) → oranye (setengah) → merah (hampir habis).
+      // Level: hijau (banyak sisa) Ã¢â€ â€™ oranye (setengah) Ã¢â€ â€™ merah (hampir habis).
       final level = left <= 0.2 ? 'critical' : (left <= 0.5 ? 'low' : 'ok');
       final warn = level != 'ok' || remaining <= 0;
       final barColor = level == 'critical'
@@ -356,7 +351,7 @@ class SettingsView extends GetView<SettingsController> {
                         Text('Token balance', style: t.bodyStrong),
                         const SizedBox(height: 2),
                         Text(
-                          'Local AI server · ${_fmtThousands(controller.maxTokenBalance)} kuota',
+                          'Local AI server Ã‚Â· ${_fmtThousands(controller.maxTokenBalance)} kuota',
                           style: t.caption,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -374,7 +369,7 @@ class SettingsView extends GetView<SettingsController> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  '${(ratio * 100).round()}% used · ${_fmtThousands(used)} token',
+                  '${(ratio * 100).round()}% used Ã‚Â· ${_fmtThousands(used)} token',
                   style:
                       t.small.copyWith(color: warn ? t.orange : t.muted),
                 ),
@@ -425,20 +420,6 @@ class SettingsView extends GetView<SettingsController> {
 
   /// Angka dengan pemisah ribuan, contoh: 12,000.
   static String _fmtThousands(int v) {
-    final s = v.toString();
-    final buf = StringBuffer();
-    var count = 0;
-    for (var i = s.length - 1; i >= 0; i--) {
-      if (count > 0 && count % 3 == 0) buf.write(',');
-      buf.write(s[i]);
-      count++;
-    }
-    return buf.toString().split('').reversed.join();
-  }
-
-  String _fmtTokenCount(int v) {
-    if (v >= 1000000) return '${(v / 1000000).toStringAsFixed(1)}M';
-    if (v >= 1000) return '${(v / 1000).toStringAsFixed(1)}K';
     final s = v.toString();
     final buf = StringBuffer();
     var count = 0;
@@ -591,7 +572,7 @@ class SettingsView extends GetView<SettingsController> {
                             } else {
                               showToast(
                                 'API key dibuat',
-                                'Salin key ini sekarang — nilai penuhnya '
+                                'Salin key ini sekarang Ã¢â‚¬â€ nilai penuhnya '
                                 'tidak ditampilkan lagi.',
                                 tone: ToastTone.success,
                               );
@@ -719,9 +700,9 @@ class SettingsView extends GetView<SettingsController> {
     final current = updates.currentVersion.value;
     final String status;
     if (update != null) {
-      status = 'You have $current · see what\'s new';
+      status = 'You have $current Ã‚Â· see what\'s new';
     } else if (checked != null) {
-      status = 'Up to date · checked ${_ago(checked)}';
+      status = 'Up to date Ã‚Â· checked ${_ago(checked)}';
     } else {
       status = 'Not checked yet';
     }
@@ -773,7 +754,7 @@ class SettingsView extends GetView<SettingsController> {
     return '${d.inDays}d ago';
   }
 
-  // ── Building blocks ─────────────────────────────────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Building blocks Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   /// Note on the left, explicit Save on the right, under a text field.
   Widget _fieldFooter(BuildContext context,
@@ -867,7 +848,7 @@ class SettingsView extends GetView<SettingsController> {
     );
   }
 
-  // ── Sections ────────────────────────────────────────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Sections Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   String _localSubtitle() {
     final inf = Get.find<InferenceService>();
@@ -929,8 +910,8 @@ class SettingsView extends GetView<SettingsController> {
       final (String tierName, String tierHint) =
           switch (device.deviceTier.value) {
         'low' => ('Low RAM', 'Use small models only'),
-        'mid' => ('Mid-range', 'Good for 1–3B models'),
-        'high' => ('High-end', 'Can run 3–7B models'),
+        'mid' => ('Mid-range', 'Good for 1Ã¢â‚¬â€œ3B models'),
+        'high' => ('High-end', 'Can run 3Ã¢â‚¬â€œ7B models'),
         'ultra' => ('Ultra', 'Full performance mode'),
         _ => ('', ''),
       };
@@ -1042,117 +1023,6 @@ class SettingsView extends GetView<SettingsController> {
             style: t.small),
       ),
     ]);
-  }
-
-  Widget _buildModelParametersGroup(BuildContext context) {
-    return AppGroup(children: [
-      _modelParameterSlider(
-        context,
-        label: 'Temperature',
-        value: controller.temperature.value,
-        min: 0.0,
-        max: 2.0,
-        divisions: 20,
-        safeMax: 1.0,
-        onChanged: (v) => controller.setTemperature(v),
-        warning: 'High temperature = unpredictable output!',
-      ),
-      _modelParameterSlider(
-        context,
-        label: 'Max tokens',
-        value: controller.maxTokens.value.toDouble(),
-        min: 64,
-        max: 4096,
-        divisions: 63,
-        safeMax: Get.find<DeviceInfoService>().maxSafeTokens.toDouble(),
-        onChanged: (v) => controller.setMaxTokens(v.toInt()),
-        displayValue: controller.maxTokens.value.toString(),
-        warning: 'Your phone may crash with this value!',
-      ),
-      (() {
-        final inference = Get.find<InferenceService>();
-        final savedRuntime = Get.find<HiveService>()
-                .getSetting<String>(AppConstants.keyLocalModelRuntime) ??
-            '';
-        final isLiteRtActive = (inference.isModelLoaded.value &&
-                inference.loadedModelRuntime.value == 'litert') ||
-            (!inference.isModelLoaded.value &&
-                savedRuntime.toLowerCase() == 'litert');
-        final maxContext = isLiteRtActive ? 4096.0 : 8192.0;
-        final divisions = isLiteRtActive ? 7 : 15;
-        final currentValue =
-            controller.contextSize.value.toDouble().clamp(512.0, maxContext);
-
-        if (currentValue != controller.contextSize.value.toDouble()) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            controller.setContextSize(currentValue.toInt());
-          });
-        }
-
-        return _modelParameterSlider(
-          context,
-          label: 'Context size',
-          value: currentValue,
-          min: 512,
-          max: maxContext,
-          divisions: divisions,
-          safeMax: Get.find<DeviceInfoService>().maxSafeContextSize.toDouble(),
-          onChanged: (v) => controller.setContextSize(v.toInt()),
-          displayValue: currentValue.toInt().toString(),
-          warning: isLiteRtActive
-              ? 'Context capped at 4096 to prevent driver memory crash for LiteRT models.'
-              : 'Context this large will eat all your RAM!',
-        );
-      })(),
-    ]);
-  }
-
-  Widget _modelParameterSlider(
-    BuildContext context, {
-    required String label,
-    required double value,
-    required double min,
-    required double max,
-    required int divisions,
-    required double safeMax,
-    required ValueChanged<double> onChanged,
-    required String warning,
-    String? displayValue,
-  }) {
-    final t = AppTokens.of(context);
-    final isOver = value > safeMax;
-    final danger = safeMax < max
-        ? ((value - safeMax) / (max - safeMax)).clamp(0.0, 1.0)
-        : 0.0;
-    final warnColor = isOver ? Color.lerp(t.orange, t.red, danger)! : null;
-
-    return _sliderRow(
-      context,
-      label: label,
-      valueLabel: displayValue ?? value.toStringAsFixed(2),
-      value: value,
-      min: min,
-      max: max,
-      divisions: divisions,
-      color: warnColor,
-      caption: safeMax < max
-          ? 'Recommended max: ${safeMax.toInt() > 0 ? safeMax.toInt().toString() : safeMax.toStringAsFixed(1)}'
-          : null,
-      onChanged: (v) {
-        if (v > safeMax && value <= safeMax) {
-          Haptics.heavyImpact();
-          showToast('Above recommended', warning, tone: ToastTone.warning);
-        } else if (v > safeMax) {
-          Haptics.mediumImpact();
-        }
-        onChanged(v);
-      },
-      below: [
-        if (isOver)
-          AppNotice(warning,
-              icon: Icons.warning_amber_rounded, color: warnColor),
-      ],
-    );
   }
 
   Widget _buildImageGenerationGroup(BuildContext context) {
