@@ -54,6 +54,30 @@ user memakai AI server tersebut lewat **gateway** dengan **API key sendiri**.
 
 ---
 
+## Provider API eksternal (base URL + API key)
+
+Menu **Provider API** di dashboard menambah penyedia AI lain tanpa perlu VPS
+sendiri — cukup **base URL** + **API key** (contoh: Cloudflare Workers AI).
+
+| Fitur | Penjelasan |
+| --- | --- |
+| **Tambah provider** | Isi nama (internal admin), base URL, API key, dan format respons (`auto` / `openai` / `cloudflare`). API key disimpan di KV dan **tidak pernah dikirim ke aplikasi**. |
+| **Banyak model per provider** | Satu provider bisa memuat beberapa model sekaligus. Tiap model tampil di Model List dengan id `api:<provider>:<model>` (data lama tetap memakai `api:<provider>`). |
+| **Hanya nama model** | Nama provider tidak ditampilkan ke user — aplikasi hanya menampilkan nama model dan tag **API**. |
+| **Context & max output per model** | Admin mengisi sendiri jumlah context dan max output tiap model. Gateway memakai nilai itu untuk membatasi `max_tokens`; prompt yang melebihi context ditolak **413** dengan pesan jelas. |
+| **Harga per model** | Harga input/output bisa `/1M token` atau `/req`, diatur per model supaya tidak rugi. |
+| **On/off per model** | Model bisa disembunyikan tanpa dihapus; request ke id-nya ditolak gateway. |
+| **Batas request/hari per akun** | Diatur per model (menimpa limit provider) atau global di tab **Tier & kuota token**. Counter per akun memakai tanggal UTC dan reset tengah malam; request ke-`N+1` dibalas **429** `{limit, used, resetAt}`. |
+| **Format Cloudflare** | Respons non-stream `{result:{response}}` dan stream `data:{"response":...}` dikonversi Worker ke format OpenAI, jadi aplikasi tidak perlu diubah. |
+
+> **Context penuh tidak bisa di-reset.** Kalau percakapan mencapai batas
+> context model, kolom chat diganti panel **hitung mundur reset** (00:00 UTC)
+> dan user harus memulai **chat baru** untuk melanjutkan. Limit request harian
+> juga memblokir kolom chat dengan hitung mundur sampai reset.
+
+---
+
+
 ## Alur dari nol: VPS → dashboard → aplikasi
 
 ```
@@ -138,6 +162,22 @@ Klik **Edit** pada model → ubah:
 > disimpan, tapi modelnya tidak muncul di tab Model List pengguna. Nyalakan
 > AI-nya (tombol **Start AI** di kartu server), lalu tekan **Deteksi model**
 > supaya modelnya aktif lagi.
+
+### Provider API eksternal
+
+1. Buka tab **Provider API** di sidebar.
+2. Isi **Nama provider**, **Base URL**, **API key**, dan **Format respons**.
+   Untuk Cloudflare cukup tempel base URL akun
+   (`https://api.cloudflare.com/client/v4/accounts/<id>/ai/run`) — nama model
+   ditempel otomatis saat request.
+3. Di tabel **Model yang tampil di aplikasi**, tambahkan satu baris per model:
+   nama tampilan, model/endpoint ID, context, max output, limit request/hari,
+   dan harga (`/1M` atau `/req`).
+4. Toggle **On** menampilkan model; matikan untuk menyembunyikannya sementara.
+5. **Tes koneksi** memanggil model pertama yang aktif, lalu **Simpan provider**.
+
+Model langsung muncul di tab **Model List** aplikasi (tag **API**) tanpa nama
+provider. Semua request tetap lewat gateway sehingga API key aman di server.
 
 ### System prompt
 

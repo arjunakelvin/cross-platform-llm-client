@@ -45,6 +45,9 @@ const DEFAULT_CONFIG = {
   guestTokenBalance: 10000000, // 10M tanpa login
   loginTokenBalance: 20000000, // 20M setelah login Discord (10M + bonus 10M)
   tokenResetDays: 1, // durasi reset token (hari), bisa diubah di dashboard
+  // Batas request per akun per hari untuk SEMUA model gateway (0 = tanpa
+  // batas). Bisa dioverride per provider API eksternal.
+  dailyRequestLimit: 0,
   botSecretKey: '', // optional secret for Discord bot API verification
   aiServerUrl: '',
   localCloudKey: '',
@@ -302,6 +305,413 @@ async function modelCacheStats(env) {
   return rows;
 }
 
+// ── Provider API eksternal ───────────────────────────────────────────────
+// Admin cukup mengisi base URL + API key (mis. Cloudflare Workers AI).
+// Model provider tampil di aplikasi sebagai `api:<id>` dan request-nya
+// diproksi lewat gateway, jadi API key tidak pernah dikirim ke user.
+const API_PROVIDERS_KEY = 'api_providers';
+
+function apiProviderPublicId(provider, model, total) {
+  // Data KV format lama (satu `model` di level provider) memakai id pendek
+  // `api:<id>` supaya klien lama tetap jalan. Provider baru dengan daftar
+  // `models` selalu memakai `api:<id>:<key>` agar setiap model unik.
+  const list = Array.isArray(provider.models)
+    ? provider.models.filter((m) => m && m.modelId)
+    : [];
+  const legacySingle = list.length === 1 && list[0].key === 'default';
+  if (!list.length || legacySingle) return `api:${provider.id}`;
+  return `api:${provider.id}:${model.key}`;
+}
+
+function slugProviderId(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+}
+
+function slugModelKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/^@cf\//, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+}
+
+function cleanPricing(raw, fallback) {
+  const source = (raw && typeof raw === 'object')
+    ? raw
+    : (fallback && typeof fallback === 'object' ? fallback : {});
+  const pricing = {};
+  for (const key of ['inputPerReq', 'outputPerReq', 'inputPer1M',
+    'outputPer1M']) {
+    const value = Number(source[key]) || 0;
+    if (value > 0) pricing[key] = value;
+  }
+  return pricing;
+}
+
+/// Satu model di dalam provider. Admin bisa mengatur context, max output,
+/// limit harian, harga, dan on/off per model.
+function cleanProviderModel(raw, index, defaults) {
+  const source = typeof raw === 'string' ? { modelId: raw } : (raw || {});
+  const modelId = String(source.modelId ?? source.model ?? '').trim();
+  const name = String(source.name ?? '').trim() || modelId;
+  return {
+    key: slugModelKey(source.key || name || modelId) || `model-${index + 1}`,
+    modelId,
+    name,
+    contextSize: Math.max(0,
+      Number(source.contextSize ?? defaults.contextSize ?? 0) || 0),
+    maxOutput: Math.max(0,
+      Number(source.maxOutput ?? defaults.maxOutput ?? 0) || 0),
+    dailyRequestLimit: Math.max(0, Math.floor(
+      Number(source.dailyRequestLimit ?? defaults.dailyRequestLimit ?? 0) || 0)),
+    pricing: cleanPricing(source.pricing, defaults.pricing),
+    enabled: source.enabled === undefined ? true : !!source.enabled,
+  };
+}
+
+function cleanApiProvider(body, existing) {
+  const base = existing || {};
+  const incoming = body || {};
+  const id = slugProviderId(incoming.id || base.id) ||
+    slugProviderId(incoming.name) || `provider-${Date.now()}`;
+  const defaults = {
+    contextSize: Math.max(0,
+      Number(incoming.contextSize ?? base.contextSize ?? 0) || 0),
+    maxOutput: Math.max(0,
+      Number(incoming.maxOutput ?? base.maxOutput ?? 0) || 0),
+    dailyRequestLimit: Math.max(0, Math.floor(
+      Number(incoming.dailyRequestLimit ?? base.dailyRequestLimit ?? 0) || 0)),
+    pricing: cleanPricing(incoming.pricing, base.pricing),
+  };
+  const tiers = Array.isArray(incoming.tierAccess)
+    ? incoming.tierAccess
+    : (Array.isArray(base.tierAccess) ? base.tierAccess : null);
+  const tierAccess = tiers
+    ? [...new Set(tiers.map((t) => String(t).trim().toLowerCase()).filter(Boolean))]
+    : ['free', 'pro', 'vip'];
+  const format = ['auto', 'openai', 'cloudflare'].includes(incoming.format)
+    ? incoming.format
+    : (base.format || 'auto');
+
+  // Daftar model provider. Format lama (satu `model` di level provider)
+  // tetap didukung supaya data KV yang sudah ada tidak hilang.
+  let rawModels = Array.isArray(incoming.models)
+    ? incoming.models
+    : (Array.isArray(base.models) ? base.models : null);
+  if (!rawModels) {
+    const legacy = String(incoming.model ?? base.model ?? '').trim();
+    rawModels = legacy
+      ? [{
+          modelId: legacy,
+          name: String(incoming.name ?? base.name ?? legacy),
+          contextSize: defaults.contextSize,
+          maxOutput: defaults.maxOutput,
+          dailyRequestLimit: defaults.dailyRequestLimit,
+          pricing: defaults.pricing,
+        }]
+      : [];
+  }
+  const models = [];
+  const usedKeys = new Set();
+  rawModels.forEach((rawModel, index) => {
+    const model = cleanProviderModel(rawModel, index, defaults);
+    if (!model.modelId) return;
+    let key = model.key;
+    let suffix = 2;
+    while (usedKeys.has(key)) {
+      key = `${model.key}-${suffix++}`;
+    }
+    usedKeys.add(key);
+    model.key = key;
+    models.push(model);
+  });
+
+  return {
+    id,
+    name: String(incoming.name ?? base.name ?? id).trim() || id,
+    baseUrl: String(incoming.baseUrl ?? base.baseUrl ?? '').trim(),
+    apiKey: typeof incoming.apiKey === 'string' && incoming.apiKey.trim()
+      ? incoming.apiKey.trim()
+      : (base.apiKey || ''),
+    format,
+    tierAccess: tierAccess.length ? tierAccess : ['free', 'pro', 'vip'],
+    models,
+    // Cermin legacy untuk klien/admin lama.
+    model: models.length ? models[0].modelId : '',
+    contextSize: models.length ? models[0].contextSize : defaults.contextSize,
+    maxOutput: models.length ? models[0].maxOutput : defaults.maxOutput,
+    dailyRequestLimit: defaults.dailyRequestLimit,
+    pricing: defaults.pricing,
+    enabled: incoming.enabled === undefined
+      ? (base.enabled !== false)
+      : !!incoming.enabled,
+    createdAt: base.createdAt || Date.now(),
+    updatedAt: Date.now(),
+  };
+}
+
+async function apiProviderList(env) {
+  const list = await getJson(env.PB_KV, API_PROVIDERS_KEY, []);
+  return Array.isArray(list) ? list : [];
+}
+
+/// Model efektif milik provider (termasuk data KV format lama).
+function apiProviderModels(provider) {
+  const list = Array.isArray(provider.models)
+    ? provider.models.filter((m) => m && m.modelId)
+    : [];
+  if (list.length) return list;
+  const legacy = String(provider.model || '').trim();
+  if (!legacy) return [];
+  return [{
+    key: 'default',
+    modelId: legacy,
+    name: String(provider.name || legacy),
+    contextSize: Number(provider.contextSize) || 0,
+    maxOutput: Number(provider.maxOutput) || 0,
+    dailyRequestLimit: Number(provider.dailyRequestLimit) || 0,
+    pricing: provider.pricing || {},
+    enabled: true,
+  }];
+}
+
+function isCloudflareAiUrl(value) {
+  return /api\.cloudflare\.com\/client\/v4\/accounts\/[^/]+\/ai\/run\//i
+    .test(String(value || ''));
+}
+
+/// URL upstream untuk satu model provider. Cloudflare Workers AI bisa
+/// memakai URL `/ai/run/<model>` lengkap, root `…/ai/run`, atau root akun
+/// `…/accounts/<id>` (model ditempel otomatis).
+function apiProviderTargetUrl(provider, model) {
+  const raw = String(provider.baseUrl || '').trim();
+  if (!raw) return '';
+  const base = raw.replace(/\/+$/, '');
+  const endpoint = String((model && model.modelId) || provider.model || '')
+    .trim()
+    .replace(/^\/+/, '');
+  if (/\/ai\/run$/i.test(base)) {
+    return endpoint ? `${base}/${endpoint}` : base;
+  }
+  if (/\/accounts\/[^/]+$/i.test(base) && endpoint.startsWith('@cf/')) {
+    return `${base}/ai/run/${endpoint}`;
+  }
+  if (isCloudflareAiUrl(base) || /\/ai\/run\//i.test(base)) return base;
+  if (/\/chat\/completions$/i.test(base)) return base;
+  if (/\/v\d+$/i.test(base)) return `${base}/chat/completions`;
+  return `${base}/v1/chat/completions`;
+}
+
+function apiProviderModelName(provider, model) {
+  return String((model && model.modelId) || provider.model || provider.id || '')
+    .trim();
+}
+
+function dailyDateKey() {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+}
+
+async function dailyRequestUsed(env, accountId) {
+  const raw = await env.PB_KV.get(`dailyreq:${accountId}:${dailyDateKey()}`);
+  return Number(raw) || 0;
+}
+
+async function bumpDailyRequest(env, accountId) {
+  const key = `dailyreq:${accountId}:${dailyDateKey()}`;
+  const next = (Number(await env.PB_KV.get(key)) || 0) + 1;
+  try {
+    await env.PB_KV.put(key, String(next), { expirationTtl: 2 * 24 * 60 * 60 });
+  } catch {
+    // Mock KV lama / KV tanpa opsi tetap harus menyimpan angka.
+    await env.PB_KV.put(key, String(next));
+  }
+  return next;
+}
+
+function dailyResetAt() {
+  const now = new Date();
+  return Date.UTC(
+    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+}
+
+function providerOpenAiChunk(content, model) {
+  return {
+    id: 'chatcmpl-provider',
+    object: 'chat.completion.chunk',
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [{ index: 0, delta: { content }, finish_reason: null }],
+  };
+}
+
+/// Bentuk model publik dari provider (tanpa API key) untuk config aplikasi.
+/// Nama yang tampil hanya nama model — nama provider tidak dikirim supaya
+/// user tidak melihat penyedia API-nya.
+function apiProviderModelEntry(provider, model, total) {
+  const count = total ?? apiProviderModels(provider).length;
+  const tiers = Array.isArray(provider.tierAccess)
+    ? provider.tierAccess
+    : ['free', 'pro', 'vip'];
+  return {
+    modelId: apiProviderPublicId(provider, model, count),
+    backendModelId: model.modelId,
+    name: String(model.name || model.modelId),
+    serverId: '__api__',
+    serverName: 'AI API',
+    serverBaseUrl: '',
+    runtime: 'api',
+    tierAccess: tiers,
+    contextSize: Number(model.contextSize) || 0,
+    maxOutput: Number(model.maxOutput) || 0,
+    pricing: model.pricing || {},
+    dailyRequestLimit: Number(model.dailyRequestLimit) || 0,
+    provider: 'external',
+  };
+}
+
+async function handleApiProviders(request, env, pathname) {
+  if (!adminAuthorized(request, env)) {
+    return jsonResponse(request, 401, { error: 'Invalid admin key.' });
+  }
+
+  // POST /api/admin/api-providers/test — tes koneksi ke provider.
+  if (pathname === '/api/admin/api-providers/test' &&
+      request.method === 'POST') {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return jsonResponse(request, 400, { error: 'Invalid JSON body.' });
+    }
+    const list = await apiProviderList(env);
+    const submittedId = slugProviderId(body.id || '');
+    const existing = submittedId
+      ? list.find((p) => slugProviderId(p.id) === submittedId)
+      : null;
+    const provider = cleanApiProvider(body, existing);
+    const testModel = apiProviderModels(provider)
+      .find((m) => m.enabled !== false) || apiProviderModels(provider)[0];
+    const target = apiProviderTargetUrl(provider, testModel);
+    if (!target || !provider.apiKey) {
+      return jsonResponse(request, 400, {
+        error: 'Base URL dan API key wajib diisi untuk tes koneksi.',
+      });
+    }
+    if (!testModel) {
+      return jsonResponse(request, 400, {
+        error: 'Tambahkan minimal satu model untuk dites.',
+      });
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      const res = await fetch(target, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${provider.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: apiProviderModelName(provider, testModel),
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 8,
+          stream: false,
+        }),
+        signal: controller.signal,
+      });
+      const text = await res.text();
+      return jsonResponse(request, 200, {
+        ok: res.ok,
+        status: res.status,
+        target,
+        preview: text.slice(0, 400),
+      });
+    } catch (error) {
+      return jsonResponse(request, 502, {
+        ok: false,
+        error: `Gagal menghubungi provider: ${error}`,
+        target,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // GET /api/admin/api-providers — daftar provider (API key disamarkan).
+  if (pathname === '/api/admin/api-providers' && request.method === 'GET') {
+    const list = await apiProviderList(env);
+    return jsonResponse(request, 200, {
+      providers: list.map((p) => ({
+        ...p,
+        apiKey: '',
+        hasApiKey: !!p.apiKey,
+      })),
+    });
+  }
+
+  // POST /api/admin/api-providers — tambah / ubah provider.
+  if (pathname === '/api/admin/api-providers' && request.method === 'POST') {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return jsonResponse(request, 400, { error: 'Invalid JSON body.' });
+    }
+    const list = await apiProviderList(env);
+    const submittedId = slugProviderId(body.id || body.name || '');
+    const idx = submittedId
+      ? list.findIndex((p) => slugProviderId(p.id) === submittedId)
+      : -1;
+    const entry = cleanApiProvider(body, idx >= 0 ? list[idx] : null);
+    if (!entry.baseUrl || !/^https?:\/\//i.test(entry.baseUrl)) {
+      return jsonResponse(request, 400, {
+        error: 'Base URL wajib diisi dan diawali http:// atau https://.',
+      });
+    }
+    if (!entry.models.length) {
+      return jsonResponse(request, 400, {
+        error: 'Tambahkan minimal satu model (mis. @cf/moonshotai/kimi-k2.7-code).',
+      });
+    }
+    if (idx >= 0) {
+      list[idx] = entry;
+    } else {
+      // Jangan pernah punya dua provider dengan id yang sama.
+      if (list.some((p) => slugProviderId(p.id) === slugProviderId(entry.id))) {
+        entry.id = `${entry.id}-${list.length + 1}`;
+      }
+      list.push(entry);
+    }
+    await env.PB_KV.put(API_PROVIDERS_KEY, JSON.stringify(list));
+    await invalidateModelCaches(env);
+    return jsonResponse(request, 200, {
+      ok: true,
+      provider: { ...entry, apiKey: '', hasApiKey: !!entry.apiKey },
+    });
+  }
+
+  // DELETE /api/admin/api-providers/:id
+  const deleteMatch = pathname.match(/^\/api\/admin\/api-providers\/(.+)$/);
+  if (deleteMatch && request.method === 'DELETE') {
+    const id = decodeURIComponent(deleteMatch[1]);
+    const list = await apiProviderList(env);
+    const filtered = list.filter(
+      (p) => slugProviderId(p.id) !== slugProviderId(id));
+    await env.PB_KV.put(API_PROVIDERS_KEY, JSON.stringify(filtered));
+    await invalidateModelCaches(env);
+    return jsonResponse(request, 200, { ok: true, deleted: id });
+  }
+
+  return jsonResponse(request, 404, {
+    error: 'Unknown api-providers endpoint.',
+  });
+}
+
 function publicConfig(request, config) {
   const origin = new URL(request.url).origin;
   return {
@@ -315,6 +725,9 @@ function publicConfig(request, config) {
     guestTokenBalance: config.guestTokenBalance ?? DEFAULT_CONFIG.guestTokenBalance,
     loginTokenBalance: config.loginTokenBalance ?? DEFAULT_CONFIG.loginTokenBalance,
     tokenResetDays: config.tokenResetDays ?? DEFAULT_CONFIG.tokenResetDays,
+    // Batas request harian per akun (0 = tanpa batas). Provider API
+    // eksternal bisa punya limit sendiri.
+    dailyRequestLimit: config.dailyRequestLimit ?? 0,
     // Hanya alamat server yang publik. Secret key TIDAK pernah dibuka di
     // endpoint publik — dikirim ke user yang sudah login lewat /api/auth/me.
     aiServerUrl: config.aiServerUrl || '',
@@ -400,6 +813,18 @@ async function handleAuth(request, env, pathname) {
             pricing: m.pricing || {},
           };
         });
+      // Provider API eksternal (base URL + API key di dashboard admin).
+      // Modelnya ikut tampil di aplikasi dan request lewat gateway.
+      const providers = await apiProviderList(env);
+      for (const provider of providers) {
+        if (!provider || !provider.id || provider.enabled === false) continue;
+        const providerModels = apiProviderModels(provider);
+        for (const model of providerModels) {
+          if (model.enabled === false) continue;
+          models.push(apiProviderModelEntry(
+            provider, model, providerModels.length));
+        }
+      }
       return { servers, models };
     });
     const servers = cached.value.servers || [];
@@ -622,6 +1047,8 @@ async function handleAdmin(request, env, pathname) {
         guestTokenBalance: config.guestTokenBalance ?? DEFAULT_CONFIG.guestTokenBalance,
         loginTokenBalance: config.loginTokenBalance ?? DEFAULT_CONFIG.loginTokenBalance,
         tokenResetDays: config.tokenResetDays ?? DEFAULT_CONFIG.tokenResetDays,
+        // Batas request per akun per hari untuk semua model gateway.
+        dailyRequestLimit: config.dailyRequestLimit ?? 0,
         botSecretKey: config.botSecretKey || '',
         hasBotSecret: !!config.botSecretKey,
         aiServerUrl: config.aiServerUrl || '',
@@ -676,6 +1103,10 @@ async function handleAdmin(request, env, pathname) {
       if (typeof body.tokenResetDays === 'number' &&
           body.tokenResetDays > 0) {
         next.tokenResetDays = Math.floor(body.tokenResetDays);
+      }
+      if (typeof body.dailyRequestLimit === 'number' &&
+          body.dailyRequestLimit >= 0) {
+        next.dailyRequestLimit = Math.floor(body.dailyRequestLimit);
       }
       if (typeof body.botSecretKey === 'string') {
         next.botSecretKey = body.botSecretKey.trim();
@@ -1694,6 +2125,30 @@ function isBlockedProxyHost(hostname) {
   return false;
 }
 
+/// Deteksi model AI lokal (self-hosted): host-nya private/loopback atau ada
+/// flag eksplisit. Model lokal tidak pernah boleh dibatasi dulu oleh tier.
+function isSelfHostedAi(serverConfig, modelConfig) {
+  const flags = [
+    serverConfig && serverConfig.baseUrl,
+    serverConfig && serverConfig.apiUrl,
+    modelConfig && modelConfig.apiUrl,
+    modelConfig && modelConfig.serverUrl,
+    modelConfig && modelConfig.serverBaseUrl,
+  ];
+  const localHints = [
+    'localhost', '127.0.0.1', '192.168.', '10.', '172.16.', '172.17.',
+    '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.',
+    '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.',
+    '172.30.', '172.31.',
+  ];
+  for (const value of flags) {
+    const raw = String((value && value.href) || value || '');
+    const lower = raw.toLowerCase();
+    if (localHints.some((hint) => lower.includes(hint))) return true;
+  }
+  return !!(modelConfig && modelConfig.local);
+}
+
 async function handleCorsProxy(request) {
   const url = new URL(request.url);
   const target = url.searchParams.get('url');
@@ -2035,7 +2490,7 @@ async function handleGateway(request, env, pathname) {
           servers.filter((s) => s.enabled === false).map((s) => String(s.id)));
         const serverById = new Map(
           servers.map((s) => [String(s.id), s]));
-        return serverModels
+        const list = serverModels
           .filter(m => {
             // Model yang disembunyikan admin tidak boleh dipakai user.
             if (m.enabled === false) return false;
@@ -2053,13 +2508,31 @@ async function handleGateway(request, env, pathname) {
             serverBaseUrl: rest.apiUrl ||
               (serverById.get(String(rest.serverId || '')) || {}).baseUrl || '',
           }));
+        // Provider API eksternal: daftarkan modelnya (tanpa API key).
+        const providers = await apiProviderList(env);
+        for (const provider of providers) {
+          if (!provider || !provider.id || provider.enabled === false) continue;
+          const providerModels = apiProviderModels(provider);
+          for (const model of providerModels) {
+            if (model.enabled === false) continue;
+            const entry = apiProviderModelEntry(
+              provider, model, providerModels.length);
+            const tiers = entry.tierAccess || ['free', 'pro', 'vip'];
+            if (!tiers.includes(userTier)) continue;
+            list.push(entry);
+          }
+        }
+        return list;
       });
     const filtered = cached.value || [];
     // Id publik tidak pernah berupa nama/path file. Entri lama yang belum
     // di-sync ulang tetap ditampilkan dengan id `<label>:<model>:<tier>`.
+    // Model provider eksternal sudah memakai id `api:<id>` apa adanya.
     const withPublicId = filtered.map((m) => ({
       ...m,
-      modelId: gatewayPublicIdFor(m, servers),
+      modelId: m.provider === 'external'
+        ? m.modelId
+        : gatewayPublicIdFor(m, servers),
       backendModelId: backendModelName(m.backendModelId || m.modelId),
     }));
     return jsonResponse(request, 200, {
@@ -2095,13 +2568,57 @@ async function handleGateway(request, env, pathname) {
 
     const servers = await getJson(env.PB_KV, 'mgr_servers', []);
     const serverModels = await getJson(env.PB_KV, 'server_models', []);
+    const providers = await apiProviderList(env);
     const wantedBackend = backendModelName(wantedModel);
-    const modelConfig =
+    let providerConfig = null;
+    let providerModel = null;
+    let modelConfig =
       serverModels.find((m) => String(m.modelId) === wantedModel) ||
       serverModels.find((m) =>
         backendModelName(m.backendModelId || m.modelId) === wantedBackend) ||
       serverModels.find((m) =>
         gatewayPublicIdFor(m, servers) === wantedModel);
+    // Bukan model server lokal → coba provider API eksternal (`api:<id>`).
+    if (!modelConfig) {
+      for (const provider of providers) {
+        if (!provider || !provider.id) continue;
+        const list = apiProviderModels(provider);
+        for (const model of list) {
+          const publicId = apiProviderPublicId(provider, model, list.length);
+          if (publicId === wantedModel ||
+              String(model.key) === wantedModel ||
+              String(model.modelId) === wantedModel ||
+              backendModelName(model.modelId) === wantedBackend) {
+            providerConfig = provider;
+            providerModel = model;
+            break;
+          }
+        }
+        if (providerConfig) break;
+      }
+      if (providerConfig) {
+        modelConfig = {
+          modelId: apiProviderPublicId(
+            providerConfig, providerModel, apiProviderModels(providerConfig).length),
+          backendModelId: providerModel.modelId,
+          name: providerModel.name || providerModel.modelId,
+          serverId: '',
+          apiUrl: providerConfig.baseUrl,
+          apiKey: providerConfig.apiKey,
+          contextSize: Number(providerModel.contextSize) || 0,
+          maxOutput: Number(providerModel.maxOutput) || 0,
+          pricing: providerModel.pricing || {},
+          dailyRequestLimit: Number(providerModel.dailyRequestLimit) ||
+            (Number(providerConfig.dailyRequestLimit) || 0),
+          tierAccess: Array.isArray(providerConfig.tierAccess)
+            ? providerConfig.tierAccess
+            : ['free', 'pro', 'vip'],
+          enabled: providerConfig.enabled !== false &&
+            providerModel.enabled !== false,
+          provider: 'external',
+        };
+      }
+    }
     if (!modelConfig) {
       return jsonResponse(request, 404, {
         error: `Model "${wantedModel}" not found.`,
@@ -2116,19 +2633,57 @@ async function handleGateway(request, env, pathname) {
       });
     }
 
+    // Proxy to backend server. Model boleh menunjuk server lewat serverId;
+    // alamat + API key diambil dari Server manager (KV) kalau kosong.
+    // `servers` sudah dibaca di atas saat mencari model.
+    const serverConfig = modelConfig.serverId
+      ? servers.find((s) => String(s.id) === String(modelConfig.serverId))
+      : servers.find((s) =>
+        s.baseUrl && s.baseUrl === (modelConfig.serverUrl || modelConfig.apiUrl));
+    if (serverConfig && serverConfig.enabled === false) {
+      return jsonResponse(request, 403, {
+        error: `Server "${serverConfig.id}" sedang dinonaktifkan di dashboard.`,
+      });
+    }
+
     // Check tier access
     // FREE model → bisa dipakai siapa saja (token/credit sesuai label model),
     // tanpa restriction tier. MODEL PRO/VIP → cek tier user.
     const userTier = account.tier || config.defaultTier || 'free';
     const allowedTiers = modelConfig.tierAccess || ['free', 'pro', 'vip'];
     const isFreeModel = allowedTiers.includes('free');
-    if (isFreeModel) {
+    // Model AI lokal (self-hosted / IP private) boleh dipakai siapa saja —
+    // user & guest tidak kebagi dulu model lokal, tinggal lewat gateway.
+    const selfHosted = isSelfHostedAi(serverConfig, modelConfig);
+    if (!selfHosted && isFreeModel) {
       // Model FREE → semua tier boleh gunakan (tanpa restriction).
       // Pembagian token/credit akan diatur berdasarkan label model di bawah.
-    } else if (!allowedTiers.includes(userTier)) {
+    } else if (!selfHosted && !isFreeModel && !allowedTiers.includes(userTier)) {
       return jsonResponse(request, 403, {
         error: `Model "${modelId}" requires tier: ${allowedTiers.join(', ')}. Your tier: ${userTier}`,
       });
+    }
+
+    // Batas request harian per akun (seperti RPM, tapi per hari). Limit
+    // per model provider menimpa limit provider, lalu limit global config.
+    const configDailyLimit = Number(config.dailyRequestLimit) || 0;
+    const providerDailyLimit = providerConfig
+      ? (Number(modelConfig.dailyRequestLimit) || 0)
+      : 0;
+    const dailyLimit = providerDailyLimit > 0
+      ? providerDailyLimit
+      : configDailyLimit;
+    if (dailyLimit > 0) {
+      const used = await dailyRequestUsed(env, account.id);
+      if (used >= dailyLimit) {
+        return jsonResponse(request, 429, {
+          error: `Batas ${dailyLimit} request/hari untuk akun ini sudah ` +
+            'tercapai. Coba lagi besok atau minta admin menaikkan limit.',
+          limit: dailyLimit,
+          used,
+          resetAt: dailyResetAt(),
+        });
+      }
     }
 
     // Check balance.
@@ -2179,28 +2734,20 @@ async function handleGateway(request, env, pathname) {
       }
     }
 
-    // Proxy to backend server. Model boleh menunjuk server lewat serverId;
-    // alamat + API key diambil dari Server manager (KV) kalau kosong.
-    // `servers` sudah dibaca di atas saat mencari model.
-    const serverConfig = modelConfig.serverId
-      ? servers.find((s) => String(s.id) === String(modelConfig.serverId))
-      : servers.find((s) =>
-        s.baseUrl && s.baseUrl === (modelConfig.serverUrl || modelConfig.apiUrl));
-    if (serverConfig && serverConfig.enabled === false) {
-      return jsonResponse(request, 403, {
-        error: `Server "${serverConfig.id}" sedang dinonaktifkan di dashboard.`,
-      });
-    }
-    const backendUrl = modelConfig.apiUrl || modelConfig.serverUrl ||
-      (serverConfig && serverConfig.baseUrl) || '';
+    const backendUrl = providerConfig
+      ? providerConfig.baseUrl
+      : (modelConfig.apiUrl || modelConfig.serverUrl ||
+        (serverConfig && serverConfig.baseUrl) || '');
     if (!backendUrl) {
       return jsonResponse(request, 503, { error: 'Backend server URL not configured for this model.' });
     }
 
     const base = backendUrl.replace(/\/+$/, '');
-    const targetUrl = /\/v\d+$/i.test(base)
-      ? `${base}/chat/completions`
-      : `${base}/v1/chat/completions`;
+    const targetUrl = providerConfig
+      ? apiProviderTargetUrl(providerConfig, providerModel)
+      : (/\/v\d+$/i.test(base)
+        ? `${base}/chat/completions`
+        : `${base}/v1/chat/completions`);
 
     // Batasi output sesuai context & max output model (hasil auto-detect
     // `/props`). Ini satu-satunya penentu ukuran jawaban — aplikasi tidak
@@ -2216,15 +2763,22 @@ async function handleGateway(request, env, pathname) {
 
     const headers = new Headers();
     headers.set('Content-Type', 'application/json');
-    // Secret inference = manager secret VPS (nginx memakai key yang sama
-    // untuk /manager dan /). Entri model lama bisa punya apiKey sendiri.
-    const backendKey = modelConfig.apiKey ||
-      (serverConfig && (serverConfig.managerKey || serverConfig.apiKey)) || '';
-    if (backendKey) {
-      // Server Python/nginx memakai header X-Secret-Key. Authorization tetap
-      // dikirim untuk backend OpenAI-compatible yang memakainya.
-      headers.set('X-Secret-Key', backendKey);
-      headers.set('Authorization', `Bearer ${backendKey}`);
+    if (providerConfig) {
+      // Provider eksternal: hanya Authorization Bearer (API key provider).
+      if (providerConfig.apiKey) {
+        headers.set('Authorization', `Bearer ${providerConfig.apiKey}`);
+      }
+    } else {
+      // Secret inference = manager secret VPS (nginx memakai key yang sama
+      // untuk /manager dan /). Entri model lama bisa punya apiKey sendiri.
+      const backendKey = modelConfig.apiKey ||
+        (serverConfig && (serverConfig.managerKey || serverConfig.apiKey)) || '';
+      if (backendKey) {
+        // Server Python/nginx memakai header X-Secret-Key. Authorization tetap
+        // dikirim untuk backend OpenAI-compatible yang memakainya.
+        headers.set('X-Secret-Key', backendKey);
+        headers.set('Authorization', `Bearer ${backendKey}`);
+      }
     }
 
     let upstream;
@@ -2233,7 +2787,9 @@ async function handleGateway(request, env, pathname) {
         ...body,
         // Backend selalu menerima nama model asli (bukan id publik
         // `label:model:tier`) dan tanpa folder path.
-        model: backendModelName(modelConfig.backendModelId || modelId),
+        model: providerConfig
+          ? apiProviderModelName(providerConfig, providerModel)
+          : backendModelName(modelConfig.backendModelId || modelId),
         // Nilai hasil clamp dari context/max output server.
         max_tokens: tokenLimit.maxTokens,
       };
@@ -2243,11 +2799,16 @@ async function handleGateway(request, env, pathname) {
         upstreamBody.max_completion_tokens = tokenLimit.maxTokens;
       }
       // Minta usage di akhir stream supaya kuota tetap terhitung.
-      if (body.stream === true) {
+      // Provider eksternal (mis. Cloudflare) tidak mengenal stream_options.
+      if (body.stream === true && !providerConfig) {
         upstreamBody.stream_options = {
           ...(body.stream_options || {}),
           include_usage: true,
         };
+      }
+      // Hitung request harian per akun tepat sebelum panggilan upstream.
+      if (dailyLimit > 0) {
+        await bumpDailyRequest(env, account.id);
       }
       upstream = await fetch(targetUrl, {
         method: 'POST',
@@ -2258,11 +2819,13 @@ async function handleGateway(request, env, pathname) {
       return jsonResponse(request, 502, { error: `Backend request failed: ${error}` });
     }
 
-    // Streaming (SSE) diteruskan apa adanya ke klien. Pemakaian token
-    // dibaca dari event `usage`; kalau backend tidak mengirimnya, dipakai
-    // perkiraan dari panjang teks.
+    // Streaming (SSE) dinormalisasi ke format OpenAI. Backend llama-server
+    // sudah OpenAI-compatible (diteruskan apa adanya); provider eksternal
+    // seperti Cloudflare Workers AI mengirim `{response: "..."}` yang
+    // dikonversi menjadi delta OpenAI supaya aplikasi tidak perlu diubah.
     if (body.stream === true && upstream.ok && upstream.body) {
       const decoder = new TextDecoder();
+      const encoder = new TextEncoder();
       let buffered = '';
       let contentChars = 0;
       let usage = { prompt_tokens: 0, completion_tokens: 0 };
@@ -2271,7 +2834,6 @@ async function handleGateway(request, env, pathname) {
       let timings = {};
       const tracker = new TransformStream({
         transform(chunk, controller) {
-          controller.enqueue(chunk);
           buffered += decoder.decode(chunk, { stream: true });
           let index;
           while ((index = buffered.indexOf('\n')) >= 0) {
@@ -2279,25 +2841,47 @@ async function handleGateway(request, env, pathname) {
             buffered = buffered.slice(index + 1);
             if (!line.startsWith('data:')) continue;
             const payload = line.slice(5).trim();
-            if (!payload || payload === '[DONE]') continue;
+            if (!payload) continue;
+            if (payload === '[DONE]') {
+              // [DONE] dikirim ulang di flush supaya urutannya selalu
+              // sebelum event usage.
+              continue;
+            }
+            let parsed;
             try {
-              const parsed = JSON.parse(payload);
-              if (parsed && parsed.usage) usage = parsed.usage;
-              if (parsed && parsed.timings) timings = parsed.timings;
-              const choice = parsed && parsed.choices && parsed.choices[0];
-              const delta = choice && choice.delta;
-              if (delta && typeof delta.content === 'string') {
-                contentChars += delta.content.length;
-              }
+              parsed = JSON.parse(payload);
             } catch (_) {
               // Chunk keep-alive / bukan JSON — abaikan.
+              continue;
             }
+            if (parsed && parsed.usage) usage = parsed.usage;
+            if (parsed && parsed.timings) timings = parsed.timings;
+            // Cloudflare Workers AI: {response: "token"} → delta OpenAI.
+            if (parsed && typeof parsed.response === 'string') {
+              contentChars += parsed.response.length;
+              controller.enqueue(encoder.encode(
+                `data: ${JSON.stringify(
+                  providerOpenAiChunk(parsed.response, modelId))}\n\n`));
+              continue;
+            }
+            const choice = parsed && parsed.choices && parsed.choices[0];
+            const delta = choice && choice.delta;
+            if (delta && typeof delta.content === 'string') {
+              contentChars += delta.content.length;
+            }
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify(parsed)}\n\n`));
           }
         },
         async flush(controller) {
+          // Selalu tutup stream dengan [DONE] sebelum event usage.
+          try {
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          } catch (_) {}
           const cachedTokens = Math.max(0, Number(timings.cache_n) || 0);
           const promptTokens = Number(usage.prompt_tokens) ||
-            (Math.max(0, Number(timings.prompt_n) || 0) + cachedTokens);
+            (Math.max(0, Number(timings.prompt_n) || 0) + cachedTokens) ||
+            estimatePromptTokens(body.messages);
           const completionTokens = Number(usage.completion_tokens) ||
             Number(timings.predicted_n) || Math.ceil(contentChars / 4);
           // Statistik per model: berapa request, berapa prompt yang kena
@@ -2337,7 +2921,7 @@ async function handleGateway(request, env, pathname) {
           // langsung menurunkan saldo token/kredit di UI.
           try {
             controller.enqueue(
-              new TextEncoder().encode(
+              encoder.encode(
                 'data: ' + JSON.stringify({
                   piercingblow_usage: true,
                   // Mode menentukan mana yang dipotong: token ATAU kredit.
@@ -2387,6 +2971,38 @@ async function handleGateway(request, env, pathname) {
         status: upstream.status,
         headers: { ...corsHeaders(request), 'Content-Type': upstream.headers.get('content-type') || 'application/json' },
       });
+    }
+
+    // Provider eksternal bisa membalas dengan format non-OpenAI.
+    // Cloudflare Workers AI: { success, result: { response } }.
+    if (providerConfig && responseData && responseData.success === false &&
+        Array.isArray(responseData.errors) && responseData.errors.length) {
+      return jsonResponse(request, 502, {
+        error: responseData.errors[0]?.message ||
+          'Provider API mengembalikan error.',
+      });
+    }
+    if (providerConfig && responseData && responseData.result &&
+        typeof responseData.result.response === 'string') {
+      const text = responseData.result.response;
+      const promptTokens = estimatePromptTokens(body.messages);
+      const completionTokens = Math.max(1, Math.ceil(text.length / 4));
+      responseData = {
+        id: `chatcmpl-${Date.now()}`,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model: modelId,
+        choices: [{
+          index: 0,
+          message: { role: 'assistant', content: text },
+          finish_reason: 'stop',
+        }],
+        usage: {
+          prompt_tokens: promptTokens,
+          completion_tokens: completionTokens,
+          total_tokens: promptTokens + completionTokens,
+        },
+      };
     }
 
     // Deduct tokens/credits based on usage
@@ -2621,6 +3237,11 @@ export default {
           pathname === '/api/admin/api-key-logs' ||
           pathname === '/api/admin/usage-logs') {
         return await handleServerModels(request, env, pathname);
+      }
+      // Provider API eksternal (base URL + API key), CRUD admin.
+      if (pathname === '/api/admin/api-providers' ||
+          pathname.startsWith('/api/admin/api-providers/')) {
+        return await handleApiProviders(request, env, pathname);
       }
       if (pathname.startsWith('/api/admin/')) {
         return await handleAdmin(request, env, pathname);

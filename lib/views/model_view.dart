@@ -108,9 +108,8 @@ class ModelView extends GetView<ModelController> {
               ('online', 'Cloud'),
               ('models', 'Model List'),
             ],
-            selected: controller.modelScope.value == 'models'
-                ? 'models'
-                : 'online',
+            selected:
+                controller.modelScope.value == 'models' ? 'models' : 'online',
             onChanged: (value) {
               controller.modelScope.value = value;
               if (value == 'models') {
@@ -608,7 +607,37 @@ class ModelView extends GetView<ModelController> {
     return Obx(() {
       final t = AppTokens.of(context);
       final tier = _modelListTier(config);
-      final groups = config.groupedByServer(tier);
+      final query = controller.adminModelQuery.value.trim().toLowerCase();
+      final filter = controller.adminModelFilter.value;
+
+      bool matches(AdminModelInfo model) {
+        if (query.isNotEmpty) {
+          final haystack =
+              '${model.displayName} ${model.modelId} ${model.backendModelId}'
+                  .toLowerCase();
+          if (!haystack.contains(query)) return false;
+        }
+        switch (filter) {
+          case 'free':
+            return model.tierAccess.contains('free');
+          case 'token':
+            return model.usesTokens;
+          case 'credit':
+            return model.usesCredits;
+          case 'api':
+            return model.provider == 'external';
+          default:
+            return true;
+        }
+      }
+
+      final groups = <AdminServerInfo, List<AdminModelInfo>>{};
+      for (final entry in config.groupedByServer(tier).entries) {
+        final list = entry.value.where(matches).toList();
+        if (list.isNotEmpty) groups[entry.key] = list;
+      }
+      final visibleCount =
+          groups.values.fold<int>(0, (sum, l) => sum + l.length);
 
       if (config.isLoading.value && config.models.isEmpty) {
         return const Padding(
@@ -617,21 +646,17 @@ class ModelView extends GetView<ModelController> {
         );
       }
 
-      if (groups.isEmpty) {
+      if (config.models.isEmpty) {
         return Padding(
           padding: const EdgeInsets.only(top: 8),
           child: EmptyState(
             icon: Icons.dns_outlined,
             title: 'No models configured',
-            message: config.models.isEmpty
-                ? 'Admin hasn\'t added any AI server model yet. '
-                    'Models added in the dashboard Server manager will appear here.'
-                : 'No model on your tier (${tier.toUpperCase()}). '
-                    'Ask admin to enable it for your tier.',
+            message: 'Admin hasn\'t added any AI server model yet. '
+                'Models added in the dashboard Server manager will appear here.',
             action: PillButton(
               label: 'Refresh',
-              onPressed:
-                  config.isLoading.value ? null : () => config.refresh(),
+              onPressed: config.isLoading.value ? null : () => config.refresh(),
             ),
           ),
         );
@@ -644,7 +669,9 @@ class ModelView extends GetView<ModelController> {
             children: [
               Expanded(
                 child: Text(
-                  '${config.models.length} model dari server yang dikelola admin',
+                  visibleCount == config.modelsForTier(tier).length
+                      ? '${config.modelsForTier(tier).length} model dari server yang dikelola admin'
+                      : '$visibleCount dari ${config.modelsForTier(tier).length} model ditampilkan',
                   style: t.caption,
                 ),
               ),
@@ -656,6 +683,78 @@ class ModelView extends GetView<ModelController> {
               ),
             ],
           ),
+          // Search bar sengaja dibuat custom (rounded, tanpa border tebal)
+          // supaya nyaman dipakai di mobile maupun web.
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: TextField(
+              controller: controller.adminModelSearch,
+              onChanged: controller.setAdminModelQuery,
+              textInputAction: TextInputAction.search,
+              style: t.body.copyWith(fontSize: 14, color: t.text),
+              decoration: InputDecoration(
+                hintText: 'Cari nama model…',
+                hintStyle: t.body.copyWith(fontSize: 14, color: t.muted),
+                prefixIcon:
+                    Icon(Icons.search_rounded, size: 20, color: t.muted),
+                suffixIcon: controller.adminModelQuery.value.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: 'Hapus pencarian',
+                        icon:
+                            Icon(Icons.close_rounded, size: 18, color: t.muted),
+                        onPressed: controller.clearAdminModelSearch,
+                      ),
+                filled: true,
+                fillColor: t.fill,
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide.none,
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide.none,
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide(
+                    color: t.accent.withValues(alpha: 0.55),
+                    width: 1,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          AppChips<String>(
+            items: const [
+              ('all', 'Semua'),
+              ('free', 'Free'),
+              ('token', 'Token'),
+              ('credit', 'Kredit'),
+              ('api', 'API'),
+            ],
+            selected: filter,
+            onSelected: controller.setAdminModelFilter,
+          ),
+          if (groups.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 24),
+              child: EmptyState(
+                icon: Icons.search_off_rounded,
+                title: 'Model tidak ditemukan',
+                message: 'Coba kata kunci lain atau ganti filter model.',
+                action: PillButton(
+                  label: 'Reset filter',
+                  onPressed: () {
+                    controller.clearAdminModelSearch();
+                    controller.setAdminModelFilter('all');
+                  },
+                ),
+              ),
+            ),
           // Statistik cache sekarang per model (di setiap baris model),
           // bukan satu kartu global: admin/user bisa melihat model mana
           // yang sering dipakai dan efektivitas prompt cache-nya.
@@ -734,10 +833,10 @@ class ModelView extends GetView<ModelController> {
     // Pengaturan model sesuai dashboard admin: context, max output, dan
     // harga input/output (per request atau per 1M token).
     final specs = [
-      if (model.contextSize > 0)
-        'Context ${_fmtThousands(model.contextSize)}',
-      if (model.maxOutput > 0)
-        'Max output ${_fmtThousands(model.maxOutput)}',
+      if (model.contextSize > 0) 'Context ${_fmtThousands(model.contextSize)}',
+      if (model.maxOutput > 0) 'Max output ${_fmtThousands(model.maxOutput)}',
+      if (model.dailyRequestLimit > 0)
+        'Limit ${_fmtThousands(model.dailyRequestLimit)} req/hari',
     ].join(' · ');
 
     return InkWell(
@@ -782,6 +881,7 @@ class ModelView extends GetView<ModelController> {
                     children: [
                       AppTag(tier.toUpperCase()),
                       AppTag(model.usesTokens ? 'Token quota' : 'Credit'),
+                      if (model.provider == 'external') AppTag('API'),
                       if (meta.isNotEmpty) AppTag(meta),
                     ],
                   ),
@@ -803,7 +903,8 @@ class ModelView extends GetView<ModelController> {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ],
-                  // Pemakaian & prompt cache model ini (dihitung gateway).
+                  // Pemakaian & prompt cache model ini (dihitung gateway):
+                  // bar cache (hit rate) + tok/s real-time dari server.
                   if (stat != null) ...[
                     const SizedBox(height: 2),
                     Text(
@@ -813,6 +914,16 @@ class ModelView extends GetView<ModelController> {
                       ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(2),
+                      child: LinearProgressIndicator(
+                        value: stat.hitRate / 100,
+                        minHeight: 3,
+                        backgroundColor: t.fill,
+                        color: stat.hitRate >= 50 ? t.green : t.orange,
+                      ),
                     ),
                   ],
                 ],
@@ -1181,26 +1292,25 @@ class ModelView extends GetView<ModelController> {
                       label: 'Cancel', onTap: () => Navigator.pop(ctx)),
                 ),
                 const SizedBox(width: 10),
-                    Expanded(
-                      child: Obx(() => PrimaryButton(
-                            label: isSaving.value ? 'Saving' : 'Save key',
-                            busy: isSaving.value,
-                            onPressed: () async {
-                              final value = keyController.text.trim();
-                              if (value.isEmpty || isSaving.value) return;
-                              final nav = Navigator.of(ctx);
-                              isSaving.value = true;
-                              await cloud.saveApiKey(provider.id, value);
-                              isSaving.value = false;
-                              if (!ctx.mounted) return;
-                              nav.pop();
-                              if (openModelsAfterSave && context.mounted) {
-                                _showModelSelectSheet(
-                                    context, cloud, provider);
-                              }
-                            },
-                          )),
-                    ),
+                Expanded(
+                  child: Obx(() => PrimaryButton(
+                        label: isSaving.value ? 'Saving' : 'Save key',
+                        busy: isSaving.value,
+                        onPressed: () async {
+                          final value = keyController.text.trim();
+                          if (value.isEmpty || isSaving.value) return;
+                          final nav = Navigator.of(ctx);
+                          isSaving.value = true;
+                          await cloud.saveApiKey(provider.id, value);
+                          isSaving.value = false;
+                          if (!ctx.mounted) return;
+                          nav.pop();
+                          if (openModelsAfterSave && context.mounted) {
+                            _showModelSelectSheet(context, cloud, provider);
+                          }
+                        },
+                      )),
+                ),
               ],
             ),
           ],

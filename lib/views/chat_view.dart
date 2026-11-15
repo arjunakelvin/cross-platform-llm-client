@@ -554,9 +554,10 @@ class ChatView extends GetView<ChatController> {
                       styleSheet: _streamMd(context, isDark),
                       extensionSet: piercingExtensionSet,
                       builders: {
-                        'pre': CodeBlockBuilder(Theme.of(context).brightness == Brightness.dark),
-                        'math': MathInlineBuilder(),
-                      })),
+                    'pre': CodeBlockBuilder(
+                        Theme.of(context).brightness == Brightness.dark),
+                    'math': MathInlineBuilder(),
+                  })),
               _BlinkingCursor(color: Theme.of(context).hintColor),
             ]),
         ],
@@ -591,9 +592,8 @@ class ChatView extends GetView<ChatController> {
     final queue = Get.find<ChatController>().queueStatus.value;
     String? msg;
     if (queue != null && queue.isWaiting) {
-      final eta = queue.waitMs >= 1000
-          ? ' • ±${(queue.waitMs / 1000).ceil()} dtk'
-          : '';
+      final eta =
+          queue.waitMs >= 1000 ? ' • ±${(queue.waitMs / 1000).ceil()} dtk' : '';
       final total = queue.queued > 0 ? queue.queued : queue.position;
       msg = queue.position > 1
           ? 'Antrean ke-${queue.position} dari $total$eta'
@@ -871,256 +871,366 @@ class ChatView extends GetView<ChatController> {
               );
             }),
             // Composer: one rounded surface holding the field and its actions.
-            Container(
-                padding: const EdgeInsets.all(5),
-                decoration: BoxDecoration(
-                  color: isDark
-                      ? const Color(0xFF141416)
-                      : const Color(0xFFF5F5F7),
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(
-                      color: isDark
-                          ? Colors.white.withValues(alpha: 0.09)
-                          : Colors.black.withValues(alpha: 0.07),
-                      width: 0.5),
-                ),
-                child:
-                    Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                  // Attach button (image + file) — shown for cloud & local vision
-                  Obx(() {
-                    final s = Get.find<SettingsController>();
-                    final inf = Get.find<InferenceService>();
-                    final isCloud = s.inferenceMode.value == 'cloud';
-                    // LiteRT vision models or GGUF models with a vision
-                    // projector can take photos.
-                    final isLocalVision = s.inferenceMode.value == 'local' &&
-                        inf.isVisionLoaded.value;
-                    // Audio files only work with cloud and LiteRT models.
-                    final audioOk = isCloud ||
-                        (isLocalVision &&
-                            inf.loadedModelRuntime.value == 'litert');
-                    // Any local text model can read documents: their text is
-                    // extracted and inlined into the prompt.
-                    final isLocalText = s.inferenceMode.value == 'local' &&
-                        inf.isModelLoaded.value;
-                    if (!isCloud && !isLocalText) {
-                      return const SizedBox.shrink();
-                    }
-                    final mediaOk = isCloud || isLocalVision;
-                    return _AttachButton(
-                      isDark: isDark,
-                      isCloud: isCloud,
-                      allowMedia: mediaOk,
-                      onCamera: () =>
-                          controller.pickImage(source: ImageSource.camera),
-                      onImage: controller.pickImage,
-                      onFile: () =>
-                          controller.pickFile(documentsOnly: !audioOk),
-                      context: context,
-                    );
-                  }),
-                  // Text field
-                  // Same 40px base height as the buttons so a single line sits
-                  // centred; taller multi-line input keeps buttons at the bottom.
-                  Expanded(child: Obx(() {
-                    // Local mode with nothing loaded: the field is disabled
-                    // and tapping it goes to Models. Cloud mode is unaffected.
-                    final noModel = _localModelMissing();
-                    final loadingModel =
-                        Get.find<InferenceService>().isLoadingModel.value ||
-                            Get.find<LocalImageService>().isLoadingModel.value;
-                    return GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: noModel && !loadingModel
-                            ? () => Get.find<HomeController>().changeTab(1)
-                            : null,
-                        child: Container(
-                          constraints: const BoxConstraints(minHeight: 40),
-                          alignment: Alignment.centerLeft,
-                          child: TextField(
-                            enabled: !noModel,
-                            controller: controller.textController,
-                            focusNode: controller.inputFocus,
-                            textCapitalization: TextCapitalization.sentences,
-                            onChanged: (v) => controller.inputText.value = v,
-                            maxLines: 5,
-                            minLines: 1,
-                            style: GoogleFonts.inter(
-                                fontSize: 15,
-                                color: isDark ? Colors.white : Colors.black),
-                            decoration: InputDecoration(
-                              hintText: !noModel
-                                  ? 'Ask anything'
-                                  : loadingModel
-                                      ? 'Loading model…'
-                                      : 'Load a model to start chatting',
-                              hintStyle: GoogleFonts.inter(
-                                  fontSize: 15,
-                                  color: Theme.of(context).hintColor),
-                              border: InputBorder.none,
-                              enabledBorder: InputBorder.none,
-                              focusedBorder: InputBorder.none,
-                              disabledBorder: InputBorder.none,
-                              contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 8),
-                              isDense: true,
-                              filled: false,
+            // Saat context penuh / limit harian tercapai, kolom input diganti
+            // panel hitung mundur (context tidak bisa di-reset dari sini).
+            Obx(() {
+              if (controller.inputBlocked) {
+                return _buildBlockedComposer(context, isDark);
+              }
+              return Container(
+                  padding: const EdgeInsets.all(5),
+                  decoration: BoxDecoration(
+                    color: isDark
+                        ? const Color(0xFF141416)
+                        : const Color(0xFFF5F5F7),
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(
+                        color: isDark
+                            ? Colors.white.withValues(alpha: 0.09)
+                            : Colors.black.withValues(alpha: 0.07),
+                        width: 0.5),
+                  ),
+                  child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        // Attach button (image + file) — shown for cloud & local vision
+                        Obx(() {
+                          final s = Get.find<SettingsController>();
+                          final inf = Get.find<InferenceService>();
+                          final isCloud = s.inferenceMode.value == 'cloud';
+                          // LiteRT vision models or GGUF models with a vision
+                          // projector can take photos.
+                          final isLocalVision =
+                              s.inferenceMode.value == 'local' &&
+                                  inf.isVisionLoaded.value;
+                          // Audio files only work with cloud and LiteRT models.
+                          final audioOk = isCloud ||
+                              (isLocalVision &&
+                                  inf.loadedModelRuntime.value == 'litert');
+                          // Any local text model can read documents: their text is
+                          // extracted and inlined into the prompt.
+                          final isLocalText =
+                              s.inferenceMode.value == 'local' &&
+                                  inf.isModelLoaded.value;
+                          if (!isCloud && !isLocalText) {
+                            return const SizedBox.shrink();
+                          }
+                          final mediaOk = isCloud || isLocalVision;
+                          return _AttachButton(
+                            isDark: isDark,
+                            isCloud: isCloud,
+                            allowMedia: mediaOk,
+                            onCamera: () => controller.pickImage(
+                                source: ImageSource.camera),
+                            onImage: controller.pickImage,
+                            onFile: () =>
+                                controller.pickFile(documentsOnly: !audioOk),
+                            context: context,
+                          );
+                        }),
+                        // Text field
+                        // Same 40px base height as the buttons so a single line sits
+                        // centred; taller multi-line input keeps buttons at the bottom.
+                        Expanded(child: Obx(() {
+                          // Local mode with nothing loaded: the field is disabled
+                          // and tapping it goes to Models. Cloud mode is unaffected.
+                          final noModel = _localModelMissing();
+                          final loadingModel = Get.find<InferenceService>()
+                                  .isLoadingModel
+                                  .value ||
+                              Get.find<LocalImageService>()
+                                  .isLoadingModel
+                                  .value;
+                          return GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: noModel && !loadingModel
+                                  ? () =>
+                                      Get.find<HomeController>().changeTab(1)
+                                  : null,
+                              child: Container(
+                                constraints:
+                                    const BoxConstraints(minHeight: 40),
+                                alignment: Alignment.centerLeft,
+                                child: TextField(
+                                  enabled: !noModel,
+                                  controller: controller.textController,
+                                  focusNode: controller.inputFocus,
+                                  textCapitalization:
+                                      TextCapitalization.sentences,
+                                  onChanged: (v) =>
+                                      controller.inputText.value = v,
+                                  maxLines: 5,
+                                  minLines: 1,
+                                  style: GoogleFonts.inter(
+                                      fontSize: 15,
+                                      color:
+                                          isDark ? Colors.white : Colors.black),
+                                  decoration: InputDecoration(
+                                    hintText: !noModel
+                                        ? 'Ask anything'
+                                        : loadingModel
+                                            ? 'Loading model…'
+                                            : 'Load a model to start chatting',
+                                    hintStyle: GoogleFonts.inter(
+                                        fontSize: 15,
+                                        color: Theme.of(context).hintColor),
+                                    border: InputBorder.none,
+                                    enabledBorder: InputBorder.none,
+                                    focusedBorder: InputBorder.none,
+                                    disabledBorder: InputBorder.none,
+                                    contentPadding: const EdgeInsets.symmetric(
+                                        horizontal: 12, vertical: 8),
+                                    isDense: true,
+                                    filled: false,
+                                  ),
+                                  onSubmitted: (_) => controller.sendMessage(),
+                                ),
+                              ));
+                        })),
+                        const SizedBox(width: 6),
+                        // Batch add button
+                        Obx(() {
+                          final settings = Get.find<SettingsController>();
+                          final localImage = Get.find<LocalImageService>();
+                          if (settings.inferenceMode.value == 'local' &&
+                              localImage.isModelLoaded.value &&
+                              localImage.currentBackend.value ==
+                                  Backend.metal) {
+                            return Padding(
+                              padding: const EdgeInsets.only(right: 6),
+                              child: GestureDetector(
+                                onLongPress: () {
+                                  // Testing mode: Populate batch with 15 fresh alternative prompts
+                                  final testPrompts = [
+                                    "Portrait of a goth girl with dark makeup, realistic photography, 8k",
+                                    "Realistic photo of an elf girl in a forest, cinematic lighting",
+                                    "A fluffy orange cat sleeping on a sunny couch, photorealistic",
+                                    "A handsome man in a sharp suit, realistic portrait, studio lighting",
+                                    "A futuristic city street at night, realistic photography",
+                                    "A beautiful young woman with freckles, natural sunlight",
+                                    "A majestic lion resting in the savanna, highly detailed",
+                                    "An old man with a weathered face, realistic portrait, high detail",
+                                    "A delicious looking cup of coffee on a wooden table, macro photography",
+                                    "A medieval knight holding a sword, realistic cinematic lighting",
+                                    "A golden retriever playing fetch, sharp focus, photography",
+                                    "A realistic cyberpunk character with neon reflections",
+                                    "A vintage muscle car driving down a desert highway, photorealistic",
+                                    "A serene mountain lake at sunrise, realistic landscape photography",
+                                    "A close-up of a beautiful eye with detailed iris, macro shot"
+                                  ];
+                                  // Shuffle them before adding
+                                  testPrompts.shuffle();
+                                  controller.batchPrompts.clear();
+                                  controller.batchPrompts.addAll(testPrompts);
+                                  showToast('Test mode',
+                                      'Added 15 test prompts to the batch.',
+                                      tone: ToastTone.success);
+                                },
+                                onTap: () async {
+                                  final text =
+                                      controller.textController.text.trim();
+                                  if (text.isEmpty) return;
+                                  if (controller.batchPrompts.length >= 20) {
+                                    showToast('Batch limit',
+                                        'You can add up to 20 prompts per batch.',
+                                        tone: ToastTone.warning);
+                                    return;
+                                  }
+                                  if (!controller.batchModeAccepted.value) {
+                                    final accepted = await confirmSheet(
+                                      context,
+                                      title: 'Batch generation',
+                                      message:
+                                          'Generating multiple images back-to-back is demanding. Your device may get warm and use more battery.',
+                                      confirmLabel: 'Continue',
+                                    );
+                                    if (!accepted) return;
+                                    controller.acceptBatchMode();
+                                  }
+                                  controller.batchPrompts.add(text);
+                                  controller.textController.clear();
+                                  controller.inputText.value = '';
+                                },
+                                child: Container(
+                                  // 3px margins → 40px row height, matching the field.
+                                  margin:
+                                      const EdgeInsets.symmetric(vertical: 3),
+                                  width: 34,
+                                  height: 34,
+                                  decoration: BoxDecoration(
+                                    color: _appleBlue(context)
+                                        .withValues(alpha: 0.15),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Icon(Icons.add_rounded,
+                                      size: 22, color: _appleBlue(context)),
+                                ),
+                              ),
+                            );
+                          }
+                          return const SizedBox.shrink();
+                        }),
+                        // Unified mic / send / stop button
+                        Obx(() {
+                          final loading = controller.isLoading.value;
+                          final listening = controller.isListening.value;
+                          final noModel = _localModelMissing();
+                          final hasContent =
+                              controller.inputText.value.isNotEmpty ||
+                                  controller.selectedFileName.value != null ||
+                                  controller.selectedImagePath.value != null;
+
+                          // Determine state
+                          final Color bgColor;
+                          final IconData iconData;
+                          final VoidCallback? onTap;
+
+                          if (loading) {
+                            // AI generating → solid neutral stop
+                            bgColor = isDark ? Colors.white : Colors.black;
+                            iconData = Icons.stop_rounded;
+                            onTap = controller.stopGenerating;
+                          } else if (listening) {
+                            // STT active → red stop
+                            bgColor = const Color(0xFFFF3B30);
+                            iconData = Icons.stop_rounded;
+                            onTap = controller.toggleListening;
+                          } else if (noModel) {
+                            // Nothing to talk to: inert, faded mic
+                            bgColor = Colors.transparent;
+                            iconData = Icons.mic_none_rounded;
+                            onTap = null;
+                          } else if (hasContent) {
+                            // Has text or attachment → blue send
+                            bgColor = _appleBlue(context);
+                            iconData = Icons.arrow_upward_rounded;
+                            onTap = controller.sendMessage;
+                          } else {
+                            // Empty → bare mic glyph
+                            bgColor = Colors.transparent;
+                            iconData = Icons.mic_none_rounded;
+                            onTap = controller.toggleListening;
+                          }
+
+                          return GestureDetector(
+                            onTap: onTap,
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 200),
+                              curve: Curves.easeInOut,
+                              margin: const EdgeInsets.symmetric(vertical: 3),
+                              width: 34,
+                              height: 34,
+                              decoration: BoxDecoration(
+                                  color: bgColor, shape: BoxShape.circle),
+                              child: AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 180),
+                                transitionBuilder: (child, anim) =>
+                                    ScaleTransition(scale: anim, child: child),
+                                child: Icon(iconData,
+                                    key: ValueKey(iconData),
+                                    color: loading
+                                        ? (isDark ? Colors.black : Colors.white)
+                                        : (listening ||
+                                                (hasContent && !noModel))
+                                            ? Colors.white
+                                            : Theme.of(context)
+                                                .hintColor
+                                                .withValues(
+                                                    alpha: noModel ? 0.4 : 1),
+                                    size: 20),
+                              ),
                             ),
-                            onSubmitted: (_) => controller.sendMessage(),
-                          ),
-                        ));
-                  })),
-                  const SizedBox(width: 6),
-                  // Batch add button
-                  Obx(() {
-                    final settings = Get.find<SettingsController>();
-                    final localImage = Get.find<LocalImageService>();
-                    if (settings.inferenceMode.value == 'local' &&
-                        localImage.isModelLoaded.value &&
-                        localImage.currentBackend.value == Backend.metal) {
-                      return Padding(
-                        padding: const EdgeInsets.only(right: 6),
-                        child: GestureDetector(
-                          onLongPress: () {
-                            // Testing mode: Populate batch with 15 fresh alternative prompts
-                            final testPrompts = [
-                              "Portrait of a goth girl with dark makeup, realistic photography, 8k",
-                              "Realistic photo of an elf girl in a forest, cinematic lighting",
-                              "A fluffy orange cat sleeping on a sunny couch, photorealistic",
-                              "A handsome man in a sharp suit, realistic portrait, studio lighting",
-                              "A futuristic city street at night, realistic photography",
-                              "A beautiful young woman with freckles, natural sunlight",
-                              "A majestic lion resting in the savanna, highly detailed",
-                              "An old man with a weathered face, realistic portrait, high detail",
-                              "A delicious looking cup of coffee on a wooden table, macro photography",
-                              "A medieval knight holding a sword, realistic cinematic lighting",
-                              "A golden retriever playing fetch, sharp focus, photography",
-                              "A realistic cyberpunk character with neon reflections",
-                              "A vintage muscle car driving down a desert highway, photorealistic",
-                              "A serene mountain lake at sunrise, realistic landscape photography",
-                              "A close-up of a beautiful eye with detailed iris, macro shot"
-                            ];
-                            // Shuffle them before adding
-                            testPrompts.shuffle();
-                            controller.batchPrompts.clear();
-                            controller.batchPrompts.addAll(testPrompts);
-                            showToast('Test mode',
-                                'Added 15 test prompts to the batch.',
-                                tone: ToastTone.success);
-                          },
-                          onTap: () async {
-                            final text = controller.textController.text.trim();
-                            if (text.isEmpty) return;
-                            if (controller.batchPrompts.length >= 20) {
-                              showToast('Batch limit',
-                                  'You can add up to 20 prompts per batch.',
-                                  tone: ToastTone.warning);
-                              return;
-                            }
-                            if (!controller.batchModeAccepted.value) {
-                              final accepted = await confirmSheet(
-                                context,
-                                title: 'Batch generation',
-                                message:
-                                    'Generating multiple images back-to-back is demanding. Your device may get warm and use more battery.',
-                                confirmLabel: 'Continue',
-                              );
-                              if (!accepted) return;
-                              controller.acceptBatchMode();
-                            }
-                            controller.batchPrompts.add(text);
-                            controller.textController.clear();
-                            controller.inputText.value = '';
-                          },
-                          child: Container(
-                            // 3px margins → 40px row height, matching the field.
-                            margin: const EdgeInsets.symmetric(vertical: 3),
-                            width: 34,
-                            height: 34,
-                            decoration: BoxDecoration(
-                              color:
-                                  _appleBlue(context).withValues(alpha: 0.15),
-                              shape: BoxShape.circle,
-                            ),
-                            child: Icon(Icons.add_rounded,
-                                size: 22, color: _appleBlue(context)),
-                          ),
-                        ),
-                      );
-                    }
-                    return const SizedBox.shrink();
-                  }),
-                  // Unified mic / send / stop button
-                  Obx(() {
-                    final loading = controller.isLoading.value;
-                    final listening = controller.isListening.value;
-                    final noModel = _localModelMissing();
-                    final hasContent = controller.inputText.value.isNotEmpty ||
-                        controller.selectedFileName.value != null ||
-                        controller.selectedImagePath.value != null;
-
-                    // Determine state
-                    final Color bgColor;
-                    final IconData iconData;
-                    final VoidCallback? onTap;
-
-                    if (loading) {
-                      // AI generating → solid neutral stop
-                      bgColor = isDark ? Colors.white : Colors.black;
-                      iconData = Icons.stop_rounded;
-                      onTap = controller.stopGenerating;
-                    } else if (listening) {
-                      // STT active → red stop
-                      bgColor = const Color(0xFFFF3B30);
-                      iconData = Icons.stop_rounded;
-                      onTap = controller.toggleListening;
-                    } else if (noModel) {
-                      // Nothing to talk to: inert, faded mic
-                      bgColor = Colors.transparent;
-                      iconData = Icons.mic_none_rounded;
-                      onTap = null;
-                    } else if (hasContent) {
-                      // Has text or attachment → blue send
-                      bgColor = _appleBlue(context);
-                      iconData = Icons.arrow_upward_rounded;
-                      onTap = controller.sendMessage;
-                    } else {
-                      // Empty → bare mic glyph
-                      bgColor = Colors.transparent;
-                      iconData = Icons.mic_none_rounded;
-                      onTap = controller.toggleListening;
-                    }
-
-                    return GestureDetector(
-                      onTap: onTap,
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        curve: Curves.easeInOut,
-                        margin: const EdgeInsets.symmetric(vertical: 3),
-                        width: 34,
-                        height: 34,
-                        decoration: BoxDecoration(
-                            color: bgColor, shape: BoxShape.circle),
-                        child: AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 180),
-                          transitionBuilder: (child, anim) =>
-                              ScaleTransition(scale: anim, child: child),
-                          child: Icon(iconData,
-                              key: ValueKey(iconData),
-                              color: loading
-                                  ? (isDark ? Colors.black : Colors.white)
-                                  : (listening || (hasContent && !noModel))
-                                      ? Colors.white
-                                      : Theme.of(context)
-                                          .hintColor
-                                          .withValues(alpha: noModel ? 0.4 : 1),
-                              size: 20),
-                        ),
-                      ),
-                    );
-                  }),
-                ])),
+                          );
+                        }),
+                      ]));
+            }),
           ])),
+    );
+  }
+
+  /// Panel pengganti kolom chat saat context penuh atau limit request harian
+  /// tercapai. Menampilkan hitung mundur reset (00:00 UTC), bukan input biasa.
+  Widget _buildBlockedComposer(BuildContext context, bool isDark) {
+    final t = AppTokens.of(context);
+    final contextFull = controller.contextExhausted.value;
+    final accent = contextFull ? t.orange : t.accent;
+    final hint = Theme.of(context).hintColor;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF141416) : const Color(0xFFF5F5F7),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: accent.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(children: [
+            Icon(
+              contextFull
+                  ? Icons.hourglass_bottom_rounded
+                  : Icons.timer_outlined,
+              size: 18,
+              color: accent,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                contextFull
+                    ? 'Context chat ini penuh'
+                    : 'Batas request harian tercapai',
+                style: GoogleFonts.inter(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: isDark ? Colors.white : Colors.black,
+                ),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 4),
+          Text(
+            contextFull
+                ? 'Context tidak bisa di-reset. Mulai chat baru untuk '
+                    'melanjutkan percakapan.'
+                : 'Chat bisa dilanjutkan otomatis setelah reset harian.',
+            style: GoogleFonts.inter(fontSize: 12, color: hint),
+          ),
+          const SizedBox(height: 10),
+          Row(children: [
+            Text('Reset dalam',
+                style: GoogleFonts.inter(fontSize: 12, color: t.muted)),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                controller.resetCountdown.value.isEmpty
+                    ? '--:--:--'
+                    : controller.resetCountdown.value,
+                style: GoogleFonts.firaCode(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: accent,
+                ),
+              ),
+            ),
+            const Spacer(),
+            TextButton(
+              onPressed: controller.createNewChat,
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                minimumSize: const Size(0, 32),
+                foregroundColor: accent,
+              ),
+              child: const Text('Chat baru'),
+            ),
+          ]),
+        ],
+      ),
     );
   }
 

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:get/get.dart';
@@ -21,6 +22,8 @@ class AdminModelInfo {
     required this.maxOutput,
     required this.pricing,
     this.backendModelId = '',
+    this.dailyRequestLimit = 0,
+    this.provider = '',
   });
 
   final String modelId;
@@ -33,6 +36,13 @@ class AdminModelInfo {
   final int contextSize;
   final int maxOutput;
   final Map<String, dynamic> pricing;
+
+  /// Batas request per akun per hari (khusus provider API eksternal;
+  /// 0 = tanpa batas / ikut limit global).
+  final int dailyRequestLimit;
+
+  /// `external` = provider API luar (base URL + API key di dashboard admin).
+  final String provider;
 
   /// Nama model asli di server inference. Berbeda dari [modelId] kalau dua
   /// VPS punya model dengan nama sama (dashboard memberi prefix server).
@@ -58,8 +68,10 @@ class AdminModelInfo {
   /// Mode tagihan model — sama dengan aturan Worker:
   /// model berlabel **FREE** → kuota token, model **PRO/VIP** → kredit.
   bool get usesCredits {
-    final priced = inputPerReq > 0 || outputPerReq > 0 ||
-        inputPer1M > 0 || outputPer1M > 0;
+    final priced = inputPerReq > 0 ||
+        outputPerReq > 0 ||
+        inputPer1M > 0 ||
+        outputPer1M > 0;
     return !tierAccess.contains('free') && priced;
   }
 
@@ -132,9 +144,8 @@ class ModelUsageStat {
       cachedTokens: (map['cachedTokens'] as num?)?.toInt() ?? 0,
       completionTokens: (map['completionTokens'] as num?)?.toInt() ?? 0,
       tokensPerSec: (map['tokensPerSec'] as num?)?.toInt() ?? 0,
-      lastUsedAt: lastUsed > 0
-          ? DateTime.fromMillisecondsSinceEpoch(lastUsed)
-          : null,
+      lastUsedAt:
+          lastUsed > 0 ? DateTime.fromMillisecondsSinceEpoch(lastUsed) : null,
     );
   }
 }
@@ -165,18 +176,15 @@ String friendlyModelName(String raw) {
   // tetap utuh ("qwen2.5", "v0.2").
   name = name.replaceAll(RegExp(r'[-_]+'), ' ').trim();
   if (name.isEmpty) return original;
-  return name
-      .split(' ')
-      .where((word) => word.isNotEmpty)
-      .map((word) {
-        // "1.5b" → "1.5B", "8b" → "8B"
-        if (RegExp(r'^\d').hasMatch(word)) {
-          return word.replaceFirst(RegExp(r'b$'), 'B')
-              .replaceFirst(RegExp(r'm$'), 'M');
-        }
-        return word[0].toUpperCase() + word.substring(1);
-      })
-      .join(' ');
+  return name.split(' ').where((word) => word.isNotEmpty).map((word) {
+    // "1.5b" → "1.5B", "8b" → "8B"
+    if (RegExp(r'^\d').hasMatch(word)) {
+      return word
+          .replaceFirst(RegExp(r'b$'), 'B')
+          .replaceFirst(RegExp(r'm$'), 'M');
+    }
+    return word[0].toUpperCase() + word.substring(1);
+  }).join(' ');
 }
 
 /// Satu server AI (IP/URL) yang didaftarkan admin.
@@ -229,6 +237,46 @@ class DashboardConfigService extends GetxService {
   /// Statistik pemakaian + prompt cache per model (kunci = modelId).
   final modelStats = <String, ModelUsageStat>{}.obs;
 
+  /// Refresh otomatis statistik cache/pemakaian tiap 20 dtk (tanpa perlu
+  /// refresh manual) supaya grafik cache di Model List tetap "real-time".
+  Timer? _cacheRefreshTimer;
+  static const Duration cacheRefreshInterval = Duration(seconds: 20);
+
+  void startCacheAutoRefresh() {
+    stopCacheAutoRefresh();
+    _cacheRefreshTimer = Timer.periodic(cacheRefreshInterval, (_) async {
+      try {
+        await refreshCacheStats();
+      } catch (_) {
+        // Auto-refresh tidak boleh mengganggu UI.
+      }
+    });
+  }
+
+  void stopCacheAutoRefresh() {
+    _cacheRefreshTimer?.cancel();
+    _cacheRefreshTimer = null;
+  }
+
+  /// Perbarui tok/s terkini (dari event usage stream gateway) untuk satu
+  /// model, supaya tampilan Model List (tok/s real-time) tidak perlu refresh
+  /// manual — chart cache & tok/s ikut ter-update lewat auto-refresh/flow ini.
+  void updateLiveTokenPerSec(String modelId, double tokensPerSec) {
+    final existing = modelStats[modelId];
+    modelStats[modelId] = ModelUsageStat(
+      modelId: modelId,
+      requests: existing?.requests ?? 0,
+      hits: existing?.hits ?? 0,
+      misses: existing?.misses ?? 0,
+      hitRate: existing?.hitRate ?? 0,
+      promptTokens: existing?.promptTokens ?? 0,
+      cachedTokens: existing?.cachedTokens ?? 0,
+      completionTokens: existing?.completionTokens ?? 0,
+      tokensPerSec: tokensPerSec.toInt(),
+      lastUsedAt: existing?.lastUsedAt,
+    );
+  }
+
   final isLoading = false.obs;
   final loadedAt = Rxn<DateTime>();
 
@@ -278,6 +326,9 @@ class DashboardConfigService extends GetxService {
         await _applyAiServerUrl(data, force: false);
       }
       await refreshCacheStats();
+      // Statistik cache/pemakaian per model di-refresh otomatis tiap 20 dtk
+      // supaya chart & tok/s di Model List tidak perlu refresh manual.
+      startCacheAutoRefresh();
     } finally {
       isLoading.value = false;
     }
@@ -414,6 +465,8 @@ class DashboardConfigService extends GetxService {
               ? Map<String, dynamic>.from(item['pricing'] as Map)
               : const {},
           backendModelId: (item['backendModelId'] ?? '').toString(),
+          dailyRequestLimit: _int(item['dailyRequestLimit']),
+          provider: (item['provider'] ?? '').toString(),
         ));
       }
     }

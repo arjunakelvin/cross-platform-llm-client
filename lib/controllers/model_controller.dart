@@ -54,6 +54,26 @@ class ModelController extends GetxController {
   final fileSizes = <String, int>{}.obs;
   final modelScope = (kIsWeb ? 'online' : 'local').obs;
   final localFilter = ''.obs;
+
+  /// Pencarian + filter untuk daftar model dari dashboard admin.
+  /// `adminModelFilter`: all | free | token | credit | api.
+  final adminModelSearch = TextEditingController();
+  final adminModelQuery = ''.obs;
+  final adminModelFilter = 'all'.obs;
+
+  void setAdminModelQuery(String value) {
+    adminModelQuery.value = value;
+  }
+
+  void setAdminModelFilter(String value) {
+    adminModelFilter.value = value;
+  }
+
+  void clearAdminModelSearch() {
+    adminModelSearch.clear();
+    adminModelQuery.value = '';
+  }
+
   final importFileName = ''.obs;
   final importStatus = ''.obs;
   final importCopiedBytes = 0.obs;
@@ -148,6 +168,12 @@ class ModelController extends GetxController {
         .toList()
       ..addAll(customModels);
     refreshDownloaded();
+  }
+
+  @override
+  void onClose() {
+    adminModelSearch.dispose();
+    super.onClose();
   }
 
   void _loadCustomModels() {
@@ -417,7 +443,7 @@ class ModelController extends GetxController {
       showToast(
         'Not Available on Web',
         'Local models can\'t run in the browser. Use the Cloud tab to chat '
-        'with an API model, or install the Android/iOS app for local models.',
+            'with an API model, or install the Android/iOS app for local models.',
         tone: ToastTone.warning,
         duration: const Duration(seconds: 6),
       );

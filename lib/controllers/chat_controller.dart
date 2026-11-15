@@ -23,6 +23,7 @@ import '../ffi/sd_ffi_bindings.dart'
 import '../services/hive_service.dart';
 import '../services/inference_service.dart';
 import '../services/cloud_service.dart';
+import '../services/dashboard_config_service.dart';
 import '../services/local_image_service.dart';
 import '../services/app_log_service.dart';
 import '../services/image_generation_notification_service.dart';
@@ -83,6 +84,18 @@ class ChatController extends GetxController {
   final streamingAttachmentType = Rxn<String>();
   // Posisi antrean server AI (event SSE dari proxy). Null = tidak antre.
   final queueStatus = Rxn<QueueStatus>();
+
+  // Chat ini sudah mencapai batas context model. Sesuai aturan admin,
+  // context TIDAK bisa di-reset — user harus mulai chat baru untuk lanjut.
+  final contextExhausted = false.obs;
+
+  // Batas request harian (limit provider/global) tercapai. Kolom chat
+  // diblokir dan diganti hitung mundur sampai reset harian (UTC).
+  final dailyLimitReached = false.obs;
+  final resetCountdown = ''.obs;
+  Timer? _resetTimer;
+
+  bool get inputBlocked => contextExhausted.value || dailyLimitReached.value;
 
   // Image generation progress (lightweight, replaces text-heavy updates)
   final imageGenStep = 0.obs;
@@ -167,6 +180,7 @@ class ChatController extends GetxController {
   @override
   void onClose() {
     _scrollTimer?.cancel();
+    _resetTimer?.cancel();
     if (_scrollListenerAttached) {
       scrollController.removeListener(_handleUserScroll);
     }
@@ -192,6 +206,12 @@ class ChatController extends GetxController {
   void createNewChat() {
     final id = _uuid.v4();
     final session = ChatSession(id: id, title: 'New Chat');
+    // Chat baru = context baru; blokir context penuh dilepas di sini.
+    contextExhausted.value = false;
+    if (!dailyLimitReached.value) {
+      _resetTimer?.cancel();
+      resetCountdown.value = '';
+    }
     _hive.saveSession(id, session.toMap());
     sessions.insert(0, session);
     openChat(id);
@@ -206,6 +226,12 @@ class ChatController extends GetxController {
 
   void openChat(String sessionId) {
     stopGenerating();
+    // Pindah chat = mulai dari context chat itu; flag lama tidak berlaku.
+    contextExhausted.value = false;
+    if (!dailyLimitReached.value) {
+      _resetTimer?.cancel();
+      resetCountdown.value = '';
+    }
     currentSessionId.value = sessionId;
     final raw = _hive.getMessagesForChat(sessionId);
     messages.value = raw.map((m) => ChatMessage.fromMap(m)).toList()
@@ -227,6 +253,11 @@ class ChatController extends GetxController {
     if (currentSessionId.value == sessionId) {
       currentSessionId.value = '';
       messages.clear();
+      contextExhausted.value = false;
+      if (!dailyLimitReached.value) {
+        _resetTimer?.cancel();
+        resetCountdown.value = '';
+      }
     }
   }
 
@@ -580,6 +611,18 @@ class ChatController extends GetxController {
     final hasAttachment =
         selectedImagePath.value != null || selectedFileName.value != null;
     if (text.isEmpty && !hasAttachment) return;
+    if (inputBlocked) {
+      _startResetCountdown();
+      showToast(
+        'Chat diblokir',
+        contextExhausted.value
+            ? 'Context chat ini penuh. Mulai chat baru untuk melanjutkan.'
+            : 'Batas request harian tercapai. Chat bisa dilanjutkan setelah '
+                'hitung mundur selesai.',
+        tone: ToastTone.warning,
+      );
+      return;
+    }
     final fileName = selectedFileName.value;
     final fileContent = selectedFileContent.value;
     final filePath = selectedFilePath.value;
@@ -592,6 +635,24 @@ class ChatController extends GetxController {
     final effectiveText = (fileContent != null && fileContent.trim().isNotEmpty)
         ? '$visibleText\n\nAttached file: $fileName\n```text\n$fileContent\n```'
         : visibleText;
+
+    // Hard stop context: percakapan yang sudah mencapai batas context model
+    // TIDAK bisa di-reset. User harus mulai chat baru (aturan admin).
+    final modelContext = _activeModelContextSize;
+    if (modelContext > 0) {
+      final estimated = _estimateConversationTokens(effectiveText);
+      if (contextExhausted.value || estimated >= modelContext) {
+        contextExhausted.value = true;
+        _startResetCountdown();
+        showToast(
+          'Context penuh',
+          'Percakapan ini sudah mencapai batas $modelContext token. '
+              'Context tidak bisa di-reset — mulai chat baru untuk lanjut.',
+          tone: ToastTone.warning,
+        );
+        return;
+      }
+    }
 
     // Create a session if none selected
     if (currentSessionId.value.isEmpty) {
@@ -665,7 +726,8 @@ class ChatController extends GetxController {
             id: _uuid.v4(),
             chatId: currentSessionId.value,
             role: 'assistant',
-            content: 'Your tokens and credits are exhausted. Please refill your balance or upgrade your tier to continue using the AI services.',
+            content:
+                'Your tokens and credits are exhausted. Please refill your balance or upgrade your tier to continue using the AI services.',
           );
           messages.add(botMsg);
           _hive.saveMessage(botMsg.id, botMsg.toMap());
@@ -900,6 +962,39 @@ class ChatController extends GetxController {
       // sees them in context.
       if (rawResponse.startsWith('ERROR:')) {
         final lower = rawResponse.toLowerCase();
+        // Batas context model: kunci chat ini, jangan reset context — user
+        // harus mulai chat baru (aturan admin).
+        final isContextError = lower.contains('context model ini') ||
+            lower.contains('pesan terlalu panjang');
+        if (isContextError) {
+          contextExhausted.value = true;
+          _startResetCountdown();
+          isLoading.value = false;
+          imageGenStartTime.value = null;
+          showToast(
+            'Context penuh',
+            'Percakapan ini melewati batas context model. Context tidak bisa '
+                'di-reset — mulai chat baru untuk melanjutkan.',
+            tone: ToastTone.warning,
+          );
+          _scrollToBottom(force: true);
+          return;
+        }
+        // Batas request harian dari gateway (429).
+        if (lower.contains('request/hari')) {
+          dailyLimitReached.value = true;
+          _startResetCountdown();
+          isLoading.value = false;
+          imageGenStartTime.value = null;
+          showToast(
+            'Batas harian',
+            'Batas request harian tercapai. Chat bisa dilanjutkan setelah '
+                'hitung mundur reset selesai.',
+            tone: ToastTone.warning,
+          );
+          _scrollToBottom(force: true);
+          return;
+        }
         final isDepletionError = lower.contains('exhausted') ||
             lower.contains('no credits') ||
             lower.contains('insufficient') ||
@@ -1110,6 +1205,73 @@ class ChatController extends GetxController {
         curve: Curves.easeOutCubic,
       );
     });
+  }
+
+  /// Context window model aktif dari dashboard admin (0 = tidak diketahui,
+  /// berarti pengecekan context dilewati).
+  int get _activeModelContextSize {
+    if (!Get.isRegistered<DashboardConfigService>()) return 0;
+    final config = Get.find<DashboardConfigService>();
+    if (config.models.isEmpty) return 0;
+    final settings = Get.find<SettingsController>();
+    // Context hanya relevan untuk model yang lewat gateway/lokal.
+    if (settings.inferenceMode.value == 'cloud' &&
+        settings.cloudProvider.value != 'local') {
+      return 0;
+    }
+    // Model native di perangkat punya context sendiri (bukan dari dashboard).
+    if (settings.inferenceMode.value == 'local' &&
+        !settings.localAiViaGateway &&
+        Get.find<InferenceService>().isModelLoaded.value) {
+      return 0;
+    }
+    final wanted = <String>{
+      settings.localCloudModel.value.trim(),
+      settings.selectedCloudModelName.trim(),
+    }..removeWhere((value) => value.isEmpty);
+    if (wanted.isEmpty) return 0;
+    for (final model in config.models) {
+      if (wanted.contains(model.modelId) ||
+          wanted.contains(model.name) ||
+          (model.backendModelId.isNotEmpty &&
+              wanted.contains(model.backendModelId))) {
+        return model.contextSize;
+      }
+    }
+    return 0;
+  }
+
+  /// Perkiraan token percakapan (≈4 karakter/token) termasuk pesan baru.
+  int _estimateConversationTokens(String pendingText) {
+    var chars = _effectiveSystemPrompt.length + pendingText.length;
+    for (final message in messages) {
+      if (message.role != 'user' && message.role != 'assistant') continue;
+      chars += message.content.length + 8;
+    }
+    return chars <= 0 ? 0 : (chars / 4).ceil() + 8;
+  }
+
+  /// Hitung mundur sampai reset harian (00:00 UTC). Ditampilkan di kolom
+  /// chat yang diblokir, menggantikan input.
+  void _startResetCountdown() {
+    _resetTimer?.cancel();
+    void tick() {
+      final now = DateTime.now().toUtc();
+      final nextMidnight = DateTime.utc(now.year, now.month, now.day + 1);
+      final total = nextMidnight.difference(now).inSeconds;
+      if (total <= 0) {
+        resetCountdown.value = '00:00:00';
+        dailyLimitReached.value = false;
+        _resetTimer?.cancel();
+        return;
+      }
+      String two(int value) => value.toString().padLeft(2, '0');
+      resetCountdown.value =
+          '${two(total ~/ 3600)}:${two((total % 3600) ~/ 60)}:${two(total % 60)}';
+    }
+
+    tick();
+    _resetTimer = Timer.periodic(const Duration(seconds: 1), (_) => tick());
   }
 
   String get _effectiveSystemPrompt {

@@ -199,11 +199,6 @@
     color: #adbac7;
   }
   .empty { color: var(--muted); font-size: 12px; padding: 6px 0; }
-  .cache-chart { display: flex; align-items: flex-end; gap: 2px; height: 70px; padding-top: 4px; }
-  .cache-bar { flex: 1 1 auto; min-width: 2px; height: 2px; background: rgba(110,118,129,.25); border-radius: 2px 2px 0 0; }
-  .cache-bar.hit { background: var(--green); }
-  .cache-legend { display: flex; gap: 14px; margin-top: 8px; flex-wrap: wrap; color: var(--muted); font-size: 11.5px; }
-  .cache-total { color: var(--text); font-weight: 600; }
   .model-head {
     display: flex; align-items: center; justify-content: space-between;
     gap: 10px; margin-top: 12px; padding-top: 10px;
@@ -211,6 +206,31 @@
   }
   .model-head h3 { margin: 0; }
   .srv-key { color: var(--muted); font-size: 11.5px; }
+  /* Editor model per provider API: tabel ringkas, scroll horizontal di layar
+     sempit supaya field harga tetap terbaca. */
+  .ap-models { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+  .ap-model-head, .ap-model-row {
+    display: grid; min-width: 1040px; gap: 6px; align-items: center;
+    grid-template-columns: 1.5fr 1.7fr .7fr .7fr .7fr .7fr .7fr .7fr .7fr .5fr 34px;
+    padding: 6px 8px;
+  }
+  .ap-model-head {
+    background: #161b22; border-bottom: 1px solid var(--line);
+    color: var(--muted); font-size: 11px;
+  }
+  .ap-model-row { border-bottom: 1px solid var(--line); }
+  .ap-model-row:last-child { border-bottom: 0; }
+  .ap-model-row input[type="text"], .ap-model-row input[type="number"] {
+    padding: 5px 7px; font-size: 12px; min-width: 0;
+  }
+  .ap-model-row button { padding: 4px 8px; font-size: 12px; }
+  .ap-model-row .ap-on { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+  .ap-model-card { border-top: 1px solid var(--line); padding: 10px 0; }
+  .ap-model-card:first-child { border-top: 0; }
+  .ap-model-card .ap-model-line {
+    display: flex; justify-content: space-between; gap: 10px;
+    align-items: flex-start; padding: 4px 0;
+  }
   dialog {
     width: min(680px, 94vw); max-height: 90vh; overflow: auto;
     background: var(--card); color: var(--text);
@@ -249,6 +269,8 @@
         <span class="nav-label">Kelola</span>
         <button class="nav-item" data-view="server">
           <span class="ico">▤</span> Server &amp; model</button>
+        <button class="nav-item" data-view="providers">
+          <span class="ico">☁</span> Provider API</button>
         <button class="nav-item" data-view="accounts">
           <span class="ico">◎</span> Akun</button>
         <button class="nav-item" data-view="discord">
@@ -341,6 +363,15 @@
           <label for="loginTokens">Token login Discord</label>
           <input type="number" id="loginTokens" min="0" step="100000" placeholder="20000000">
           <div class="hint">Default: 20.000.000 (20M, bonus +10M saat login).</div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div>
+          <label for="dailyReqLimit">Batas request/hari per akun (semua model)</label>
+          <input type="number" id="dailyReqLimit" min="0" step="1"
+                 placeholder="0 = tanpa batas">
+          <div class="hint">Seperti RPM tapi per hari. 0 = tanpa batas.
+            Provider API eksternal bisa punya limit sendiri (lebih ketat).</div>
         </div>
       </div>
       <div style="margin-top:12px">
@@ -469,12 +500,106 @@ async with aiohttp.ClientSession() as session:<br>
       <div id="gatewayServerList">
         <div class="hint">Memuat server…</div>
       </div>
+    </div>
+    </section>
 
-      <h3 style="margin-top:20px">Cache model list (24 jam)</h3>
-      <div class="card" style="padding:12px 14px;margin-top:4px">
-        <div class="cache-chart" id="cacheChart"></div>
-        <div class="cache-legend" id="cacheLegend"></div>
-        <div class="hint" id="cacheStatsHint">Memuat statistik cache…</div>
+    <section class="view" id="view-providers">
+    <div class="card">
+      <h2>Provider API eksternal</h2>
+      <p class="hint" style="margin:0 0 12px">
+        Tambahkan provider AI lain hanya dengan <b>base URL</b> + <b>API key</b>
+        (mis. Cloudflare Workers AI). Model provider otomatis muncul di tab
+        Model List aplikasi dan request-nya lewat gateway — API key tidak
+        pernah dikirim ke user.</p>
+
+      <h3 id="apiProviderFormTitle" style="margin-top:10px">Tambah provider API</h3>
+      <div class="row">
+        <div>
+          <label for="apName">Nama provider (internal admin)</label>
+          <input type="text" id="apName" placeholder="Cloudflare Workers AI">
+          <div class="hint">Nama ini tidak tampil di aplikasi user.</div>
+        </div>
+        <div>
+          <label for="apBaseUrl">Base URL</label>
+          <input type="text" id="apBaseUrl"
+                 placeholder="https://api.cloudflare.com/client/v4/accounts/.../ai/run">
+          <div class="hint">Bisa URL lengkap <span class="mono">/ai/run/...</span>,
+            root <span class="mono">…/ai/run</span>, atau base URL
+            OpenAI-compatible (mis. <span class="mono">https://api.contoh.com/v1</span>).</div>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="apApiKey">API key</label>
+          <input type="password" id="apApiKey" autocomplete="new-password"
+                 placeholder="Bearer token provider">
+          <div class="hint" id="apApiKeyHint">Disimpan di server (KV), tidak
+            pernah dikirim ke aplikasi.</div>
+        </div>
+        <div>
+          <label for="apFormat">Format respons</label>
+          <select id="apFormat">
+            <option value="auto">Auto (deteksi Cloudflare/OpenAI)</option>
+            <option value="openai">OpenAI-compatible</option>
+            <option value="cloudflare">Cloudflare Workers AI</option>
+          </select>
+        </div>
+      </div>
+      <label>Tier yang boleh akses</label>
+      <div style="display:flex;gap:16px;margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:4px;color:var(--text);margin:0">
+          <input type="checkbox" id="apTierFree" checked> Free
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;color:var(--text);margin:0">
+          <input type="checkbox" id="apTierPro" checked> Pro
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;color:var(--text);margin:0">
+          <input type="checkbox" id="apTierVip" checked> VIP
+        </label>
+      </div>
+      <div style="margin:0 0 6px">
+        <label style="display:flex;align-items:center;gap:6px;color:var(--text);margin:0">
+          <input type="checkbox" id="apEnabled" checked>
+          Aktifkan provider
+        </label>
+      </div>
+
+      <h3 style="margin-top:16px">Model yang tampil di aplikasi</h3>
+      <p class="hint" style="margin:0 0 8px">
+        User hanya melihat <b>nama model</b>, bukan nama provider. Setiap model
+        punya context, max output, limit request/hari, dan harga sendiri —
+        matikan toggle <b>On</b> untuk menyembunyikan model tanpa menghapusnya.</p>
+      <div class="ap-models">
+        <div class="ap-model-head">
+          <span>Nama model (tampil ke user)</span>
+          <span>Model / endpoint ID</span>
+          <span>Context</span>
+          <span>Max out</span>
+          <span>Req/hari</span>
+          <span>In /1M</span>
+          <span>Out /1M</span>
+          <span>In /req</span>
+          <span>Out /req</span>
+          <span>On</span>
+          <span></span>
+        </div>
+        <div id="apModelRows"></div>
+      </div>
+      <div style="margin-top:8px">
+        <button type="button" id="addApiModel">+ Tambah model</button>
+      </div>
+
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="primary" id="saveApiProvider">Simpan provider</button>
+        <button id="testApiProvider">Tes koneksi</button>
+        <button id="resetApiProviderForm">Reset form</button>
+        <button id="refreshApiProviders">Refresh</button>
+      </div>
+      <div class="status" id="apiProviderStatus"></div>
+
+      <h3 style="margin-top:20px">Provider terdaftar</h3>
+      <div id="apiProviderList">
+        <div class="hint">Memuat provider…</div>
       </div>
     </div>
     </section>
@@ -708,6 +833,7 @@ let config = null;
 // View terakhir disimpan per-tab supaya reload tidak balik ke halaman awal.
 const ADMIN_VIEWS = {
   server: 'Server & model',
+  providers: 'Provider API',
   accounts: 'Akun',
   discord: 'Login Discord',
   tiers: 'Tier & kuota',
@@ -731,6 +857,11 @@ function showView(name) {
   sessionStorage.setItem('pb_admin_view', name);
   if (name === 'server') {
     loadGatewayData(true).then(() => loadAllManagers());
+  } else if (name === 'providers') {
+    if (!$('apModelRows').querySelector('.ap-model-row')) {
+      appendProviderModelRow({});
+    }
+    loadApiProviders();
   } else if (name === 'logs') {
     loadApiKeyLogs();
     loadUsageLogs();
@@ -815,6 +946,7 @@ async function loadConfig() {
     : 'Server memakai default: ' + DEFAULT_REDIRECT_URI;
   $('tiers').value = (config.tiers || []).join(', ');
   $('tokenResetDays').value = config.tokenResetDays ?? 1;
+  $('dailyReqLimit').value = config.dailyRequestLimit ?? 0;
   $('guestTokens').value = config.guestTokenBalance ?? 10000000;
   $('loginTokens').value = config.loginTokenBalance ?? 20000000;
   $('botSecretKey').value = '';
@@ -838,8 +970,6 @@ let gatewayServers = [];
 let serverModels = [];
 // Statistik prompt cache + pemakaian per model dari gateway (modelId → data).
 let modelStats = {};
-// Ringkasan cache 24 jam (global) dari /api/auth/cache-stats.
-let globalCache = { hitRate: 0, hours: [], hits: 0, misses: 0 };
 let managerTimer = null;
 let usageTimer = null;
 // serverId -> { ok, servers, error } dari daemon manager VPS tsb.
@@ -1161,6 +1291,8 @@ $('refreshView').addEventListener('click', async () => {
   if (currentView === 'server') {
     await loadGatewayData(true);
     await loadAllManagers();
+  } else if (currentView === 'providers') {
+    await loadApiProviders();
   }
 });
 
@@ -1249,6 +1381,7 @@ $('saveTiers').addEventListener('click', async () => {
     return;
   }
   const resetDays = Math.max(1, Number($('tokenResetDays').value) || 1);
+  const dailyReqLimit = Math.max(0, Number($('dailyReqLimit').value) || 0);
   const guestTokens = Math.max(0, Number($('guestTokens').value) || 10000000);
   const loginTokens = Math.max(0, Number($('loginTokens').value) || 20000000);
   try {
@@ -1256,6 +1389,7 @@ $('saveTiers').addEventListener('click', async () => {
       tiers,
       defaultTier: $('defaultTier').value,
       tokenResetDays: resetDays,
+      dailyRequestLimit: dailyReqLimit,
       guestTokenBalance: guestTokens,
       loginTokenBalance: loginTokens,
       defaultTokenBalance: loginTokens,
@@ -1503,38 +1637,6 @@ function nextServerId() {
   return 'server-' + n;
 }
 
-function renderCacheChart() {
-  const host = $('cacheChart');
-  const legend = $('cacheLegend');
-  const hint = $('cacheStatsHint');
-  if (!host) return;
-  const hours = globalCache.hours || [];
-  if (!hours.length) {
-    if (host) host.innerHTML = '<div class="hint">Belum ada data statistik cache.</div>';
-    if (legend) legend.innerHTML = '';
-    if (hint) hint.innerHTML = '';
-    return;
-  }
-  const max = Math.max(1, ...hours.map((h) => (h.hits || 0) + (h.misses || 0)));
-  host.innerHTML = hours.map((h) => {
-    const total = (h.hits || 0) + (h.misses || 0);
-    const rate = total > 0 ? Math.round((h.hits / total) * 100) : 0;
-    const hourNum = parseInt(String(h.hour || '0:00').split(':')[0], 10) || 0;
-    const heightPx = Math.max(2, Math.round((total / max) * 100)) + 'px';
-    const title = hourNum + ':00 — hit ' + (h.hits || 0) + ', miss ' + (h.misses || 0) +
-      ', rate ' + rate + '%';
-    const cls = 'cache-bar' + (rate >= 50 ? ' hit' : '');
-    return '<div class="' + cls + '" style="height:' + heightPx + '" title="' + title + '"></div>';
-  }).join('');
-  if (legend) {
-    legend.innerHTML = '<span class="cache-total">Hit rate 24 jam: ' + (globalCache.hitRate || 0) +
-      '%</span> · hit ' + (globalCache.hits || 0) + ' · miss ' + (globalCache.misses || 0) +
-      ' · ' + hours.length + ' jam terakhir';
-  }
-  if (hint) hint.innerHTML = 'Cache model list (dari /api/auth/cache-stats): grafik batang ' +
-    'berwarna hijau = jam dengan cache hitting ≥ 50%.';
-}
-
 function renderGatewayServers() {
   const list = $('gatewayServerList');
   if (!list) return;
@@ -1659,15 +1761,7 @@ async function loadGatewayData(silent) {
     for (const m of (stats && stats.models) || []) {
       if (m && m.modelId) modelStats[String(m.modelId)] = m;
     }
-    const cacheRes = await api('GET', '/api/auth/cache-stats').catch(() => null);
-    globalCache = {
-      hitRate: (cacheRes && cacheRes.hitRate) || 0,
-      hours: (cacheRes && cacheRes.hours) || [],
-      hits: (cacheRes && cacheRes.hits) || 0,
-      misses: (cacheRes && cacheRes.misses) || 0,
-    };
     renderGatewayServers();
-    renderCacheChart();
     if (!silent) {
       setStatus($('serverModelStatus'),
         gatewayServers.length + ' server · ' + serverModels.length + ' model', true);
@@ -2044,6 +2138,339 @@ $('gatewayServerList').addEventListener('click', async (ev) => {
 });
 
 // ── API Key Logs ────────────────────────────────────────────────────────
+
+// ── Provider API eksternal ─────────────────────────────────────────────
+// Admin cukup mengisi base URL + API key. Model provider tampil di aplikasi
+// sebagai `api:<id>`; request tetap lewat gateway supaya API key aman.
+let apiProviders = [];
+let editingProviderId = '';
+let apiModelSeq = 0;
+
+// Model efektif provider. Data KV format lama hanya punya satu `model`.
+function providerModelsOf(provider) {
+  if (Array.isArray(provider.models) && provider.models.length) {
+    return provider.models;
+  }
+  if (provider.model) {
+    return [{
+      key: 'default',
+      modelId: provider.model,
+      name: provider.name || provider.model,
+      contextSize: provider.contextSize || 0,
+      maxOutput: provider.maxOutput || 0,
+      dailyRequestLimit: provider.dailyRequestLimit || 0,
+      pricing: provider.pricing || {},
+      enabled: true,
+    }];
+  }
+  return [];
+}
+
+function providerModelRowHtml(model) {
+  const m = model || {};
+  const pricing = m.pricing || {};
+  const id = 'apm_' + (++apiModelSeq);
+  const input = (field, type, value, extra) =>
+    '<input type="' + type + '" data-f="' + field + '" value="' +
+    escapeAttr(value === undefined || value === null ? '' : value) + '"' +
+    (extra || '') + '>';
+  return '<div class="ap-model-row" data-row="' + id + '">' +
+    input('name', 'text', m.name || '', ' placeholder="Nama model"') +
+    input('modelId', 'text', m.modelId || '',
+      ' placeholder="@cf/moonshotai/kimi-k2.7-code"') +
+    input('contextSize', 'number', m.contextSize || 0, ' min="0" step="1" placeholder="0"') +
+    input('maxOutput', 'number', m.maxOutput || 0, ' min="0" step="1" placeholder="0"') +
+    input('dailyRequestLimit', 'number', m.dailyRequestLimit || 0,
+      ' min="0" step="1" placeholder="0"') +
+    input('inputPer1M', 'number', pricing.inputPer1M || 0, ' min="0" step="0.01" placeholder="0"') +
+    input('outputPer1M', 'number', pricing.outputPer1M || 0, ' min="0" step="0.01" placeholder="0"') +
+    input('inputPerReq', 'number', pricing.inputPerReq || 0, ' min="0" step="0.0001" placeholder="0"') +
+    input('outputPerReq', 'number', pricing.outputPerReq || 0, ' min="0" step="0.0001" placeholder="0"') +
+    '<label class="ap-on"><input type="checkbox" data-f="enabled"' +
+    (m.enabled !== false ? ' checked' : '') + '> On</label>' +
+    '<button type="button" data-ap-remove-row="' + id +
+    '" class="danger" title="Hapus model">×</button>' +
+    '</div>';
+}
+
+function appendProviderModelRow(model) {
+  $('apModelRows').insertAdjacentHTML('beforeend', providerModelRowHtml(model));
+}
+
+function collectProviderModels() {
+  const rows = Array.from(
+    $('apModelRows').querySelectorAll('.ap-model-row'));
+  return rows.map((row) => {
+    const get = (field) => row.querySelector('[data-f="' + field + '"]');
+    return {
+      name: get('name').value.trim(),
+      modelId: get('modelId').value.trim(),
+      contextSize: Math.max(0, Number(get('contextSize').value) || 0),
+      maxOutput: Math.max(0, Number(get('maxOutput').value) || 0),
+      dailyRequestLimit: Math.max(0, Number(get('dailyRequestLimit').value) || 0),
+      pricing: {
+        inputPer1M: Number(get('inputPer1M').value) || 0,
+        outputPer1M: Number(get('outputPer1M').value) || 0,
+        inputPerReq: Number(get('inputPerReq').value) || 0,
+        outputPerReq: Number(get('outputPerReq').value) || 0,
+      },
+      enabled: get('enabled').checked,
+    };
+  }).filter((m) => m.modelId);
+}
+
+function providerFormValues() {
+  return {
+    id: editingProviderId || undefined,
+    name: $('apName').value.trim(),
+    baseUrl: $('apBaseUrl').value.trim(),
+    apiKey: $('apApiKey').value.trim(),
+    format: $('apFormat').value,
+    models: collectProviderModels(),
+    tierAccess: [
+      $('apTierFree').checked ? 'free' : '',
+      $('apTierPro').checked ? 'pro' : '',
+      $('apTierVip').checked ? 'vip' : '',
+    ].filter(Boolean),
+    enabled: $('apEnabled').checked,
+  };
+}
+
+function resetApiProviderForm() {
+  editingProviderId = '';
+  $('apiProviderFormTitle').textContent = 'Tambah provider API';
+  $('saveApiProvider').textContent = 'Simpan provider';
+  $('apName').value = '';
+  $('apBaseUrl').value = '';
+  $('apApiKey').value = '';
+  $('apApiKey').placeholder = 'Bearer token provider';
+  $('apFormat').value = 'auto';
+  $('apTierFree').checked = true;
+  $('apTierPro').checked = true;
+  $('apTierVip').checked = true;
+  $('apEnabled').checked = true;
+  $('apModelRows').innerHTML = '';
+  appendProviderModelRow({});
+  $('apiProviderStatus').textContent = '';
+  $('apiProviderStatus').className = 'status';
+}
+
+function editApiProvider(id) {
+  const p = apiProviders.find((x) => String(x.id) === String(id));
+  if (!p) return;
+  editingProviderId = String(p.id);
+  $('apiProviderFormTitle').textContent = 'Edit provider: ' + (p.name || p.id);
+  $('saveApiProvider').textContent = 'Simpan perubahan';
+  $('apName').value = p.name || '';
+  $('apBaseUrl').value = p.baseUrl || '';
+  $('apApiKey').value = '';
+  $('apApiKey').placeholder = p.hasApiKey
+    ? 'Tersimpan — kosongkan = tidak diubah' : 'Bearer token provider';
+  $('apFormat').value = p.format || 'auto';
+  const tiers = p.tierAccess || ['free', 'pro', 'vip'];
+  $('apTierFree').checked = tiers.includes('free');
+  $('apTierPro').checked = tiers.includes('pro');
+  $('apTierVip').checked = tiers.includes('vip');
+  $('apEnabled').checked = p.enabled !== false;
+  const models = providerModelsOf(p);
+  $('apModelRows').innerHTML = '';
+  if (models.length) {
+    models.forEach((m) => appendProviderModelRow(m));
+  } else {
+    appendProviderModelRow({});
+  }
+  $('apiProviderStatus').textContent = '';
+  $('apiProviderStatus').className = 'status';
+  $('view-providers').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderApiProviders() {
+  const host = $('apiProviderList');
+  if (!host) return;
+  if (!apiProviders.length) {
+    host.innerHTML = '<div class="hint">Belum ada provider API. Isi base URL + ' +
+      'API key di form atas (mis. Cloudflare Workers AI), tambahkan model, ' +
+      'lalu tekan <b>Simpan provider</b>.</div>';
+    return;
+  }
+  host.innerHTML = apiProviders.map((p) => {
+    const enabled = p.enabled !== false;
+    const tiers = (p.tierAccess || []).join(', ') || '-';
+    const keyTag = p.hasApiKey
+      ? '<span class="tag on">API key ✓</span>'
+      : '<span class="tag off">API key kosong</span>';
+    const models = providerModelsOf(p);
+    const modelRows = models.map((m, index) => {
+      const on = m.enabled !== false;
+      const limit = Number(m.dailyRequestLimit) > 0
+        ? ' · limit ' + m.dailyRequestLimit + ' req/hari'
+        : '';
+      const price = pricingLabel({ pricing: m.pricing || {} });
+      return '<div class="ap-model-line">' +
+        '<div><b>' + escapeHtml(m.name || m.modelId) + '</b> ' +
+        '<span class="tag ' + (on ? 'on' : 'off') + '">' +
+        (on ? 'tampil' : 'disembunyikan') + '</span>' +
+        '<div class="meta mono">' + escapeHtml(m.modelId || '-') + '</div>' +
+        '<div class="meta">ctx ' + (m.contextSize || 0) +
+        ' · max ' + (m.maxOutput || 0) + limit +
+        ' · tier ' + escapeHtml(tiers) + '</div>' +
+        '<div class="price">' + escapeHtml(price) + '</div></div>' +
+        '<div class="actions">' +
+        '<button data-ap-toggle="' + escapeAttr(p.id + '|' + index) + '">' +
+        (on ? 'Matikan' : 'Aktifkan') + '</button>' +
+        '</div></div>';
+    }).join('');
+    return '<div class="ap-model-card">' +
+      '<div class="srv-head"><b>' + escapeHtml(p.name || p.id) + '</b> ' +
+      '<span class="tag ' + (enabled ? 'on' : 'off') + '">' +
+      (enabled ? 'provider aktif' : 'provider nonaktif') + '</span> ' +
+      keyTag + '</div>' +
+      '<div class="meta mono" style="color:var(--muted);font-size:11.5px">' +
+      escapeHtml(p.baseUrl || '-') + '</div>' +
+      '<div class="meta" style="color:var(--muted);font-size:11.5px">' +
+      'format ' + escapeHtml(p.format || 'auto') + ' · ' +
+      models.length + ' model</div>' +
+      (modelRows || '<div class="empty">Belum ada model.</div>') +
+      '<div class="srv-actions">' +
+      '<button data-ap-edit="' + escapeAttr(p.id) + '">Edit provider</button>' +
+      '<button data-ap-delete="' + escapeAttr(p.id) + '" class="danger">Hapus</button>' +
+      '</div></div>';
+  }).join('');
+}
+
+// Simpan perubahan cepat (mis. on/off satu model) dengan API key lama yang
+// tetap tersimpan di server (apiKey kosong = tidak diubah).
+async function saveProvider(payload) {
+  await api('POST', '/api/admin/api-providers', payload);
+  await loadApiProviders();
+  await loadGatewayData(true).catch(() => {});
+}
+
+async function loadApiProviders() {
+  try {
+    const data = await api('GET', '/api/admin/api-providers');
+    apiProviders = data.providers || [];
+    renderApiProviders();
+  } catch (e) {
+    setStatus($('apiProviderStatus'), String(e.message || e), false);
+  }
+}
+
+$('addApiModel').addEventListener('click', () => appendProviderModelRow({}));
+
+$('apModelRows').addEventListener('click', (ev) => {
+  const rowId = ev.target.getAttribute('data-ap-remove-row');
+  if (!rowId) return;
+  const row = $('apModelRows').querySelector('[data-row="' + rowId + '"]');
+  if (row) row.remove();
+  if (!$('apModelRows').querySelector('.ap-model-row')) {
+    appendProviderModelRow({});
+  }
+});
+
+$('saveApiProvider').addEventListener('click', async () => {
+  const values = providerFormValues();
+  if (!values.baseUrl || !/^https?:\/\//i.test(values.baseUrl)) {
+    setStatus($('apiProviderStatus'),
+      'Base URL wajib diisi dan diawali http:// atau https://.', false);
+    return;
+  }
+  if (!values.models.length) {
+    setStatus($('apiProviderStatus'),
+      'Tambahkan minimal satu model (isi kolom Model / endpoint ID).', false);
+    return;
+  }
+  if (!values.tierAccess.length) {
+    setStatus($('apiProviderStatus'),
+      'Pilih minimal satu tier yang boleh akses.', false);
+    return;
+  }
+  try {
+    const data = await api('POST', '/api/admin/api-providers', values);
+    const savedName = (data.provider && data.provider.name) || values.name;
+    await loadApiProviders();
+    resetApiProviderForm();
+    setStatus($('apiProviderStatus'),
+      'Provider disimpan: ' + savedName + '. ' + values.models.length +
+      ' model kini muncul di Model List aplikasi.', true);
+    await loadGatewayData(true).catch(() => {});
+  } catch (e) {
+    setStatus($('apiProviderStatus'), String(e.message || e), false);
+  }
+});
+
+$('testApiProvider').addEventListener('click', async () => {
+  const values = providerFormValues();
+  if (!values.models.length) {
+    setStatus($('apiProviderStatus'),
+      'Isi minimal satu model sebelum mengetes koneksi.', false);
+    return;
+  }
+  setStatus($('apiProviderStatus'), 'Menguji koneksi ke provider…', null);
+  try {
+    const data = await api('POST', '/api/admin/api-providers/test', values);
+    if (data.ok) {
+      setStatus($('apiProviderStatus'),
+        'Koneksi OK (HTTP ' + data.status + '). ' +
+        (data.preview ? data.preview.slice(0, 120) : ''), true);
+    } else {
+      setStatus($('apiProviderStatus'),
+        'Provider membalas HTTP ' + data.status + '. ' +
+        (data.preview ? data.preview.slice(0, 160) : ''), false);
+    }
+  } catch (e) {
+    setStatus($('apiProviderStatus'), String(e.message || e), false);
+  }
+});
+
+$('resetApiProviderForm').addEventListener('click', resetApiProviderForm);
+$('refreshApiProviders').addEventListener('click', loadApiProviders);
+
+$('apiProviderList').addEventListener('click', async (ev) => {
+  const editId = ev.target.getAttribute('data-ap-edit');
+  if (editId) {
+    editApiProvider(editId);
+    return;
+  }
+  const toggle = ev.target.getAttribute('data-ap-toggle');
+  if (toggle) {
+    const [providerId, indexRaw] = toggle.split('|');
+    const p = apiProviders.find((x) => String(x.id) === String(providerId));
+    if (!p) return;
+    const models = providerModelsOf(p).map((m, index) => ({
+      ...m,
+      enabled: index === Number(indexRaw) ? m.enabled === false : m.enabled !== false,
+    }));
+    try {
+      await saveProvider({
+        id: p.id,
+        name: p.name,
+        baseUrl: p.baseUrl,
+        apiKey: '',
+        format: p.format,
+        tierAccess: p.tierAccess,
+        enabled: p.enabled !== false,
+        models,
+      });
+      setStatus($('apiProviderStatus'),
+        'Status model diperbarui.', true);
+    } catch (e) {
+      setStatus($('apiProviderStatus'), String(e.message || e), false);
+    }
+    return;
+  }
+  const delId = ev.target.getAttribute('data-ap-delete');
+  if (!delId) return;
+  if (!confirm('Hapus provider ini? Semua modelnya akan hilang dari aplikasi.')) return;
+  try {
+    await api('DELETE', '/api/admin/api-providers/' + encodeURIComponent(delId));
+    if (editingProviderId === delId) resetApiProviderForm();
+    await loadApiProviders();
+    setStatus($('apiProviderStatus'), 'Provider dihapus.', true);
+  } catch (e) {
+    setStatus($('apiProviderStatus'), String(e.message || e), false);
+  }
+});
 
 async function loadApiKeyLogs() {
   try {
