@@ -791,16 +791,40 @@ class ModelView extends GetView<ModelController> {
     });
   }
 
-  /// Ringkasan pemakaian + prompt cache untuk satu model.
-  static String _cacheSummary(ModelUsageStat stat) {
-    if (stat.requests <= 0 && stat.hits <= 0 && stat.misses <= 0) {
-      return 'Belum dipakai';
+  /// Teks sisa request harian untuk satu model (counter gateway per akun).
+  static String _quotaLabel(
+    DailyRequestQuota? quota,
+    int limit,
+    int? remaining,
+  ) {
+    if (quota == null) {
+      if (limit > 0) {
+        return 'Limit ${_fmtThousands(limit)} req/hari · login untuk lihat sisa';
+      }
+      return 'Login Discord untuk melihat sisa request harian';
     }
-    final rate = stat.hitRate.toStringAsFixed(0);
-    final speed = stat.tokensPerSec > 0 ? ' · tok/s ${stat.tokensPerSec}' : '';
-    return 'Pemakaian ${_fmtThousands(stat.requests)}x · cache $rate% · '
-        'hit ${_fmtThousands(stat.hits)} / miss ${_fmtThousands(stat.misses)}'
-        '$speed';
+    if (remaining == null) return 'Jatah ${_fmtThousands(limit)} req/hari';
+    if (remaining <= 0) {
+      final reset = _countdown(quota.untilReset);
+      return reset.isEmpty
+          ? 'Sisa 0/${_fmtThousands(limit)} request hari ini'
+          : 'Sisa 0/${_fmtThousands(limit)} request · reset $reset';
+    }
+    return 'Sisa ${_fmtThousands(remaining)}/${_fmtThousands(limit)} '
+        'request hari ini';
+  }
+
+  /// Hitung mundur singkat, contoh `3j 12m` atau `12m 5d`.
+  static String _countdown(Duration? duration) {
+    if (duration == null) return '';
+    final d = duration.isNegative ? Duration.zero : duration;
+    final days = d.inDays;
+    final hours = d.inHours % 24;
+    final minutes = d.inMinutes % 60;
+    if (days > 0) return '$days hari $hours jam';
+    if (hours > 0) return '${hours}j ${minutes}m';
+    if (minutes > 0) return '${minutes}m';
+    return '${d.inSeconds}d';
   }
 
   /// Angka dengan pemisah ribuan, contoh: 32,768.
@@ -835,9 +859,14 @@ class ModelView extends GetView<ModelController> {
     final specs = [
       if (model.contextSize > 0) 'Context ${_fmtThousands(model.contextSize)}',
       if (model.maxOutput > 0) 'Max output ${_fmtThousands(model.maxOutput)}',
-      if (model.dailyRequestLimit > 0)
-        'Limit ${_fmtThousands(model.dailyRequestLimit)} req/hari',
     ].join(' · ');
+
+    // Sisa request harian akun (kalau sudah login). Limit per model menimpa
+    // limit akun, sama seperti aturan gateway.
+    final quota = config.requestQuota.value;
+    final quotaLimit =
+        quota?.limitFor(model.dailyRequestLimit) ?? model.dailyRequestLimit;
+    final quotaRemaining = quota?.remainingFor(model.dailyRequestLimit);
 
     return InkWell(
       onTap: () => _selectAdminModel(context, model),
@@ -903,27 +932,71 @@ class ModelView extends GetView<ModelController> {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ],
-                  // Pemakaian & prompt cache model ini (dihitung gateway):
-                  // bar cache (hit rate) + tok/s real-time dari server.
-                  if (stat != null) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      _cacheSummary(stat),
-                      style: t.small.copyWith(
-                        color: stat.requests > 0 ? t.text : t.muted,
+                  // Sisa request harian akun ini (counter gateway per akun).
+                  const SizedBox(height: 3),
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.speed_rounded,
+                        size: 13,
+                        color: quotaRemaining == 0 ? t.orange : t.muted,
                       ),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          _quotaLabel(quota, quotaLimit, quotaRemaining),
+                          style: t.small.copyWith(
+                            color: quotaRemaining == 0
+                                ? t.orange
+                                : (quotaRemaining != null ? t.text : t.muted),
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                  // Grafik cache rate 24 jam (bukan teks) + ringkasan hit/miss.
+                  if (stat != null) ...[
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Text(
+                          'Cache 24 jam',
+                          style: t.small.copyWith(color: t.muted),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: SizedBox(
+                            height: 26,
+                            child: _ModelCacheChart(hours: stat.hourly),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          stat.used
+                              ? '${stat.hitRate.toStringAsFixed(0)}%'
+                              : '—',
+                          style: t.small.copyWith(
+                            color: !stat.used
+                                ? t.muted
+                                : (stat.hitRate >= 50 ? t.green : t.orange),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      stat.used
+                          ? '${_fmtThousands(stat.requests)} request · '
+                              '${_fmtThousands(stat.hits)} hit · '
+                              '${_fmtThousands(stat.misses)} miss'
+                              '${stat.tokensPerSec > 0 ? ' · ${stat.tokensPerSec} tok/s' : ''}'
+                          : 'Grafik cache muncul setelah model dipakai',
+                      style: t.small.copyWith(color: t.muted),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 4),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(2),
-                      child: LinearProgressIndicator(
-                        value: stat.hitRate / 100,
-                        minHeight: 3,
-                        backgroundColor: t.fill,
-                        color: stat.hitRate >= 50 ? t.green : t.orange,
-                      ),
                     ),
                   ],
                 ],
@@ -2972,5 +3045,74 @@ class _ModelAvatar extends StatelessWidget {
           ),
       ]),
     );
+  }
+}
+
+/// Grafik batang cache rate 24 jam untuk satu model.
+///
+/// Tiap batang = satu jam; tinggi batang mengikuti persentase prompt yang
+/// dilayani dari cache, warnanya hijau (>=50%) / oranye (<50%). Jam tanpa
+/// pemakaian tampil sebagai garis tipis netral supaya grafik tetap stabil.
+class _ModelCacheChart extends StatelessWidget {
+  const _ModelCacheChart({required this.hours});
+
+  final List<CacheHourStat> hours;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    if (hours.isEmpty) {
+      return Container(
+        height: 26,
+        decoration: BoxDecoration(
+          color: t.fill,
+          borderRadius: BorderRadius.circular(4),
+        ),
+      );
+    }
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        for (final bucket in hours)
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 1),
+              child: Tooltip(
+                message: '${bucket.label} | '
+                    '${bucket.hitRate.toStringAsFixed(0)}% cache | '
+                    '${bucket.hits} hit / ${bucket.misses} miss',
+                child: SizedBox(
+                  height: 26,
+                  child: Align(
+                    alignment: Alignment.bottomCenter,
+                    child: FractionallySizedBox(
+                      heightFactor: _heightFactor(bucket),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: bucket.total == 0
+                              ? t.hairline
+                              : Color.lerp(
+                                  t.orange,
+                                  t.green,
+                                  (bucket.hitRate / 100).clamp(0.0, 1.0),
+                                ),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// Tinggi relatif: jam kosong = garis tipis, jam terpakai mengikuti hit rate.
+  static double _heightFactor(CacheHourStat bucket) {
+    if (bucket.total == 0) return 0.08;
+    final ratio = (bucket.hitRate / 100).clamp(0.0, 1.0);
+    return 0.16 + ratio * 0.84;
   }
 }

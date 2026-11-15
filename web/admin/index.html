@@ -393,9 +393,10 @@
         <div>
           <label for="dailyReqLimit">Batas request/hari per akun (semua model)</label>
           <input type="number" id="dailyReqLimit" min="0" step="1"
-                 placeholder="0 = tanpa batas">
-          <div class="hint">Seperti RPM tapi per hari. 0 = tanpa batas.
-            Provider API eksternal bisa punya limit sendiri (lebih ketat).</div>
+                 placeholder="20 = default">
+          <div class="hint">Jatah request tiap akun per hari. Default
+            <b>20 request</b> — isi 0 untuk memakai default ini. Provider API
+            eksternal bisa punya limit sendiri (lebih ketat).</div>
         </div>
       </div>
       <div style="margin-top:12px">
@@ -567,7 +568,9 @@ async with aiohttp.ClientSession() as session:<br>
         </div>
         <div class="hint" style="margin-top:6px">
           Bingung? Pilih <b>Auto</b> — sistem memilih endpoint yang benar dari
-          base URL + model ID, lalu menampilkan URL akhirnya di bawah.</div>
+          base URL + model ID, lalu menampilkan URL akhirnya di bawah.
+          Jatah request akun default <b>20/hari</b>; context model baru
+          otomatis <b>1.000.000</b> (tinggal disesuaikan).</div>
       </div>
 
       <h3 id="apiProviderFormTitle" style="margin-top:16px">Tambah provider API</h3>
@@ -641,9 +644,13 @@ async with aiohttp.ClientSession() as session:<br>
 
       <h3 style="margin-top:16px">Model yang tampil di aplikasi</h3>
       <p class="hint" style="margin:0 0 8px">
-        User hanya melihat <b>nama model</b>, bukan nama provider. Setiap model
-        punya context, max output, limit request/hari, dan harga sendiri —
-        matikan toggle <b>On</b> untuk menyembunyikan model tanpa menghapusnya.</p>
+        User hanya melihat <b>nama model</b>, bukan nama provider. Isi
+        <b>Context</b> &amp; <b>Max out</b> sesuai spesifikasi model dari
+        provider (context model besar umumnya <span class="mono">1.000.000</span>).
+        <b>Req/hari</b> kosong = ikut batas akun (default <b>20 request/hari</b>).
+        Harga <b>In/Out</b> biarkan <b>0</b> kalau model memakai kuota token —
+        isi harga hanya kalau model itu memotong <b>kredit</b>. Matikan toggle
+        <b>On</b> untuk menyembunyikan model tanpa menghapusnya.</p>
       <div class="ap-models">
         <div class="ap-model-head">
           <span>Nama model (tampil ke user)</span>
@@ -2246,6 +2253,14 @@ function providerModelRowHtml(model) {
   const m = model || {};
   const pricing = m.pricing || {};
   const id = 'apm_' + (++apiModelSeq);
+  // Model baru: context & max output diisi nilai umum provider (context 1M),
+  // admin tinggal menyesuaikan dengan spesifikasi modelnya. Harga input/output
+  // dibiarkan 0 supaya model memakai kuota token, bukan kredit.
+  const isNew = !m.modelId && !m.name;
+  const contextValue = m.contextSize === undefined || m.contextSize === null
+    ? (isNew ? 1000000 : 0) : m.contextSize;
+  const maxOutputValue = m.maxOutput === undefined || m.maxOutput === null
+    ? (isNew ? 8192 : 0) : m.maxOutput;
   const input = (field, type, value, extra) =>
     '<input type="' + type + '" data-f="' + field + '" value="' +
     escapeAttr(value === undefined || value === null ? '' : value) + '"' +
@@ -2253,11 +2268,13 @@ function providerModelRowHtml(model) {
   return '<div class="ap-model-row" data-row="' + id + '">' +
     input('name', 'text', m.name || '', ' placeholder="Nama model"') +
     input('modelId', 'text', m.modelId || '',
-      ' placeholder="@cf/moonshotai/kimi-k2.7-code"') +
-    input('contextSize', 'number', m.contextSize || 0, ' min="0" step="1" placeholder="0"') +
-    input('maxOutput', 'number', m.maxOutput || 0, ' min="0" step="1" placeholder="0"') +
+      ' placeholder="@cf/moonshotai/kimi-k2.6"') +
+    input('contextSize', 'number', contextValue,
+      ' min="0" step="1" placeholder="1000000"') +
+    input('maxOutput', 'number', maxOutputValue,
+      ' min="0" step="1" placeholder="8192"') +
     input('dailyRequestLimit', 'number', m.dailyRequestLimit || 0,
-      ' min="0" step="1" placeholder="0"') +
+      ' min="0" step="1" placeholder="20"') +
     input('inputPer1M', 'number', pricing.inputPer1M || 0, ' min="0" step="0.01" placeholder="0"') +
     input('outputPer1M', 'number', pricing.outputPer1M || 0, ' min="0" step="0.01" placeholder="0"') +
     input('inputPerReq', 'number', pricing.inputPerReq || 0, ' min="0" step="0.0001" placeholder="0"') +

@@ -750,3 +750,136 @@ test('stream Cloudflare yang dibungkus result tetap jadi delta OpenAI', async ()
     restore();
   }
 });
+
+// ── Jatah request harian + grafik cache per model ───────────────────────
+
+function okProviderFetch(counter) {
+  return mockFetch(async () => {
+    if (counter) counter.calls++;
+    return new Response(JSON.stringify({
+      success: true,
+      result: { response: 'ok' },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  });
+}
+
+test('default 20 request/hari per akun saat config 0', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+  seedProvider(store);
+  // Admin menyimpan limit 0 → tetap memakai default 20, bukan tanpa batas.
+  store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
+
+  const counter = { calls: 0 };
+  const restore = okProviderFetch(counter);
+  try {
+    for (let i = 0; i < 20; i++) {
+      const res = await chat(env);
+      assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
+    }
+    const blocked = await chat(env);
+    const body = await blocked.json();
+    assert.equal(blocked.status, 429);
+    assert.equal(body.limit, 20);
+    assert.equal(body.used, 20);
+    assert.match(body.error, /request\/hari/i);
+    assert.equal(counter.calls, 20, 'request ke-21 tidak boleh ke provider');
+  } finally {
+    restore();
+  }
+});
+
+test('endpoint request-quota mengembalikan sisa request akun', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+  seedProvider(store, { dailyRequestLimit: 5 });
+
+  const restore = okProviderFetch();
+  try {
+    await chat(env);
+    await chat(env);
+  } finally {
+    restore();
+  }
+
+  const res = await call(env, '/api/auth/request-quota', {
+    headers: { Authorization: `Bearer ${SESSION}` },
+  });
+  const body = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(body.limit, 20, 'limit akun default 20');
+  assert.equal(body.used, 2);
+  assert.equal(body.remaining, 18);
+  assert.equal(body.date, new Date().toISOString().slice(0, 10));
+  assert.ok(body.resetAt > Date.now());
+});
+
+test('request-quota menolak request tanpa sesi/API key', async () => {
+  const { env } = makeEnv();
+  const res = await call(env, '/api/auth/request-quota');
+  assert.equal(res.status, 401);
+});
+
+test('statistik cache per model memuat grafik 24 jam', async () => {
+  const { store, env } = makeEnv();
+  const hourKey = new Date().toISOString().slice(0, 13);
+  store.set('model_stats', JSON.stringify({
+    [MODEL_ID]: {
+      requests: 3,
+      hits: 2,
+      misses: 1,
+      promptTokens: 30,
+      cachedTokens: 20,
+      completionTokens: 5,
+      tokensPerSec: 12,
+      lastUsedAt: Date.now(),
+      hours: { [hourKey]: { hits: 2, misses: 1 } },
+    },
+  }));
+
+  const res = await call(env, '/api/auth/cache-stats');
+  const body = await res.json();
+  const row = body.models.find((m) => m.modelId === MODEL_ID);
+  assert.ok(row, 'baris statistik model harus ada');
+  assert.equal(row.hours.length, 24);
+  const current = row.hours[row.hours.length - 1];
+  assert.equal(current.hits, 2);
+  assert.equal(current.misses, 1);
+  assert.equal(current.hitRate, 66.7);
+  // Bucket lama tetap kosong (grafik tidak bolong).
+  assert.equal(row.hours[0].hits, 0);
+});
+
+test('token cache provider dicatat untuk grafik per model', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+  seedProvider(store);
+
+  const restore = mockFetch(async () => new Response(JSON.stringify({
+    choices: [{
+      index: 0,
+      message: { role: 'assistant', content: 'hi' },
+      finish_reason: 'stop',
+    }],
+    usage: {
+      prompt_tokens: 10,
+      completion_tokens: 2,
+      prompt_tokens_details: { cached_tokens: 6 },
+    },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+  try {
+    const res = await chat(env);
+    assert.equal(res.status, 200);
+  } finally {
+    restore();
+  }
+
+  const stats = JSON.parse(store.get('model_stats'));
+  const entry = stats[MODEL_ID];
+  assert.equal(entry.cachedTokens, 6);
+  assert.equal(entry.hits, 1);
+  assert.equal(entry.misses, 0);
+  const hourKey = new Date().toISOString().slice(0, 13);
+  assert.equal(entry.hours[hourKey].hits, 1);
+});
+

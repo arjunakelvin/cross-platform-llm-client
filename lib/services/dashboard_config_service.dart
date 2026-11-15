@@ -117,6 +117,7 @@ class ModelUsageStat {
     required this.completionTokens,
     required this.tokensPerSec,
     required this.lastUsedAt,
+    this.hourly = const <CacheHourStat>[],
   });
 
   final String modelId;
@@ -130,10 +131,15 @@ class ModelUsageStat {
   final int tokensPerSec;
   final DateTime? lastUsedAt;
 
+  /// Riwayat cache rate 24 jam terakhir (satu bucket per jam) untuk grafik
+  /// di Model List.
+  final List<CacheHourStat> hourly;
+
   bool get used => requests > 0 || hits > 0 || misses > 0;
 
   factory ModelUsageStat.fromMap(Map<String, dynamic> map) {
     final lastUsed = (map['lastUsedAt'] as num?)?.toInt() ?? 0;
+    final rawHours = map['hours'];
     return ModelUsageStat(
       modelId: (map['modelId'] ?? '').toString(),
       requests: (map['requests'] as num?)?.toInt() ?? 0,
@@ -146,6 +152,99 @@ class ModelUsageStat {
       tokensPerSec: (map['tokensPerSec'] as num?)?.toInt() ?? 0,
       lastUsedAt:
           lastUsed > 0 ? DateTime.fromMillisecondsSinceEpoch(lastUsed) : null,
+      hourly: rawHours is List
+          ? rawHours
+              .whereType<Map>()
+              .map((e) => CacheHourStat.fromMap(Map<String, dynamic>.from(e)))
+              .toList()
+          : const <CacheHourStat>[],
+    );
+  }
+}
+
+/// Satu bucket jam pada grafik cache rate model.
+class CacheHourStat {
+  const CacheHourStat({
+    required this.label,
+    required this.hits,
+    required this.misses,
+    required this.hitRate,
+  });
+
+  /// Label jam, contoh `14:00`.
+  final String label;
+  final int hits;
+  final int misses;
+  final double hitRate;
+
+  int get total => hits + misses;
+
+  factory CacheHourStat.fromMap(Map<String, dynamic> map) {
+    final hits = (map['hits'] as num?)?.toInt() ?? 0;
+    final misses = (map['misses'] as num?)?.toInt() ?? 0;
+    final total = hits + misses;
+    return CacheHourStat(
+      label: (map['hour'] ?? '').toString(),
+      hits: hits,
+      misses: misses,
+      hitRate: (map['hitRate'] as num?)?.toDouble() ??
+          (total > 0 ? (hits / total) * 100 : 0),
+    );
+  }
+}
+
+/// Jatah request harian satu akun (dihitung gateway).
+///
+/// Counter disimpan per akun per tanggal UTC, jadi `used` berlaku untuk semua
+/// model. Limit per model (kalau admin mengisinya) menimpa limit akun.
+class DailyRequestQuota {
+  const DailyRequestQuota({
+    required this.date,
+    required this.limit,
+    required this.used,
+    required this.remaining,
+    required this.resetAt,
+  });
+
+  final String date;
+  final int limit;
+  final int used;
+  final int remaining;
+  final DateTime? resetAt;
+
+  bool get exhausted => remaining <= 0;
+
+  /// Limit yang berlaku untuk satu model.
+  int limitFor(int modelLimit) => modelLimit > 0 ? modelLimit : limit;
+
+  /// Sisa request untuk satu model.
+  int remainingFor(int modelLimit) {
+    final max = limitFor(modelLimit);
+    final left = max - used;
+    return left < 0 ? 0 : left;
+  }
+
+  /// Hitung mundur ke reset berikutnya (UTC tengah malam).
+  Duration? get untilReset {
+    final at = resetAt;
+    if (at == null) return null;
+    final diff = at.difference(DateTime.now());
+    return diff.isNegative ? Duration.zero : diff;
+  }
+
+  factory DailyRequestQuota.fromMap(Map<String, dynamic> map) {
+    final limit = (map['limit'] as num?)?.toInt() ?? 0;
+    final used = (map['used'] as num?)?.toInt() ?? 0;
+    final remaining = (map['remaining'] as num?)?.toInt() ??
+        (limit - used < 0 ? 0 : limit - used);
+    final resetAtMs = (map['resetAt'] as num?)?.toInt() ?? 0;
+    return DailyRequestQuota(
+      date: (map['date'] ?? '').toString(),
+      limit: limit,
+      used: used,
+      remaining: remaining,
+      resetAt:
+          resetAtMs > 0 ? DateTime.fromMillisecondsSinceEpoch(resetAtMs) : null,
     );
   }
 }
@@ -237,10 +336,19 @@ class DashboardConfigService extends GetxService {
   /// Statistik pemakaian + prompt cache per model (kunci = modelId).
   final modelStats = <String, ModelUsageStat>{}.obs;
 
+  /// Sisa request harian akun yang sedang login (dari gateway). `null` =
+  /// belum login / belum termuat — aplikasi hanya menampilkan limit model.
+  final requestQuota = Rxn<DailyRequestQuota>();
+
   /// Refresh otomatis statistik cache/pemakaian tiap 20 dtk (tanpa perlu
   /// refresh manual) supaya grafik cache di Model List tetap "real-time".
   Timer? _cacheRefreshTimer;
   static const Duration cacheRefreshInterval = Duration(seconds: 20);
+
+  /// Sisa request harian cukup diperbarui tiap menit (counter berubah hanya
+  /// saat user mengirim chat).
+  Timer? _quotaRefreshTimer;
+  static const Duration quotaRefreshInterval = Duration(seconds: 60);
 
   void startCacheAutoRefresh() {
     stopCacheAutoRefresh();
@@ -251,11 +359,20 @@ class DashboardConfigService extends GetxService {
         // Auto-refresh tidak boleh mengganggu UI.
       }
     });
+    _quotaRefreshTimer = Timer.periodic(quotaRefreshInterval, (_) async {
+      try {
+        await refreshRequestQuota();
+      } catch (_) {
+        // Auto-refresh tidak boleh mengganggu UI.
+      }
+    });
   }
 
   void stopCacheAutoRefresh() {
     _cacheRefreshTimer?.cancel();
     _cacheRefreshTimer = null;
+    _quotaRefreshTimer?.cancel();
+    _quotaRefreshTimer = null;
   }
 
   /// Perbarui tok/s terkini (dari event usage stream gateway) untuk satu
@@ -274,6 +391,7 @@ class DashboardConfigService extends GetxService {
       completionTokens: existing?.completionTokens ?? 0,
       tokensPerSec: tokensPerSec.toInt(),
       lastUsedAt: existing?.lastUsedAt,
+      hourly: existing?.hourly ?? const <CacheHourStat>[],
     );
   }
 
@@ -326,6 +444,7 @@ class DashboardConfigService extends GetxService {
         await _applyAiServerUrl(data, force: false);
       }
       await refreshCacheStats();
+      await refreshRequestQuota();
       // Statistik cache/pemakaian per model di-refresh otomatis tiap 20 dtk
       // supaya chart & tok/s di Model List tidak perlu refresh manual.
       startCacheAutoRefresh();
@@ -365,6 +484,36 @@ class DashboardConfigService extends GetxService {
       modelStats.assignAll(parsed);
     } catch (_) {
       // Statistik bersifat tambahan; kegagalan tidak mengganggu config.
+    }
+  }
+
+  /// Sisa request harian akun (dari gateway). Butuh sesi login atau API key
+  /// user; kalau belum login, kuota dibiarkan kosong dan UI hanya menampilkan
+  /// limit per model.
+  Future<void> refreshRequestQuota() async {
+    final token =
+        (_hive.getSetting<String>(AppConstants.keyDiscordSessionToken) ?? '')
+            .trim();
+    if (token.isEmpty) {
+      requestQuota.value = null;
+      return;
+    }
+    try {
+      final res = await http.get(
+        Uri.parse('$_origin/api/auth/request-quota'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 15));
+      if (res.statusCode == 401 || res.statusCode == 403) {
+        requestQuota.value = null;
+        return;
+      }
+      if (res.statusCode != 200) return;
+      final data = jsonDecode(res.body);
+      if (data is! Map) return;
+      requestQuota.value =
+          DailyRequestQuota.fromMap(Map<String, dynamic>.from(data));
+    } catch (_) {
+      // Info sisa request bersifat tambahan; gagal muat tidak mengganggu app.
     }
   }
 

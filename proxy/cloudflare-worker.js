@@ -38,6 +38,11 @@ const ALLOWED_ORIGINS = new Set([
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 const CONFIG_KEY = 'config';
 
+// Batas request harian bawaan **per akun**. Admin bisa mengubah angka ini di
+// dashboard (Tier & kuota). Nilai 0 / kosong tetap memakai default ini supaya
+// setiap akun punya jatah yang jelas — bukan tanpa batas.
+const DEFAULT_DAILY_REQUEST_LIMIT = 20;
+
 const DEFAULT_CONFIG = {
   discord: { enabled: false, clientId: '', clientSecret: '', redirectUri: '' },
   tiers: ['free', 'pro', 'vip'],
@@ -45,9 +50,9 @@ const DEFAULT_CONFIG = {
   guestTokenBalance: 10000000, // 10M tanpa login
   loginTokenBalance: 20000000, // 20M setelah login Discord (10M + bonus 10M)
   tokenResetDays: 1, // durasi reset token (hari), bisa diubah di dashboard
-  // Batas request per akun per hari untuk SEMUA model gateway (0 = tanpa
-  // batas). Bisa dioverride per provider API eksternal.
-  dailyRequestLimit: 0,
+  // Batas request per akun per hari untuk SEMUA model gateway (default 20).
+  // Bisa dioverride per provider API eksternal lewat limit model.
+  dailyRequestLimit: DEFAULT_DAILY_REQUEST_LIMIT,
   botSecretKey: '', // optional secret for Discord bot API verification
   aiServerUrl: '',
   localCloudKey: '',
@@ -221,6 +226,9 @@ function emptyModelStat() {
     completionTokens: 0,
     tokensPerSec: 0,
     lastUsedAt: 0,
+    // Riwayat per jam (`YYYY-MM-DDTHH` → {hits, misses}) untuk grafik cache
+    // rate di Model List aplikasi.
+    hours: {},
   };
 }
 
@@ -243,11 +251,27 @@ async function recordModelUsage(env, modelId, sample = {}) {
     // Hit = prompt-nya sebagian/utuh dipakai ulang dari cache. Kalau backend
     // tidak melaporkan jumlah token, request tetap dihitung tapi tidak
     // mengubah rasio hit/miss.
-    if (promptTokens > 0) {
-      if (cachedTokens > 0) entry.hits = (Number(entry.hits) || 0) + 1;
+    const judged = promptTokens > 0;
+    const hit = judged && cachedTokens > 0;
+    if (judged) {
+      if (hit) entry.hits = (Number(entry.hits) || 0) + 1;
       else entry.misses = (Number(entry.misses) || 0) + 1;
     }
     entry.lastUsedAt = Date.now();
+    // Riwayat 48 jam terakhir untuk grafik: hit/miss per jam.
+    if (judged) {
+      const hour = new Date().toISOString().slice(0, 13);
+      const buckets = (entry.hours && typeof entry.hours === 'object')
+        ? entry.hours
+        : {};
+      const bucket = buckets[hour] || { hits: 0, misses: 0 };
+      if (hit) bucket.hits = (Number(bucket.hits) || 0) + 1;
+      else bucket.misses = (Number(bucket.misses) || 0) + 1;
+      buckets[hour] = bucket;
+      const keys = Object.keys(buckets).sort();
+      while (keys.length > 48) delete buckets[keys.shift()];
+      entry.hours = buckets;
+    }
     stats[id] = entry;
     // Jaga ukuran KV: simpan hanya model yang paling baru dipakai.
     const ids = Object.keys(stats);
@@ -262,6 +286,30 @@ async function recordModelUsage(env, modelId, sample = {}) {
   } catch (_) {
     // Statistik tidak boleh menggagalkan request.
   }
+}
+
+/// Riwayat cache 24 jam terakhir untuk satu model: hit/miss per jam + rasio.
+/// Model yang belum pernah dipakai tetap mengembalikan 24 bucket kosong supaya
+/// grafik di aplikasi punya bentuk yang stabil.
+function modelHourlyCache(rawHours) {
+  const buckets = (rawHours && typeof rawHours === 'object') ? rawHours : {};
+  const now = Date.now();
+  const rows = [];
+  for (let i = 23; i >= 0; i--) {
+    const date = new Date(now - i * 60 * 60 * 1000);
+    const key = date.toISOString().slice(0, 13);
+    const bucket = buckets[key] || { hits: 0, misses: 0 };
+    const hits = Number(bucket.hits) || 0;
+    const misses = Number(bucket.misses) || 0;
+    const total = hits + misses;
+    rows.push({
+      hour: `${key.slice(11)}:00`,
+      hits,
+      misses,
+      hitRate: total > 0 ? Math.round((hits / total) * 1000) / 10 : 0,
+    });
+  }
+  return rows;
 }
 
 /// Ringkasan cache/pemakaian per model, digabung dengan daftar model supaya
@@ -297,6 +345,8 @@ async function modelCacheStats(env) {
       completionTokens: Number(raw.completionTokens) || 0,
       tokensPerSec: Number(raw.tokensPerSec) || 0,
       lastUsedAt: Number(raw.lastUsedAt) || 0,
+      // Grafik cache rate 24 jam terakhir (hit/miss per jam).
+      hours: modelHourlyCache(raw.hours),
     });
   }
   rows.sort((a, b) =>
@@ -760,6 +810,17 @@ function normalizeProviderChatResponse(data, modelId, fallbackPromptTokens) {
   let completionTokens = Number(
     rawUsage.completion_tokens ?? rawUsage.output_tokens) || 0;
   if (!promptTokens) promptTokens = Number(fallbackPromptTokens) || 0;
+  // Token prompt yang dilayani dari cache provider (kalau dilaporkan).
+  const details = rawUsage.prompt_tokens_details ||
+    rawUsage.input_tokens_details || {};
+  const cachedTokens = Math.max(0, Number(
+    (details && details.cached_tokens) ?? rawUsage.cache_read_input_tokens) || 0);
+  const usageOf = () => ({
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: promptTokens + completionTokens,
+    ...(cachedTokens > 0 ? { cached_tokens: cachedTokens } : {}),
+  });
   const finish = (text) => {
     if (!completionTokens) {
       completionTokens = Math.max(1, Math.ceil(String(text).length / 4));
@@ -774,11 +835,7 @@ function normalizeProviderChatResponse(data, modelId, fallbackPromptTokens) {
         message: { role: 'assistant', content: text },
         finish_reason: 'stop',
       }],
-      usage: {
-        prompt_tokens: promptTokens,
-        completion_tokens: completionTokens,
-        total_tokens: promptTokens + completionTokens,
-      },
+      usage: usageOf(),
     };
   };
   if (root && Array.isArray(root.choices) && root.choices.length) {
@@ -792,11 +849,7 @@ function normalizeProviderChatResponse(data, modelId, fallbackPromptTokens) {
       object: 'chat.completion',
       created: root.created || Math.floor(Date.now() / 1000),
       model: modelId,
-      usage: {
-        prompt_tokens: promptTokens,
-        completion_tokens: completionTokens,
-        total_tokens: promptTokens + completionTokens,
-      },
+      usage: usageOf(),
     };
   }
   const text = providerText(root);
@@ -846,8 +899,17 @@ function providerSseUsage(parsed, current) {
     if (!raw || typeof raw !== 'object') return;
     const prompt = Number(raw.prompt_tokens ?? raw.input_tokens) || 0;
     const completion = Number(raw.completion_tokens ?? raw.output_tokens) || 0;
+    // Token prompt yang dilayani dari cache provider:
+    // - OpenAI/Cloudflare: usage.prompt_tokens_details.cached_tokens
+    // - Anthropic: usage.cache_read_input_tokens
+    const details = raw.prompt_tokens_details || raw.input_tokens_details || {};
+    const cached = Number(
+      (details && details.cached_tokens) ?? raw.cache_read_input_tokens) || 0;
     if (prompt) usage.prompt_tokens = prompt;
     if (completion) usage.completion_tokens = completion;
+    if (cached) {
+      usage.cached_tokens = Math.max(Number(usage.cached_tokens) || 0, cached);
+    }
   };
   const event = unwrapProviderResult(parsed);
   collect(parsed && parsed.usage);
@@ -856,6 +918,7 @@ function providerSseUsage(parsed, current) {
   return {
     prompt_tokens: usage.prompt_tokens || current.prompt_tokens || 0,
     completion_tokens: usage.completion_tokens || current.completion_tokens || 0,
+    cached_tokens: usage.cached_tokens || current.cached_tokens || 0,
   };
 }
 
@@ -863,9 +926,39 @@ function dailyDateKey() {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
 }
 
+/// Batas request harian efektif dari config: angka admin kalau > 0, selain
+/// itu default 20 per akun (bukan tanpa batas).
+function effectiveDailyRequestLimit(value) {
+  const n = Math.floor(Number(value) || 0);
+  return n > 0 ? n : DEFAULT_DAILY_REQUEST_LIMIT;
+}
+
+/// Batas request harian untuk satu model: limit model/provider menimpa
+/// limit global.
+function modelDailyRequestLimit(modelConfig, config) {
+  const modelLimit = Math.floor(
+    Number(modelConfig && modelConfig.dailyRequestLimit) || 0);
+  return modelLimit > 0
+    ? modelLimit
+    : effectiveDailyRequestLimit(config && config.dailyRequestLimit);
+}
+
 async function dailyRequestUsed(env, accountId) {
   const raw = await env.PB_KV.get(`dailyreq:${accountId}:${dailyDateKey()}`);
   return Number(raw) || 0;
+}
+
+/// Jatah request hari ini untuk satu akun (dipakai Model List aplikasi).
+async function accountRequestQuota(env, account, config) {
+  const limit = effectiveDailyRequestLimit(config && config.dailyRequestLimit);
+  const used = await dailyRequestUsed(env, account.id);
+  return {
+    date: dailyDateKey(),
+    limit,
+    used,
+    remaining: Math.max(0, limit - used),
+    resetAt: dailyResetAt(),
+  };
 }
 
 async function bumpDailyRequest(env, accountId) {
@@ -1070,9 +1163,9 @@ function publicConfig(request, config) {
     guestTokenBalance: config.guestTokenBalance ?? DEFAULT_CONFIG.guestTokenBalance,
     loginTokenBalance: config.loginTokenBalance ?? DEFAULT_CONFIG.loginTokenBalance,
     tokenResetDays: config.tokenResetDays ?? DEFAULT_CONFIG.tokenResetDays,
-    // Batas request harian per akun (0 = tanpa batas). Provider API
-    // eksternal bisa punya limit sendiri.
-    dailyRequestLimit: config.dailyRequestLimit ?? 0,
+    // Batas request harian per akun (default 20). Provider API eksternal
+    // bisa punya limit sendiri yang lebih ketat.
+    dailyRequestLimit: effectiveDailyRequestLimit(config.dailyRequestLimit),
     // Hanya alamat server yang publik. Secret key TIDAK pernah dibuka di
     // endpoint publik — dikirim ke user yang sudah login lewat /api/auth/me.
     aiServerUrl: config.aiServerUrl || '',
@@ -1101,6 +1194,48 @@ async function sessionAccount(env, request) {
   const account = await getJson(env.PB_KV, `account:${accountId}`, null);
   if (!account) return null;
   return { token, account };
+}
+
+/// Akun dari `Authorization: Bearer <sesi Discord | API key user>`.
+/// Dipakai gateway & endpoint kuota request. Hasilnya `{ account }` atau
+/// `{ status, error }` siap dikirim sebagai respons.
+async function accountFromBearer(env, request) {
+  const bearer = bearerToken(request);
+  if (!bearer) {
+    return {
+      status: 401,
+      error: 'Missing API key. Use Authorization: Bearer <your-api-key>',
+    };
+  }
+  const keyHash = await hashApiKey(bearer);
+  const keyData = await getJson(env.PB_KV, `apikey:${keyHash}`, null);
+  if (keyData) {
+    if (keyData.deleteAt && Date.now() >= keyData.deleteAt) {
+      await env.PB_KV.delete(`apikey:${keyHash}`);
+      return { status: 401, error: 'API key has been deleted.' };
+    }
+    if (keyData.deleteAt) {
+      return {
+        status: 403,
+        error: 'API key is pending deletion.',
+        deleteAt: keyData.deleteAt,
+      };
+    }
+    const account = await getJson(
+      env.PB_KV, `account:${keyData.accountId}`, null);
+    return account
+      ? { account }
+      : { status: 401, error: 'Invalid API key.' };
+  }
+  // Bukan API key → coba session token login. Nilai session di KV adalah
+  // string accountId (bukan JSON).
+  const sessionAccountId = await env.PB_KV.get(`session:${bearer}`);
+  const account = sessionAccountId
+    ? await getJson(env.PB_KV, `account:${sessionAccountId}`, null)
+    : null;
+  return account
+    ? { account }
+    : { status: 401, error: 'Invalid API key.' };
 }
 
 async function handleAuth(request, env, pathname) {
@@ -1188,6 +1323,23 @@ async function handleAuth(request, env, pathname) {
   // GET /api/auth/cache-stats — statistik cache model list (24 jam).
   if (pathname === '/api/auth/cache-stats' && request.method === 'GET') {
     return jsonResponse(request, 200, await cacheStats(env));
+  }
+
+  // GET /api/auth/request-quota — sisa request harian akun (Model List).
+  // Bisa memakai sesi Discord atau AI API key milik user.
+  if (pathname === '/api/auth/request-quota' && request.method === 'GET') {
+    const auth = await accountFromBearer(env, request);
+    if (!auth.account) {
+      return jsonResponse(request, auth.status || 401, {
+        error: auth.error || 'Login required to read request quota.',
+        ...(auth.deleteAt ? { deleteAt: auth.deleteAt } : {}),
+      });
+    }
+    if (auth.account.status === 'banned') {
+      return jsonResponse(request, 403, { error: 'This account is banned.' });
+    }
+    return jsonResponse(
+      request, 200, await accountRequestQuota(env, auth.account, config));
   }
 
   if (pathname === '/api/auth/discord' && request.method === 'POST') {
@@ -2789,35 +2941,14 @@ async function handleGateway(request, env, pathname) {
   // Authenticate via API key in Authorization: Bearer header.
   // Fallback: session token login (dipakai aplikasi web supaya Local AI
   // tetap bisa lewat gateway sebelum user membuat AI API key sendiri).
-  const authHeader = request.headers.get('authorization') || '';
-  const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-  if (!bearer) {
-    return jsonResponse(request, 401, { error: 'Missing API key. Use Authorization: Bearer <your-api-key>' });
+  const auth = await accountFromBearer(env, request);
+  if (!auth.account) {
+    return jsonResponse(request, auth.status || 401, {
+      error: auth.error || 'Invalid API key.',
+      ...(auth.deleteAt ? { deleteAt: auth.deleteAt } : {}),
+    });
   }
-
-  let account = null;
-  const keyHash = await hashApiKey(bearer);
-  const keyData = await getJson(env.PB_KV, `apikey:${keyHash}`, null);
-  if (keyData) {
-    if (keyData.deleteAt && Date.now() >= keyData.deleteAt) {
-      await env.PB_KV.delete(`apikey:${keyHash}`);
-      return jsonResponse(request, 401, { error: 'API key has been deleted.' });
-    }
-    if (keyData.deleteAt) {
-      return jsonResponse(request, 403, { error: 'API key is pending deletion.', deleteAt: keyData.deleteAt });
-    }
-    account = await getJson(env.PB_KV, `account:${keyData.accountId}`, null);
-  } else {
-    // Bukan API key → coba session token.
-    // Nilai session di KV disimpan sebagai string accountId (bukan JSON).
-    const sessionAccountId = await env.PB_KV.get(`session:${bearer}`);
-    if (sessionAccountId) {
-      account = await getJson(env.PB_KV, `account:${sessionAccountId}`, null);
-    }
-  }
-  if (!account) {
-    return jsonResponse(request, 401, { error: 'Invalid API key.' });
-  }
+  let account = auth.account;
   if (account.status === 'banned') {
     return jsonResponse(request, 403, { error: 'Account is banned.' });
   }
@@ -3011,13 +3142,10 @@ async function handleGateway(request, env, pathname) {
 
     // Batas request harian per akun (seperti RPM, tapi per hari). Limit
     // per model provider menimpa limit provider, lalu limit global config.
-    const configDailyLimit = Number(config.dailyRequestLimit) || 0;
-    const providerDailyLimit = providerConfig
-      ? (Number(modelConfig.dailyRequestLimit) || 0)
-      : 0;
-    const dailyLimit = providerDailyLimit > 0
-      ? providerDailyLimit
-      : configDailyLimit;
+    // Limit global kosong/0 = default 20 per akun (bukan tanpa batas).
+    const dailyLimit = providerConfig
+      ? modelDailyRequestLimit(modelConfig, config)
+      : effectiveDailyRequestLimit(config.dailyRequestLimit);
     if (dailyLimit > 0) {
       const used = await dailyRequestUsed(env, account.id);
       if (used >= dailyLimit) {
@@ -3226,7 +3354,8 @@ async function handleGateway(request, env, pathname) {
           try {
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           } catch (_) {}
-          const cachedTokens = Math.max(0, Number(timings.cache_n) || 0);
+          const cachedTokens = Math.max(0, Number(usage.cached_tokens) || 0) ||
+            Math.max(0, Number(timings.cache_n) || 0);
           const promptTokens = Number(usage.prompt_tokens) ||
             (Math.max(0, Number(timings.prompt_n) || 0) + cachedTokens) ||
             estimatePromptTokens(body.messages);
@@ -3357,7 +3486,8 @@ async function handleGateway(request, env, pathname) {
       await recordModelUsage(env, modelId, {
         promptTokens: promptTokens ||
           ((Number(timings.prompt_n) || 0) + (Number(timings.cache_n) || 0)),
-        cachedTokens: Number(timings.cache_n) || 0,
+        cachedTokens: Number(usage.cached_tokens) ||
+          Number(timings.cache_n) || 0,
         completionTokens: completionTokens || Number(timings.predicted_n) || 0,
         tokensPerSec: Number(timings.predicted_per_second) || 0,
       });
