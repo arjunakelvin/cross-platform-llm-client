@@ -11,8 +11,8 @@ import '../services/inference_service.dart';
 import '../services/local_image_service.dart';
 import '../services/update_service.dart';
 import '../services/device_info_service.dart';
-import '../services/device_info_native.dart' if (dart.library.html) '../services/device_info_web.dart'
-    as platform_info;
+import '../services/device_info_native.dart'
+    if (dart.library.html) '../services/device_info_web.dart' as platform_info;
 import '../ffi/sd_ffi_bindings.dart'
     if (dart.library.html) '../ffi/sd_ffi_bindings_web.dart';
 import '../services/cluster_service.dart';
@@ -72,41 +72,9 @@ class SettingsView extends GetView<SettingsController> {
                     : 'Cloud',
                 builder: (ctx) => _buildInferenceGroup(ctx),
               ),
-              _navRow(
-                context,
-                icon: Icons.short_text_rounded,
-                title: 'Stop sequences',
-                value: '${controller.stopSequences.length}',
-                builder: (ctx) => Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _buildStopSequencesGroup(ctx),
-                    ]),
-              ),
             ]),
-            const SectionHeader('Performance'),
-            AppGroup(dividerIndent: 60, children: [
-              _navRow(
-                context,
-                icon: Icons.speed_rounded,
-                title: 'GGUF & LiteRT',
-                value: switch (controller.liteRtPerformanceMode.value) {
-                  'gpu_fast' => 'GPU fast',
-                  'cpu_safe' => 'CPU safe',
-                  _ => 'Auto fast',
-                },
-                builder: (ctx) => _buildLiteRtGroup(ctx),
-              ),
-              _navRow(
-                context,
-                icon: Icons.image_outlined,
-                title: 'Image generation',
-                value: controller.imageGenBackend.value == Backend.cpu
-                    ? 'CPU'
-                    : 'GPU',
-                builder: (ctx) => _buildImageGenerationGroup(ctx),
-              ),
-              if (Get.isRegistered<ClusterService>())
+            if (Get.isRegistered<ClusterService>())
+              AppGroup(dividerIndent: 60, children: [
                 AppRow(
                   icon: Icons.hub_outlined,
                   title: 'Phone cluster',
@@ -116,11 +84,12 @@ class SettingsView extends GetView<SettingsController> {
                         ClusterRole.worker => 'Worker',
                         ClusterRole.off => 'Off',
                       },
-                      style: AppTokens.of(context).caption.copyWith(fontSize: 14)),
+                      style:
+                          AppTokens.of(context).caption.copyWith(fontSize: 14)),
                   chevron: true,
                   onTap: () => Get.to(() => const ClusterView()),
                 ),
-            ]),
+              ]),
             const SectionHeader('AI servers'),
             AppGroup(dividerIndent: 60, children: [
               _navRow(
@@ -139,7 +108,7 @@ class SettingsView extends GetView<SettingsController> {
                 title: 'AI server (Local AI)',
                 subtitle: controller.localServerUrl.value.isEmpty
                     ? 'Belum dikonfigurasi'
-                    : 'Server lokal Ã‚Â· dikonfigurasi otomatis',
+                    : 'Server lokal · dikonfigurasi otomatis',
                 trailing: TextButton(
                   onPressed: controller.syncAiServerFromDashboard,
                   child: const Text('Sync'),
@@ -173,7 +142,7 @@ class SettingsView extends GetView<SettingsController> {
                 title: 'AI-Agent PiercingBlow',
                 subtitle: controller.appVersion.value.isEmpty
                     ? 'by distro-kelvin'
-                    : 'Version ${controller.appVersion.value} Ã‚Â· by distro-kelvin',
+                    : 'Version ${controller.appVersion.value} · by distro-kelvin',
               ),
             ]),
           ],
@@ -244,9 +213,8 @@ class SettingsView extends GetView<SettingsController> {
 
   /// Discord (DS) login/logout row and user account info.
   Widget _discordAccountRow(BuildContext context) {
-    final discordService = Get.isRegistered<DiscordService>()
-        ? Get.find<DiscordService>()
-        : null;
+    final discordService =
+        Get.isRegistered<DiscordService>() ? Get.find<DiscordService>() : null;
     if (discordService == null) return const SizedBox.shrink();
     return Obx(() {
       final user = discordService.sessionUser.value;
@@ -256,22 +224,25 @@ class SettingsView extends GetView<SettingsController> {
       String subtitle;
       if (isLoggedIn) {
         subtitle = '@${user.username}'
-            '${tier.isNotEmpty ? ' Ã‚Â· Tier: ${tier.toUpperCase()}' : ''}'
-            ' Ã‚Â· Ketuk untuk info akun & ID';
+            '${tier.isNotEmpty ? ' · Tier: ${tier.toUpperCase()}' : ''}'
+            ' · Ketuk untuk info akun & ID';
       } else {
         subtitle = discordService.isReady
-            ? 'Tamu (10M token) Ã‚Â· Login Discord untuk +10M bonus'
+            ? 'Tamu (10M token) · Login Discord untuk +10M bonus'
             : 'Informasi kuota token & profil user';
       }
 
       return AppRow(
-        icon: isLoggedIn ? Icons.discord_rounded : Icons.account_circle_outlined,
+        icon:
+            isLoggedIn ? Icons.discord_rounded : Icons.account_circle_outlined,
         title: 'Informasi akun',
         subtitle: subtitle,
         chevron: true,
         trailing: AppTag(
           isLoggedIn ? 'Terhubung' : 'Detail',
-          color: isLoggedIn ? const Color(0xFF5865F2) : AppTokens.of(context).muted,
+          color: isLoggedIn
+              ? const Color(0xFF5865F2)
+              : AppTokens.of(context).muted,
         ),
         onTap: () => showAccountInfoSheet(context),
       );
@@ -317,104 +288,100 @@ class SettingsView extends GetView<SettingsController> {
       final ratio = controller.tokenUsageRatio;
       // Bar menampilkan SISA kuota: memendek saat terpakai.
       final left = (1 - ratio).clamp(0.0, 1.0);
-      // Level: hijau (banyak sisa) Ã¢â€ â€™ oranye (setengah) Ã¢â€ â€™ merah (hampir habis).
+      // Level: hijau (banyak sisa) → oranye (setengah) → merah (hampir habis).
       final level = left <= 0.2 ? 'critical' : (left <= 0.5 ? 'low' : 'ok');
       final warn = level != 'ok' || remaining <= 0;
-      final barColor = level == 'critical'
-          ? t.red
-          : (level == 'low' ? t.orange : t.green);
-      final tagLabel = level == 'critical'
-          ? 'Critical'
-          : (level == 'low' ? 'Low' : 'OK');
-      final tagColor = level == 'critical'
-          ? t.red
-          : (level == 'low' ? t.orange : t.green);
+      final barColor =
+          level == 'critical' ? t.red : (level == 'low' ? t.orange : t.green);
+      final tagLabel =
+          level == 'critical' ? 'Critical' : (level == 'low' ? 'Low' : 'OK');
+      final tagColor =
+          level == 'critical' ? t.red : (level == 'low' ? t.orange : t.green);
       return InkWell(
-        onTap: () => showAccountInfoSheet(context),
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  IconBadge(Icons.token_outlined),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text('Token balance', style: t.bodyStrong),
-                        const SizedBox(height: 2),
-                        Text(
-                          'Local AI server Ã‚Â· ${_fmtThousands(controller.maxTokenBalance)} kuota',
-                          style: t.caption,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
+          onTap: () => showAccountInfoSheet(context),
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    IconBadge(Icons.token_outlined),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text('Token balance', style: t.bodyStrong),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Local AI server · ${_fmtThousands(controller.maxTokenBalance)} kuota',
+                            style: t.caption,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
                     ),
+                    AppTag(tagLabel, color: tagColor),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                QuotaProgressBar(remaining: left, color: barColor),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '${(ratio * 100).round()}% used · ${_fmtThousands(used)} token',
+                      style: t.small.copyWith(color: warn ? t.orange : t.muted),
+                    ),
+                    Text(
+                      '${_fmtThousands(remaining)} left',
+                      style: t.small.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: warn ? t.orange : t.text,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(Icons.schedule_rounded, size: 14, color: t.muted),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        controller.tokenResetCountdownLabel,
+                        style: t.small.copyWith(color: t.muted),
+                      ),
+                    ),
+                  ],
+                ),
+                if (remaining <= 0) ...[
+                  const SizedBox(height: 10),
+                  AppNotice(
+                    'Kuota token sudah habis. Kuota akan reset otomatis sesuai '
+                    'jadwal di atas.',
+                    icon: Icons.warning_amber_rounded,
+                    color: t.red,
                   ),
-                  AppTag(tagLabel, color: tagColor),
+                ] else if (ratio >= 0.8) ...[
+                  const SizedBox(height: 10),
+                  AppNotice(
+                    'Kuota tinggal ${(ratio * 100).round()}%. Reset dalam '
+                    '${controller.tokenResetCountdownLabel.toLowerCase()}.',
+                    icon: Icons.warning_amber_rounded,
+                    color: t.orange,
+                  ),
                 ],
-              ),
-            const SizedBox(height: 12),
-            QuotaProgressBar(remaining: left, color: barColor),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  '${(ratio * 100).round()}% used Ã‚Â· ${_fmtThousands(used)} token',
-                  style:
-                      t.small.copyWith(color: warn ? t.orange : t.muted),
-                ),
-                Text(
-                  '${_fmtThousands(remaining)} left',
-                  style: t.small.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: warn ? t.orange : t.text,
-                  ),
-                ),
               ],
             ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Icon(Icons.schedule_rounded, size: 14, color: t.muted),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    controller.tokenResetCountdownLabel,
-                    style: t.small.copyWith(color: t.muted),
-                  ),
-                ),
-              ],
-            ),
-            if (remaining <= 0) ...[
-              const SizedBox(height: 10),
-              AppNotice(
-                'Kuota token sudah habis. Kuota akan reset otomatis sesuai '
-                'jadwal di atas.',
-                icon: Icons.warning_amber_rounded,
-                color: t.red,
-              ),
-            ] else if (ratio >= 0.8) ...[
-              const SizedBox(height: 10),
-              AppNotice(
-                'Kuota tinggal ${(ratio * 100).round()}%. Reset dalam '
-                '${controller.tokenResetCountdownLabel.toLowerCase()}.',
-                icon: Icons.warning_amber_rounded,
-                color: t.orange,
-              ),
-            ],
-          ],
-        ),
-      ));
+          ));
     });
   }
 
@@ -563,17 +530,15 @@ class SettingsView extends GetView<SettingsController> {
                     onPressed: busy
                         ? null
                         : () async {
-                            final error =
-                                await controller.createUserApiKey();
+                            final error = await controller.createUserApiKey();
                             if (!context.mounted) return;
                             if (error != null) {
-                              showToast('Gagal', error,
-                                  tone: ToastTone.error);
+                              showToast('Gagal', error, tone: ToastTone.error);
                             } else {
                               showToast(
                                 'API key dibuat',
-                                'Salin key ini sekarang Ã¢â‚¬â€ nilai penuhnya '
-                                'tidak ditampilkan lagi.',
+                                'Salin key ini sekarang — nilai penuhnya '
+                                    'tidak ditampilkan lagi.',
                                 tone: ToastTone.success,
                               );
                             }
@@ -607,8 +572,7 @@ class SettingsView extends GetView<SettingsController> {
                     onPressed: busy
                         ? null
                         : () async {
-                            final error =
-                                await controller.deleteUserApiKey();
+                            final error = await controller.deleteUserApiKey();
                             if (!context.mounted) return;
                             showToast(
                               error == null ? 'API key dihapus' : 'Gagal',
@@ -646,31 +610,6 @@ class SettingsView extends GetView<SettingsController> {
     ]);
   }
 
-  Widget _buildStopSequencesGroup(BuildContext context) {
-    final t = AppTokens.of(context);
-    return Column(children: [
-      TextField(
-        controller: controller.stopSequencesController,
-        minLines: 2,
-        maxLines: 5,
-        style: t.mono.copyWith(fontSize: 13.5),
-        decoration: appInputDecoration(context, hint: '###\n\\nUser:'),
-      ),
-      _fieldFooter(
-        context,
-        note: 'Local models stop when they write one of these. '
-            'One per line; use \\n for a newline.',
-        onSave: () async {
-          await controller
-              .setStopSequences(controller.stopSequencesController.text);
-          if (context.mounted) {
-            _confirmSaved(context, 'Stop sequences saved');
-          }
-        },
-      ),
-    ]);
-  }
-
   Widget _buildUpdatesRow(BuildContext context) {
     final updates = Get.find<UpdateService>();
     final t = AppTokens.of(context);
@@ -700,9 +639,9 @@ class SettingsView extends GetView<SettingsController> {
     final current = updates.currentVersion.value;
     final String status;
     if (update != null) {
-      status = 'You have $current Ã‚Â· see what\'s new';
+      status = 'You have $current · see what\'s new';
     } else if (checked != null) {
-      status = 'Up to date Ã‚Â· checked ${_ago(checked)}';
+      status = 'Up to date · checked ${_ago(checked)}';
     } else {
       status = 'Not checked yet';
     }
@@ -754,31 +693,7 @@ class SettingsView extends GetView<SettingsController> {
     return '${d.inDays}d ago';
   }
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬ Building blocks Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-
-  /// Note on the left, explicit Save on the right, under a text field.
-  Widget _fieldFooter(BuildContext context,
-      {required String note, required VoidCallback onSave}) {
-    final t = AppTokens.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 8, 0, 0),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.only(top: 6),
-            child: Text(note, style: t.small),
-          ),
-        ),
-        const SizedBox(width: 12),
-        PillButton(label: 'Save', primary: true, onPressed: onSave),
-      ]),
-    );
-  }
-
-  void _confirmSaved(BuildContext context, String message) {
-    FocusScope.of(context).unfocus();
-    showToast('Saved', message, tone: ToastTone.success);
-  }
+  // ── Building blocks ─────────────────────────────────────────────────────
 
   /// Consistent slider row: label left, value right, slider below, then an
   /// optional caption and trailing widget (e.g. a warning notice).
@@ -848,7 +763,7 @@ class SettingsView extends GetView<SettingsController> {
     );
   }
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬ Sections Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  // ── Sections ────────────────────────────────────────────────────────────
 
   String _localSubtitle() {
     final inf = Get.find<InferenceService>();
@@ -910,8 +825,8 @@ class SettingsView extends GetView<SettingsController> {
       final (String tierName, String tierHint) =
           switch (device.deviceTier.value) {
         'low' => ('Low RAM', 'Use small models only'),
-        'mid' => ('Mid-range', 'Good for 1Ã¢â‚¬â€œ3B models'),
-        'high' => ('High-end', 'Can run 3Ã¢â‚¬â€œ7B models'),
+        'mid' => ('Mid-range', 'Good for 1–3B models'),
+        'high' => ('High-end', 'Can run 3–7B models'),
         'ultra' => ('Ultra', 'Full performance mode'),
         _ => ('', ''),
       };
@@ -982,164 +897,6 @@ class SettingsView extends GetView<SettingsController> {
       );
     });
   }
-
-  Widget _buildLiteRtGroup(BuildContext context) {
-    final modes = [
-      (
-        value: 'auto_fast',
-        title: 'Auto fast',
-        subtitle:
-            "Uses the GPU when supported, CPU if the GPU can't load the model",
-        icon: Icons.auto_awesome_outlined
-      ),
-      (
-        value: 'gpu_fast',
-        title: 'GPU fast',
-        subtitle: 'Always tries the GPU. Fastest, may crash on some devices',
-        icon: Icons.bolt_rounded
-      ),
-      (
-        value: 'cpu_safe',
-        title: 'CPU safe',
-        subtitle: 'CPU only. Most stable, slower',
-        icon: Icons.shield_outlined
-      ),
-    ];
-    final t = AppTokens.of(context);
-    return AppGroup(dividerIndent: 60, children: [
-      for (final m in modes)
-        AppRow(
-          icon: m.icon,
-          title: m.title,
-          subtitle: m.subtitle,
-          selected: controller.liteRtPerformanceMode.value == m.value,
-          onTap: () => controller.setLiteRtPerformanceMode(m.value),
-        ),
-      Padding(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-        child: Text(
-            'Applies to both GGUF and LiteRT models. Takes effect the next '
-            'time a model is loaded.',
-            style: t.small),
-      ),
-    ]);
-  }
-
-  Widget _buildImageGenerationGroup(BuildContext context) {
-    final t = AppTokens.of(context);
-    final stepsValue = controller.imageSteps.value.toDouble();
-    const safeMax = 8.0;
-    final isOver = stepsValue > safeMax;
-    final selectedBackend = controller.imageGenBackend.value;
-    final gpuBackend = controller.recommendedImageGpuBackend();
-    final gpuAvailable = gpuBackend != Backend.cpu;
-    final size = controller.imageGenSize.value;
-    final guard = controller.imageGenGpuGuardMb.value;
-
-    return AppGroup(children: [
-      // Steps
-      _sliderRow(
-        context,
-        label: 'Steps',
-        valueLabel: controller.imageSteps.value.toString(),
-        value: stepsValue.clamp(1, 50),
-        min: 1,
-        max: 50,
-        divisions: 49,
-        color: isOver ? t.orange : null,
-        caption: 'Recommended: 15-20 steps',
-        onChanged: (v) => controller.setImageSteps(v.toInt()),
-        below: [
-          if (isOver)
-            AppNotice('More steps = better quality but MUCH slower!',
-                icon: Icons.warning_amber_rounded, color: t.orange),
-        ],
-      ),
-
-      // Size
-      Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Expanded(child: Text('Image size', style: t.body)),
-            Text(size == 0 ? 'Auto' : '${size}px',
-                style: t.body.copyWith(color: t.muted, fontFeatures: _tabular)),
-          ]),
-          const SizedBox(height: 12),
-          AppChips<int>(
-            items: const [
-              (0, 'Auto'),
-              (256, '256'),
-              (320, '320'),
-              (384, '384'),
-              (512, '512'),
-            ],
-            selected: size,
-            onSelected: (v) => controller.setImageGenSize(v),
-          ),
-          const SizedBox(height: 10),
-          Text(
-              'Auto recommended. Bigger size = better detail, but much slower and more memory use.',
-              style: t.small),
-          if (size >= 512) ...[
-            const SizedBox(height: 10),
-            AppNotice(
-                '512 gives more detail but can be MUCH slower, heat the phone, and may fail on some devices.',
-                icon: Icons.warning_amber_rounded,
-                color: t.orange),
-          ],
-        ]),
-      ),
-
-      // GPU safety
-      _sliderRow(
-        context,
-        label: 'GPU safety',
-        valueLabel: guard <= 0 ? 'Off' : '$guard MB',
-        value: guard.toDouble().clamp(0, 4096),
-        min: 0,
-        max: 4096,
-        divisions: 16,
-        caption:
-            'Models at or above this size use CPU. Smaller models can use GPU Experimental.',
-        onChanged: (v) => controller.setImageGenGpuGuardMb(v.toInt()),
-        below: [
-          if (guard <= 0 || guard >= 2048)
-            AppNotice(
-                guard <= 0
-                    ? 'GPU Safety is off. Large models may crash or freeze on GPU.'
-                    : 'High GPU Safety allows larger models on GPU and may crash, freeze, or overheat some phones.',
-                icon: Icons.warning_amber_rounded,
-                color: t.orange),
-        ],
-      ),
-
-      // Backend
-      Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('Backend', style: t.body),
-          const SizedBox(height: 2),
-          Text(controller.imageGpuLabel(), style: t.caption),
-          const SizedBox(height: 12),
-          AppSegmented<bool>(
-            items: const [(false, 'CPU'), (true, 'GPU')],
-            selected: selectedBackend != Backend.cpu,
-            onChanged: (useGpu) {
-              if (useGpu == (selectedBackend != Backend.cpu)) return;
-              if (useGpu && !gpuAvailable) return;
-              controller.setImageBackendMode(useGpu);
-            },
-          ),
-          if (selectedBackend != Backend.cpu) ...[
-            const SizedBox(height: 10),
-            Text('GPU is experimental and only used below GPU Safety size.',
-                style: t.small.copyWith(color: t.orange)),
-          ],
-        ]),
-      ),
-    ]);
-  }
 }
 
 /// A settings section on its own page. Rebuilds with the controller state.
@@ -1169,5 +926,3 @@ class _SettingsPage extends StatelessWidget {
         children: [const SizedBox(height: 8), builder(context)],
       );
 }
-
-
