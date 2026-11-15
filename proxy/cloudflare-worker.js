@@ -3153,10 +3153,13 @@ async function handleGateway(request, env, pathname) {
 
     // Batas request harian per akun (seperti RPM, tapi per hari). Limit bersifat
     // per akun (tier free default 15, override admin per akun untuk pro/vip) —
-    // bukan per model. Kalau akun sudah lelah, chat tetap ditolak meski user
-    // mulai chat baru (counter UTC sudah terpakai).
-    const dailyLimit = accountDailyRequestLimit(config, account);
-    if (dailyLimit > 0) {
+    // bukan per model. Hanya dipakai untuk provider eksternal (Provider API):
+    // model Local AI / self-hosted pakai aturan lama (token limit + credit)
+    // tanpa batas request harian.
+    const dailyLimit = providerConfig
+      ? accountDailyRequestLimit(config, account)
+      : 0;
+    if (providerConfig && dailyLimit > 0) {
       const used = await dailyRequestUsed(env, account.id);
       if (used >= dailyLimit) {
         return jsonResponse(request, 429, {

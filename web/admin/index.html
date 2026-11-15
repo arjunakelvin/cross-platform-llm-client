@@ -871,6 +871,7 @@ async with aiohttp.ClientSession() as session:<br>
             <tr>
               <th>Nama</th><th>Discord ID</th><th>Role</th><th>Tier</th>
               <th>Token (limit)</th><th>Token terpakai</th>
+              <th>Sisa token</th>
               <th>Kredit (sisa)</th><th>Kredit terpakai</th>
               <th>Req/hari</th>
               <th>Status</th><th></th>
@@ -1324,6 +1325,7 @@ function renderAccounts() {
       '<td><select data-f="tier">' + tierOptions(a.tier || config.defaultTier) + '</select></td>' +
       '<td><input type="number" data-f="tokenBalance" min="0" value="' + (a.tokenBalance ?? 0) + '"></td>' +
       '<td class="mono">' + fmtInt(a.tokenUsed ?? 0) + '</td>' +
+      '<td class="mono">' + fmtInt((Number(a.tokenBalance ?? 0) - Number(a.tokenUsed ?? 0))) + '</td>' +
       '<td><input type="number" data-f="creditBalance" min="0" step="0.01" value="' +
         (Number(a.creditBalance ?? 0)).toFixed(2) + '"></td>' +
       '<td class="mono">' + fmtMoney(a.creditUsed ?? 0) + '</td>' +
@@ -1338,7 +1340,7 @@ function renderAccounts() {
     '</tr>';
   });
   $('accountRows').innerHTML = rows.join('') ||
-    '<tr><td colspan="10" style="color:var(--muted)">Belum ada akun. Akun otomatis dibuat saat user login Discord.</td></tr>';
+    '<tr><td colspan="11" style="color:var(--muted)">Belum ada akun. Akun otomatis dibuat saat user login Discord.</td></tr>';
   setStatus($('accountsInfo'), currentAccounts.length + ' akun', null);
 }
 

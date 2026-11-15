@@ -840,6 +840,44 @@ test('default batas akun free (15 request/hari) saat config 0', async () => {
   }
 });
 
+test('model Local AI (server) tidak pakai batas request harian', async () => {
+  const { store, env } = makeEnv();
+  store.set('session:' + SESSION, 'u1');
+  store.set('account:u1', JSON.stringify({
+    id: 'u1',
+    name: 'user',
+    tier: 'pro',
+    status: 'active',
+    tokenBalance: 100000,
+    tokenUsed: 0,
+    creditBalance: 1,
+    creditUsed: 0,
+  }));
+  store.set('mgr_servers', JSON.stringify([
+    { id: 'server-1', name: 'VPS 1', enabled: true, baseUrl: 'http://127.0.0.1:8080' },
+  ]));
+  store.set('server_models', JSON.stringify([{
+    modelId: 'qwen-3b:qwen2.5-coder-3b:pro',
+    backendModelId: 'qwen2.5-coder-3b',
+    name: 'Qwen 3B',
+    serverId: 'server-1',
+    tierAccess: ['pro', 'vip'],
+    pricing: { inputPerReq: 0 },
+    active: true,
+  }]));
+  store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
+
+  const restore = okProviderFetch();
+  try {
+    for (let i = 0; i < 21; i++) {
+      const res = await chat(env, { model: 'qwen-3b:qwen2.5-coder-3b:pro' });
+      assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
+    }
+  } finally {
+    restore();
+  }
+});
+
 test('endpoint request-quota mengembalikan sisa request akun', async () => {
   const { store, env } = makeEnv();
   seedAccount(store);
