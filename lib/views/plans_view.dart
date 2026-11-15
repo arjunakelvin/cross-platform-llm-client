@@ -11,7 +11,6 @@
 // bisa menambah/mengubah/mengaktifkan kapan pun tanpa update aplikasi.
 
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -411,9 +410,11 @@ class _PlansViewState extends State<PlansView> {
         imageQuality: 60,
       );
       if (file == null) return;
-      final bytes = await File(file.path).readAsBytes();
-      final path = file.path.toLowerCase();
-      final mime = path.endsWith('.png') ? 'image/png' : 'image/jpeg';
+      // XFile.readAsBytes() bekerja di native & Flutter web (dart:io File
+      // tidak tersedia di browser).
+      final bytes = await file.readAsBytes();
+      final mime =
+          file.name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
       final dataUrl = 'data:$mime;base64,${base64Encode(bytes)}';
       final ok = await Get.find<PlansService>().uploadProof(orderId, dataUrl);
       if (!mounted || !context.mounted) return;
