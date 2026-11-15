@@ -46,6 +46,11 @@ const DEFAULT_DAILY_REQUEST_LIMIT = 20;
 // Batas request harian otomatis untuk akun tier **free**.
 const FREE_DAILY_REQUEST_LIMIT = 15;
 
+// Batas request harian otomatis untuk akun **guest** (tanpa login Discord).
+// Setelah guest kehabisan 5 request/hari, dia harus login kembali untuk
+// mendapat jatah baru (reset counter UTC tengah malam tetap berlaku).
+const GUEST_DAILY_REQUEST_LIMIT = 5;
+
 const DEFAULT_CONFIG = {
   discord: { enabled: false, clientId: '', clientSecret: '', redirectUri: '' },
   tiers: ['free', 'pro', 'vip'],
@@ -951,6 +956,7 @@ function accountDailyRequestLimit(config, account) {
     Number((account && account.dailyRequestLimit) || 0) || 0);
   if (override > 0) return override;
   const tier = String((account && account.tier) || '').trim().toLowerCase();
+  if (tier === 'guest') return GUEST_DAILY_REQUEST_LIMIT;
   if (tier === 'free') return FREE_DAILY_REQUEST_LIMIT;
   return effectiveDailyRequestLimit(config.dailyRequestLimit);
 }

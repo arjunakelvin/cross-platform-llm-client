@@ -840,6 +840,40 @@ test('default batas akun free (15 request/hari) saat config 0', async () => {
   }
 });
 
+test('batas request untuk akun guest = 5 request/hari', async () => {
+  const { store, env } = makeEnv();
+  store.set('session:' + SESSION, 'u1');
+  store.set('account:u1', JSON.stringify({
+    id: 'u1',
+    name: 'guest-user',
+    tier: 'guest',
+    status: 'active',
+    tokenBalance: 10000000,
+    tokenUsed: 0,
+    creditBalance: 1,
+    creditUsed: 0,
+  }));
+  store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
+  seedProvider(store);
+
+  const counter = { calls: 0 };
+  const restore = okProviderFetch(counter);
+  try {
+    for (let i = 0; i < 5; i++) {
+      const res = await chat(env, { model: MODEL_ID });
+      assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
+    }
+    const blocked = await chat(env, { model: MODEL_ID });
+    const body = await blocked.json();
+    assert.equal(blocked.status, 429);
+    assert.equal(body.limit, 5);
+    assert.equal(body.used, 5);
+    assert.equal(counter.calls, 5, 'request ke-6 tidak boleh ke provider');
+  } finally {
+    restore();
+  }
+});
+
 test('model Local AI (server) tidak pakai batas request harian', async () => {
   const { store, env } = makeEnv();
   store.set('session:' + SESSION, 'u1');
