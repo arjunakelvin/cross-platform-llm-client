@@ -265,31 +265,82 @@ test('provider OpenAI-compatible: URL dan respons diteruskan', async () => {
   }
 });
 
-test('batas request harian per akun ditegakkan (429)', async () => {
+test('batas request harian per akun (tier free default 15)', async () => {
   const { store, env } = makeEnv();
   seedAccount(store);
-  seedProvider(store, { dailyRequestLimit: 1 });
+  seedProvider(store);
+  // Admin menyimpan limit 0 → akun free memakai default 15 request/hari.
+  store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
 
-  let upstreamCalls = 0;
+  const counter = { calls: 0 };
   const restore = mockFetch(async () => {
-    upstreamCalls++;
+    counter.calls++;
     return new Response(JSON.stringify({
       success: true,
       result: { response: 'ok' },
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   });
   try {
-    const first = await chat(env);
-    assert.equal(first.status, 200);
-
-    const second = await chat(env);
-    const body = await second.json();
-    assert.equal(second.status, 429);
-    assert.equal(body.limit, 1);
-    assert.equal(body.used, 1);
+    for (let i = 0; i < 15; i++) {
+      const res = await chat(env);
+      assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
+    }
+    const blocked = await chat(env);
+    const body = await blocked.json();
+    assert.equal(blocked.status, 429);
+    assert.equal(body.limit, 15);
+    assert.equal(body.used, 15);
     assert.match(body.error, /request\/hari/i);
-    // Request kedua tidak boleh menyentuh provider.
-    assert.equal(upstreamCalls, 1);
+    assert.equal(counter.calls, 15, 'request ke-16 tidak boleh ke provider');
+  } finally {
+    restore();
+  }
+});
+
+test('batas request per akun (override admin untuk pro/vip)', async () => {
+  const { store, env } = makeEnv();
+  store.set('session:' + SESSION, 'u1');
+  store.set('account:u1', JSON.stringify({
+    id: 'u1',
+    name: 'vip-user',
+    tier: 'vip',
+    status: 'active',
+    dailyRequestLimit: 3,
+    tokenBalance: 100000,
+    tokenUsed: 0,
+    creditBalance: 1,
+    creditUsed: 0,
+  }));
+  store.set('api_providers', JSON.stringify([{
+    id: 'cf-kimi',
+    name: 'Kimi K2.7 (Cloudflare)',
+    baseUrl: CF_URL,
+    apiKey: 'cfut_secret',
+    model: '@cf/moonshotai/kimi-k2.7-code',
+    format: 'auto',
+    contextSize: 262144,
+    maxOutput: 8192,
+    dailyRequestLimit: 0,
+    tierAccess: ['free', 'pro', 'vip'],
+    pricing: {},
+    enabled: true,
+  }]));
+
+  const restore = mockFetch(async () => new Response(JSON.stringify({
+    success: true,
+    result: { response: 'ok' },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+  try {
+    const ok1 = await chat(env);    assert.equal(ok1.status, 200);
+    const ok2 = await chat(env);
+    assert.equal(ok2.status, 200);
+    const ok3 = await chat(env);
+    assert.equal(ok3.status, 200);
+    const blocked = await chat(env);
+    const body = await blocked.json();
+    assert.equal(blocked.status, 429);
+    assert.equal(body.limit, 3);
+    assert.equal(body.used, 3);
   } finally {
     restore();
   }
@@ -763,27 +814,27 @@ function okProviderFetch(counter) {
   });
 }
 
-test('default 20 request/hari per akun saat config 0', async () => {
+test('default batas akun free (15 request/hari) saat config 0', async () => {
   const { store, env } = makeEnv();
   seedAccount(store);
   seedProvider(store);
-  // Admin menyimpan limit 0 → tetap memakai default 20, bukan tanpa batas.
+  // Admin menyimpan limit 0 → akun free memakai default 15 request/hari.
   store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
 
   const counter = { calls: 0 };
   const restore = okProviderFetch(counter);
   try {
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 15; i++) {
       const res = await chat(env);
       assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
     }
     const blocked = await chat(env);
     const body = await blocked.json();
     assert.equal(blocked.status, 429);
-    assert.equal(body.limit, 20);
-    assert.equal(body.used, 20);
+    assert.equal(body.limit, 15);
+    assert.equal(body.used, 15);
     assert.match(body.error, /request\/hari/i);
-    assert.equal(counter.calls, 20, 'request ke-21 tidak boleh ke provider');
+    assert.equal(counter.calls, 15, 'request ke-16 tidak boleh ke provider');
   } finally {
     restore();
   }
@@ -807,11 +858,12 @@ test('endpoint request-quota mengembalikan sisa request akun', async () => {
   });
   const body = await res.json();
   assert.equal(res.status, 200);
-  assert.equal(body.limit, 20, 'limit akun default 20');
+  assert.equal(body.limit, 15, 'akun free default 15 request/hari');
   assert.equal(body.used, 2);
-  assert.equal(body.remaining, 18);
+  assert.equal(body.remaining, 13);
   assert.equal(body.date, new Date().toISOString().slice(0, 10));
   assert.ok(body.resetAt > Date.now());
+  assert.equal(String(body.tier || '').toLowerCase(), 'free');
 });
 
 test('request-quota menolak request tanpa sesi/API key', async () => {

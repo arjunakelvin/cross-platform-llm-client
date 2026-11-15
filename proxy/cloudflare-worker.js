@@ -43,6 +43,9 @@ const CONFIG_KEY = 'config';
 // setiap akun punya jatah yang jelas — bukan tanpa batas.
 const DEFAULT_DAILY_REQUEST_LIMIT = 20;
 
+// Batas request harian otomatis untuk akun tier **free**.
+const FREE_DAILY_REQUEST_LIMIT = 15;
+
 const DEFAULT_CONFIG = {
   discord: { enabled: false, clientId: '', clientSecret: '', redirectUri: '' },
   tiers: ['free', 'pro', 'vip'],
@@ -933,24 +936,28 @@ function effectiveDailyRequestLimit(value) {
   return n > 0 ? n : DEFAULT_DAILY_REQUEST_LIMIT;
 }
 
-/// Batas request harian untuk satu model: limit model/provider menimpa
-/// limit global.
-function modelDailyRequestLimit(modelConfig, config) {
-  const modelLimit = Math.floor(
-    Number(modelConfig && modelConfig.dailyRequestLimit) || 0);
-  return modelLimit > 0
-    ? modelLimit
-    : effectiveDailyRequestLimit(config && config.dailyRequestLimit);
-}
-
 async function dailyRequestUsed(env, accountId) {
   const raw = await env.PB_KV.get(`dailyreq:${accountId}:${dailyDateKey()}`);
   return Number(raw) || 0;
 }
 
+/// Batas request harian untuk satu akun. Prioritas:
+/// 1. Limit eksplisit admin per akun (akun pro/vip yang di-set manual di
+///    dashboard), disimpan di baris akun.
+/// 2. Akun tier free → default 15 request/hari.
+/// 3. Limit global config (admin) untuk akun dengan tier lain.
+function accountDailyRequestLimit(config, account) {
+  const override = Math.floor(
+    Number((account && account.dailyRequestLimit) || 0) || 0);
+  if (override > 0) return override;
+  const tier = String((account && account.tier) || '').trim().toLowerCase();
+  if (tier === 'free') return FREE_DAILY_REQUEST_LIMIT;
+  return effectiveDailyRequestLimit(config.dailyRequestLimit);
+}
+
 /// Jatah request hari ini untuk satu akun (dipakai Model List aplikasi).
 async function accountRequestQuota(env, account, config) {
-  const limit = effectiveDailyRequestLimit(config && config.dailyRequestLimit);
+  const limit = accountDailyRequestLimit(config, account);
   const used = await dailyRequestUsed(env, account.id);
   return {
     date: dailyDateKey(),
@@ -958,6 +965,7 @@ async function accountRequestQuota(env, account, config) {
     used,
     remaining: Math.max(0, limit - used),
     resetAt: dailyResetAt(),
+    tier: String((account && account.tier) || ''),
   };
 }
 
@@ -1679,6 +1687,9 @@ async function handleAdmin(request, env, pathname) {
         tokenResetDays: Number.isFinite(+body.tokenResetDays)
           ? Math.max(0, Math.floor(+body.tokenResetDays))
           : (existing.tokenResetDays ?? 0),
+        dailyRequestLimit: Number.isFinite(+body.dailyRequestLimit)
+          ? Math.max(0, Math.floor(+body.dailyRequestLimit))
+          : (existing.dailyRequestLimit ?? 0),
         lastReset: Number.isFinite(+body.lastReset)
           ? Math.floor(+body.lastReset)
           : (existing.lastReset ?? now),
@@ -3140,12 +3151,11 @@ async function handleGateway(request, env, pathname) {
       });
     }
 
-    // Batas request harian per akun (seperti RPM, tapi per hari). Limit
-    // per model provider menimpa limit provider, lalu limit global config.
-    // Limit global kosong/0 = default 20 per akun (bukan tanpa batas).
-    const dailyLimit = providerConfig
-      ? modelDailyRequestLimit(modelConfig, config)
-      : effectiveDailyRequestLimit(config.dailyRequestLimit);
+    // Batas request harian per akun (seperti RPM, tapi per hari). Limit bersifat
+    // per akun (tier free default 15, override admin per akun untuk pro/vip) —
+    // bukan per model. Kalau akun sudah lelah, chat tetap ditolak meski user
+    // mulai chat baru (counter UTC sudah terpakai).
+    const dailyLimit = accountDailyRequestLimit(config, account);
     if (dailyLimit > 0) {
       const used = await dailyRequestUsed(env, account.id);
       if (used >= dailyLimit) {
