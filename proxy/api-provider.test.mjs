@@ -453,3 +453,300 @@ test('harga per model provider dipakai untuk tagihan kredit', async () => {
     restore();
   }
 });
+
+// -- Cloudflare REST universal + Anthropic -------------------------------
+// Endpoint baru Cloudflare: POST /ai/run dengan body { model, input }.
+// Model pihak ketiga memakai nama `openai/...`, `anthropic/...`, dst.
+
+function seedCloudProvider(store, provider) {
+  store.set('api_providers', JSON.stringify([{
+    id: 'cf',
+    name: 'Cloudflare',
+    apiKey: 'cfut_secret',
+    format: 'auto',
+    tierAccess: ['free', 'pro', 'vip'],
+    enabled: true,
+    ...provider,
+  }]));
+}
+
+test('Cloudflare /ai/run: model pihak ketiga memakai envelope model+input', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+  seedCloudProvider(store, {
+    baseUrl: 'https://api.cloudflare.com/client/v4/accounts/acc123/ai/run',
+    gatewayId: 'default',
+    models: [{
+      key: 'gpt41',
+      modelId: 'openai/gpt-4.1',
+      name: 'GPT 4.1',
+      contextSize: 128000,
+      maxOutput: 1024,
+      pricing: {},
+      enabled: true,
+    }],
+  });
+
+  let captured = null;
+  const restore = mockFetch(async (url, init) => {
+    captured = { url: String(url), init };
+    return new Response(JSON.stringify({
+      success: true,
+      result: {
+        id: 'chatcmpl-x',
+        choices: [{
+          index: 0,
+          message: { role: 'assistant', content: 'Halo GPT' },
+          finish_reason: 'stop',
+        }],
+        usage: { prompt_tokens: 11, completion_tokens: 3 },
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  });
+  try {
+    const res = await chat(env, { model: 'api:cf:gpt41' });
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    // Base URL /ai/run dipanggil apa adanya (bukan ditambah nama model).
+    assert.equal(captured.url,
+      'https://api.cloudflare.com/client/v4/accounts/acc123/ai/run');
+    const sent = JSON.parse(captured.init.body);
+    assert.equal(sent.model, 'openai/gpt-4.1');
+    assert.equal(sent.messages, undefined, 'universal memakai input, bukan messages');
+    assert.equal(sent.input.messages[0].content, 'halo');
+    assert.ok(sent.input.max_tokens > 0);
+    assert.equal(captured.init.headers.get('cf-aig-gateway-id'), 'default');
+    // Respons { result: {...OpenAI...} } dirapikan ke chat.completion.
+    assert.equal(body.choices[0].message.content, 'Halo GPT');
+    assert.equal(body.usage.prompt_tokens, 11);
+    assert.equal(body.usage.completion_tokens, 3);
+  } finally {
+    restore();
+  }
+});
+
+test('Cloudflare universal: model @cf/ otomatis memakai gateway default', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+  seedCloudProvider(store, {
+    baseUrl: 'https://api.cloudflare.com/client/v4/accounts/acc123/ai/run',
+    format: 'cloudflare-universal',
+    models: [{
+      key: 'llama',
+      modelId: '@cf/meta/llama-3.1-8b-instruct',
+      name: 'Llama 3.1 8B',
+      contextSize: 8192,
+      maxOutput: 512,
+      pricing: {},
+      enabled: true,
+    }],
+  });
+
+  let captured = null;
+  const restore = mockFetch(async (url, init) => {
+    captured = { url: String(url), init };
+    return new Response(JSON.stringify({
+      success: true,
+      result: { response: 'ok universal' },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  });
+  try {
+    const res = await chat(env, { model: 'api:cf:llama' });
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(captured.url,
+      'https://api.cloudflare.com/client/v4/accounts/acc123/ai/run');
+    assert.equal(captured.init.headers.get('cf-aig-gateway-id'), 'default');
+    const sent = JSON.parse(captured.init.body);
+    assert.equal(sent.model, '@cf/meta/llama-3.1-8b-instruct');
+    assert.ok(Array.isArray(sent.input.messages));
+    assert.equal(body.choices[0].message.content, 'ok universal');
+  } finally {
+    restore();
+  }
+});
+
+test('Anthropic native: body, header, dan respons dikonversi ke OpenAI', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+  seedCloudProvider(store, {
+    id: 'claude',
+    name: 'Anthropic',
+    baseUrl: 'https://api.anthropic.com/v1',
+    apiKey: 'sk-ant-secret',
+    models: [{
+      key: 'sonnet',
+      modelId: 'claude-sonnet-4-20250514',
+      name: 'Claude Sonnet 4',
+      contextSize: 200000,
+      maxOutput: 4096,
+      pricing: {},
+      enabled: true,
+    }],
+  });
+
+  let captured = null;
+  const restore = mockFetch(async (url, init) => {
+    captured = { url: String(url), init };
+    return new Response(JSON.stringify({
+      id: 'msg_1',
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Halo Claude' }],
+      usage: { input_tokens: 9, output_tokens: 4 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  });
+  try {
+    const res = await chat(env, {
+      model: 'api:claude:sonnet',
+      messages: [
+        { role: 'system', content: 'Kamu asisten ringkas.' },
+        { role: 'user', content: 'halo' },
+      ],
+    });
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(captured.url, 'https://api.anthropic.com/v1/messages');
+    assert.equal(captured.init.headers.get('x-api-key'), 'sk-ant-secret');
+    assert.equal(captured.init.headers.get('anthropic-version'), '2023-06-01');
+    assert.equal(captured.init.headers.get('Authorization'), null);
+    const sent = JSON.parse(captured.init.body);
+    assert.equal(sent.model, 'claude-sonnet-4-20250514');
+    assert.equal(sent.system, 'Kamu asisten ringkas.');
+    assert.equal(sent.messages.length, 1);
+    assert.ok(sent.max_tokens > 0);
+    assert.equal(body.choices[0].message.content, 'Halo Claude');
+    assert.equal(body.usage.prompt_tokens, 9);
+    assert.equal(body.usage.completion_tokens, 4);
+  } finally {
+    restore();
+  }
+});
+
+test('Cloudflare /ai/v1 + model anthropic memakai Bearer dan /ai/v1/messages', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+  seedCloudProvider(store, {
+    baseUrl: 'https://api.cloudflare.com/client/v4/accounts/acc123/ai/v1',
+    models: [{
+      key: 'claude',
+      modelId: 'anthropic/claude-sonnet-4',
+      name: 'Claude Sonnet 4',
+      contextSize: 200000,
+      maxOutput: 2048,
+      pricing: {},
+      enabled: true,
+    }],
+  });
+  let captured = null;
+  const restore = mockFetch(async (url, init) => {
+    captured = { url: String(url), init };
+    return new Response(JSON.stringify({
+      content: [{ type: 'text', text: 'via cloudflare' }],
+      usage: { input_tokens: 5, output_tokens: 2 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  });
+  try {
+    const res = await chat(env, { model: 'api:cf:claude' });
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(captured.url,
+      'https://api.cloudflare.com/client/v4/accounts/acc123/ai/v1/messages');
+    assert.equal(captured.init.headers.get('Authorization'), 'Bearer cfut_secret');
+    assert.equal(captured.init.headers.get('x-api-key'), null);
+    assert.equal(body.choices[0].message.content, 'via cloudflare');
+  } finally {
+    restore();
+  }
+});
+
+test('stream Anthropic dikonversi menjadi delta OpenAI + usage', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+  seedCloudProvider(store, {
+    id: 'claude',
+    baseUrl: 'https://api.anthropic.com/v1',
+    apiKey: 'sk-ant-secret',
+    models: [{
+      key: 'sonnet',
+      modelId: 'claude-sonnet-4-20250514',
+      name: 'Claude Sonnet 4',
+      contextSize: 200000,
+      maxOutput: 2048,
+      pricing: {},
+      enabled: true,
+    }],
+  });
+
+  const events = [
+    'data: {"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":1}}}',
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Ha"}}',
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}',
+    'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}',
+    'data: [DONE]',
+  ];
+  const restore = mockFetch(async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const line of events) {
+          controller.enqueue(encoder.encode(line + '\n\n'));
+        }
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  });
+  try {
+    const res = await chat(env, { model: 'api:claude:sonnet', stream: true });
+    const text = await res.text();
+    assert.equal(res.status, 200);
+    assert.match(text, /"delta":\{"content":"Ha"\}/);
+    assert.match(text, /"delta":\{"content":"lo"\}/);
+    assert.match(text, /data: \[DONE\]/);
+    assert.match(text, /"prompt_tokens":12/);
+    assert.match(text, /"completion_tokens":5/);
+    assert.ok(text.indexOf('[DONE]') < text.indexOf('piercingblow_usage'));
+  } finally {
+    restore();
+  }
+});
+
+test('stream Cloudflare yang dibungkus result tetap jadi delta OpenAI', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+  seedProvider(store);
+
+  const restore = mockFetch(async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        // Workers AI baru membungkus chunk OpenAI di `result`.
+        controller.enqueue(encoder.encode(
+          'data: {"result":{"choices":[{"index":0,"delta":{"content":"Ha"}}]}}\n\n'));
+        controller.enqueue(encoder.encode(
+          'data: {"result":{"choices":[{"index":0,"delta":{"content":"lo"}}]}}\n\n'));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  });
+  try {
+    const res = await chat(env, { stream: true });
+    const text = await res.text();
+    assert.equal(res.status, 200);
+    assert.match(text, /"delta":\{"content":"Ha"\}/);
+    assert.match(text, /"delta":\{"content":"lo"\}/);
+    assert.doesNotMatch(text, /"result"/);
+    assert.match(text, /data: \[DONE\]/);
+  } finally {
+    restore();
+  }
+});

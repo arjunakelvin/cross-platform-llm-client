@@ -231,6 +231,30 @@
     display: flex; justify-content: space-between; gap: 10px;
     align-items: flex-start; padding: 4px 0;
   }
+  /* Panduan base URL: kartu ringkas supaya admin tidak perlu hafal endpoint. */
+  .ap-guide {
+    background: #11161d; border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px; margin: 0 0 4px;
+  }
+  .ap-guide-title {
+    font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 6px;
+  }
+  .ap-guide-row {
+    display: grid; grid-template-columns: 230px 1fr; gap: 10px;
+    padding: 6px 0; border-top: 1px solid var(--line);
+    font-size: 11.5px; color: var(--muted); line-height: 1.55;
+  }
+  .ap-guide-row:first-of-type { border-top: 0; }
+  .ap-guide-row b { color: var(--text); font-size: 12px; }
+  .ap-guide .mono { color: #9ecbff; word-break: break-all; }
+  .endpoint-preview {
+    background: #0b0e13; border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; font-size: 11.5px; color: #9ecbff;
+    word-break: break-all; min-height: 34px; line-height: 1.5;
+  }
+  @media (max-width: 720px) {
+    .ap-guide-row { grid-template-columns: 1fr; gap: 2px; }
+  }
   dialog {
     width: min(680px, 94vw); max-height: 90vh; overflow: auto;
     background: var(--card); color: var(--text);
@@ -507,12 +531,46 @@ async with aiohttp.ClientSession() as session:<br>
     <div class="card">
       <h2>Provider API eksternal</h2>
       <p class="hint" style="margin:0 0 12px">
-        Tambahkan provider AI lain hanya dengan <b>base URL</b> + <b>API key</b>
-        (mis. Cloudflare Workers AI). Model provider otomatis muncul di tab
-        Model List aplikasi dan request-nya lewat gateway — API key tidak
-        pernah dikirim ke user.</p>
+        Tambahkan provider AI lain hanya dengan <b>base URL</b> + <b>API key</b>.
+        Model provider otomatis muncul di tab Model List aplikasi dan request-nya
+        lewat gateway — API key tidak pernah dikirim ke user.</p>
 
-      <h3 id="apiProviderFormTitle" style="margin-top:10px">Tambah provider API</h3>
+      <div class="ap-guide">
+        <div class="ap-guide-title">Panduan singkat: base URL yang dipakai</div>
+        <div class="ap-guide-row">
+          <b>Cloudflare Workers AI</b>
+          <div>Base URL:
+            <span class="mono">https://api.cloudflare.com/client/v4/accounts/&lt;ACCOUNT_ID&gt;/ai/run</span><br>
+            Model: <span class="mono">@cf/moonshotai/kimi-k2.6</span> ·
+            API key: Cloudflare API token (permission <b>Workers AI Read</b>) ·
+            Gateway ID: <span class="mono">default</span></div>
+        </div>
+        <div class="ap-guide-row">
+          <b>Cloudflare REST — model OpenAI / Anthropic / Google</b>
+          <div>Base URL sama:
+            <span class="mono">…/accounts/&lt;ACCOUNT_ID&gt;/ai/run</span><br>
+            Model: <span class="mono">openai/gpt-4.1</span>,
+            <span class="mono">anthropic/claude-sonnet-4</span>,
+            <span class="mono">google/gemini-3-flash</span></div>
+        </div>
+        <div class="ap-guide-row">
+          <b>OpenAI-compatible lain</b>
+          <div>Base URL: <span class="mono">https://api.openai.com/v1</span>
+            (atau <span class="mono">https://api.deepseek.com/v1</span>)<br>
+            Model: <span class="mono">gpt-4.1</span> /
+            <span class="mono">deepseek-chat</span></div>
+        </div>
+        <div class="ap-guide-row">
+          <b>Anthropic langsung</b>
+          <div>Base URL: <span class="mono">https://api.anthropic.com/v1</span><br>
+            Model: <span class="mono">claude-sonnet-4-20250514</span></div>
+        </div>
+        <div class="hint" style="margin-top:6px">
+          Bingung? Pilih <b>Auto</b> — sistem memilih endpoint yang benar dari
+          base URL + model ID, lalu menampilkan URL akhirnya di bawah.</div>
+      </div>
+
+      <h3 id="apiProviderFormTitle" style="margin-top:16px">Tambah provider API</h3>
       <div class="row">
         <div>
           <label for="apName">Nama provider (internal admin)</label>
@@ -523,9 +581,9 @@ async with aiohttp.ClientSession() as session:<br>
           <label for="apBaseUrl">Base URL</label>
           <input type="text" id="apBaseUrl"
                  placeholder="https://api.cloudflare.com/client/v4/accounts/.../ai/run">
-          <div class="hint">Bisa URL lengkap <span class="mono">/ai/run/...</span>,
-            root <span class="mono">…/ai/run</span>, atau base URL
-            OpenAI-compatible (mis. <span class="mono">https://api.contoh.com/v1</span>).</div>
+          <div class="hint">Tempel base URL saja (tanpa nama model) — path
+            <span class="mono">/chat/completions</span> atau nama model
+            ditambahkan otomatis.</div>
         </div>
       </div>
       <div class="row">
@@ -537,12 +595,29 @@ async with aiohttp.ClientSession() as session:<br>
             pernah dikirim ke aplikasi.</div>
         </div>
         <div>
-          <label for="apFormat">Format respons</label>
+          <label for="apFormat">Jenis API</label>
           <select id="apFormat">
-            <option value="auto">Auto (deteksi Cloudflare/OpenAI)</option>
+            <option value="auto">Auto (rekomendasi)</option>
             <option value="openai">OpenAI-compatible</option>
-            <option value="cloudflare">Cloudflare Workers AI</option>
+            <option value="anthropic">Anthropic Messages</option>
+            <option value="cloudflare">Cloudflare Workers AI (model di path)</option>
+            <option value="cloudflare-universal">Cloudflare REST /ai/run (model + input)</option>
           </select>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="apGatewayId">Gateway ID Cloudflare (opsional)</label>
+          <input type="text" id="apGatewayId" placeholder="default">
+          <div class="hint">Dikirim sebagai header
+            <span class="mono">cf-aig-gateway-id</span>. Model
+            <span class="mono">@cf/</span> otomatis memakai
+            <span class="mono">default</span> bila dikosongkan.</div>
+        </div>
+        <div>
+          <label>URL yang akan dipanggil gateway</label>
+          <div class="endpoint-preview mono" id="apEndpointPreview">—</div>
+          <div class="hint">Dihitung otomatis dari Base URL + model pertama.</div>
         </div>
       </div>
       <label>Tier yang boleh akses</label>
@@ -861,6 +936,7 @@ function showView(name) {
     if (!$('apModelRows').querySelector('.ap-model-row')) {
       appendProviderModelRow({});
     }
+    updateApiEndpointPreview();
     loadApiProviders();
   } else if (name === 'logs') {
     loadApiKeyLogs();
@@ -2219,12 +2295,101 @@ function collectProviderModels() {
   }).filter((m) => m.modelId);
 }
 
+function providerFormatLabel(value) {
+  const labels = {
+    'auto': 'Auto',
+    'openai': 'OpenAI-compatible',
+    'anthropic': 'Anthropic Messages',
+    'cloudflare': 'Cloudflare Workers AI (path)',
+    'cloudflare-universal': 'Cloudflare REST /ai/run',
+  };
+  return labels[value] || 'Auto';
+}
+
+/// Cermin aturan worker: tentukan jenis API dari base URL + model ID.
+function guessProviderMode(format, baseUrl, modelId) {
+  if (['openai', 'anthropic', 'cloudflare', 'cloudflare-universal']
+    .includes(format)) {
+    return format;
+  }
+  const base = String(baseUrl || '').trim().replace(/\/+$/, '');
+  const model = String(modelId || '').trim();
+  const anthropicHost = /(^|\/\/)api\.anthropic\.com\//i.test(base);
+  const anthropicModel = /^anthropic\//i.test(model) || /^claude/i.test(model);
+  if (/\/ai\/run\/.+/i.test(base)) return 'cloudflare';
+  if (/\/ai\/run$/i.test(base)) {
+    return model.startsWith('@cf/') ? 'cloudflare' : 'cloudflare-universal';
+  }
+  if (/\/accounts\/[^/]+$/i.test(base)) return 'cloudflare-universal';
+  if (/\/ai\/v1\/messages$/i.test(base) || /\/v1\/messages$/i.test(base)) {
+    return 'anthropic';
+  }
+  if (/\/ai\/v1(\/chat\/completions)?$/i.test(base)) {
+    return anthropicModel ? 'anthropic' : 'openai';
+  }
+  if (/\/chat\/completions$/i.test(base)) return 'openai';
+  if (/\/compat(\/chat\/completions)?$/i.test(base)) return 'openai';
+  if (anthropicHost) return 'anthropic';
+  return 'openai';
+}
+
+/// URL akhir yang dipanggil gateway (untuk ditampilkan ke admin).
+function providerEndpointUrl(format, baseUrl, modelId) {
+  const raw = String(baseUrl || '').trim();
+  if (!raw) return '';
+  const base = raw.replace(/\/+$/, '');
+  const model = String(modelId || '').trim().replace(/^\/+/, '');
+  const mode = guessProviderMode(format, base, model);
+  if (mode === 'cloudflare') {
+    if (/\/ai\/run\/.+/i.test(base)) return base;
+    if (/\/ai\/run$/i.test(base)) return base + '/' + model;
+    if (/\/accounts\/[^/]+$/i.test(base)) return base + '/ai/run/' + model;
+    return base;
+  }
+  if (mode === 'cloudflare-universal') {
+    if (/\/ai\/run$/i.test(base)) return base;
+    if (/\/ai\/v1$/i.test(base)) {
+      return base.replace(/\/ai\/v1$/i, '') + '/ai/run';
+    }
+    if (/\/accounts\/[^/]+$/i.test(base)) return base + '/ai/run';
+    return base;
+  }
+  if (mode === 'anthropic') {
+    if (/\/messages$/i.test(base)) return base;
+    if (/\/ai\/v1$/i.test(base) || /\/v\d+$/i.test(base)) {
+      return base + '/messages';
+    }
+    return base + '/v1/messages';
+  }
+  if (/\/chat\/completions$/i.test(base)) return base;
+  if (/\/compat$/i.test(base)) return base + '/chat/completions';
+  if (/\/ai\/run$/i.test(base)) {
+    return base.replace(/\/ai\/run$/i, '') + '/ai/v1/chat/completions';
+  }
+  if (/\/ai\/v1$/i.test(base) || /\/v\d+$/i.test(base)) {
+    return base + '/chat/completions';
+  }
+  return base + '/v1/chat/completions';
+}
+
+function updateApiEndpointPreview() {
+  const host = $('apEndpointPreview');
+  if (!host) return;
+  const models = collectProviderModels();
+  const modelId = (models[0] && models[0].modelId) || '';
+  const url = providerEndpointUrl(
+    $('apFormat').value, $('apBaseUrl').value.trim(), modelId);
+  host.textContent = url ||
+    'Isi Base URL + model untuk melihat URL akhirnya.';
+}
+
 function providerFormValues() {
   return {
     id: editingProviderId || undefined,
     name: $('apName').value.trim(),
     baseUrl: $('apBaseUrl').value.trim(),
     apiKey: $('apApiKey').value.trim(),
+    gatewayId: $('apGatewayId').value.trim(),
     format: $('apFormat').value,
     models: collectProviderModels(),
     tierAccess: [
@@ -2244,6 +2409,7 @@ function resetApiProviderForm() {
   $('apBaseUrl').value = '';
   $('apApiKey').value = '';
   $('apApiKey').placeholder = 'Bearer token provider';
+  $('apGatewayId').value = '';
   $('apFormat').value = 'auto';
   $('apTierFree').checked = true;
   $('apTierPro').checked = true;
@@ -2251,6 +2417,7 @@ function resetApiProviderForm() {
   $('apEnabled').checked = true;
   $('apModelRows').innerHTML = '';
   appendProviderModelRow({});
+  updateApiEndpointPreview();
   $('apiProviderStatus').textContent = '';
   $('apiProviderStatus').className = 'status';
 }
@@ -2266,6 +2433,7 @@ function editApiProvider(id) {
   $('apApiKey').value = '';
   $('apApiKey').placeholder = p.hasApiKey
     ? 'Tersimpan — kosongkan = tidak diubah' : 'Bearer token provider';
+  $('apGatewayId').value = p.gatewayId || '';
   $('apFormat').value = p.format || 'auto';
   const tiers = p.tierAccess || ['free', 'pro', 'vip'];
   $('apTierFree').checked = tiers.includes('free');
@@ -2279,6 +2447,7 @@ function editApiProvider(id) {
   } else {
     appendProviderModelRow({});
   }
+  updateApiEndpointPreview();
   $('apiProviderStatus').textContent = '';
   $('apiProviderStatus').className = 'status';
   $('view-providers').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2327,9 +2496,13 @@ function renderApiProviders() {
       keyTag + '</div>' +
       '<div class="meta mono" style="color:var(--muted);font-size:11.5px">' +
       escapeHtml(p.baseUrl || '-') + '</div>' +
+      '<div class="meta mono" style="color:#9ecbff;font-size:11.5px">→ ' +
+      escapeHtml(providerEndpointUrl(p.format || 'auto', p.baseUrl || '',
+        (models[0] && models[0].modelId) || '')) + '</div>' +
       '<div class="meta" style="color:var(--muted);font-size:11.5px">' +
-      'format ' + escapeHtml(p.format || 'auto') + ' · ' +
-      models.length + ' model</div>' +
+      escapeHtml(providerFormatLabel(p.format || 'auto')) +
+      (p.gatewayId ? ' · gateway ' + escapeHtml(p.gatewayId) : '') +
+      ' · ' + models.length + ' model</div>' +
       (modelRows || '<div class="empty">Belum ada model.</div>') +
       '<div class="srv-actions">' +
       '<button data-ap-edit="' + escapeAttr(p.id) + '">Edit provider</button>' +
@@ -2357,6 +2530,12 @@ async function loadApiProviders() {
 }
 
 $('addApiModel').addEventListener('click', () => appendProviderModelRow({}));
+
+// URL akhir yang dipanggil mengikuti base URL + tipe API + model pertama.
+$('apBaseUrl').addEventListener('input', updateApiEndpointPreview);
+$('apFormat').addEventListener('change', updateApiEndpointPreview);
+$('apModelRows').addEventListener('input', updateApiEndpointPreview);
+$('apModelRows').addEventListener('change', updateApiEndpointPreview);
 
 $('apModelRows').addEventListener('click', (ev) => {
   const rowId = ev.target.getAttribute('data-ap-remove-row');
@@ -2409,13 +2588,16 @@ $('testApiProvider').addEventListener('click', async () => {
   setStatus($('apiProviderStatus'), 'Menguji koneksi ke provider…', null);
   try {
     const data = await api('POST', '/api/admin/api-providers/test', values);
+    const where = data.target
+      ? ' → ' + data.target + (data.mode ? ' (' + data.mode + ')' : '')
+      : '';
     if (data.ok) {
       setStatus($('apiProviderStatus'),
-        'Koneksi OK (HTTP ' + data.status + '). ' +
+        'Koneksi OK (HTTP ' + data.status + ')' + where + '. ' +
         (data.preview ? data.preview.slice(0, 120) : ''), true);
     } else {
       setStatus($('apiProviderStatus'),
-        'Provider membalas HTTP ' + data.status + '. ' +
+        'Provider membalas HTTP ' + data.status + where + '. ' +
         (data.preview ? data.preview.slice(0, 160) : ''), false);
     }
   } catch (e) {
@@ -2447,6 +2629,7 @@ $('apiProviderList').addEventListener('click', async (ev) => {
         name: p.name,
         baseUrl: p.baseUrl,
         apiKey: '',
+        gatewayId: p.gatewayId || '',
         format: p.format,
         tierAccess: p.tierAccess,
         enabled: p.enabled !== false,

@@ -394,9 +394,13 @@ function cleanApiProvider(body, existing) {
   const tierAccess = tiers
     ? [...new Set(tiers.map((t) => String(t).trim().toLowerCase()).filter(Boolean))]
     : ['free', 'pro', 'vip'];
-  const format = ['auto', 'openai', 'cloudflare'].includes(incoming.format)
+  // Jenis API upstream. `auto` mendeteksi dari base URL + model ID
+  // (Workers AI path, Cloudflare REST /ai/run, OpenAI, Anthropic).
+  const formats = ['auto', 'openai', 'anthropic', 'cloudflare',
+    'cloudflare-universal'];
+  const format = formats.includes(incoming.format)
     ? incoming.format
-    : (base.format || 'auto');
+    : (formats.includes(base.format) ? base.format : 'auto');
 
   // Daftar model provider. Format lama (satu `model` di level provider)
   // tetap didukung supaya data KV yang sudah ada tidak hilang.
@@ -438,6 +442,10 @@ function cleanApiProvider(body, existing) {
     apiKey: typeof incoming.apiKey === 'string' && incoming.apiKey.trim()
       ? incoming.apiKey.trim()
       : (base.apiKey || ''),
+    // Cloudflare AI Gateway id untuk header `cf-aig-gateway-id`
+    // (kosong = otomatis `default` untuk model Workers AI `@cf/`).
+    gatewayId: String(incoming.gatewayId ?? base.gatewayId ?? '')
+      .trim().slice(0, 64),
     format,
     tierAccess: tierAccess.length ? tierAccess : ['free', 'pro', 'vip'],
     models,
@@ -480,36 +488,375 @@ function apiProviderModels(provider) {
   }];
 }
 
-function isCloudflareAiUrl(value) {
-  return /api\.cloudflare\.com\/client\/v4\/accounts\/[^/]+\/ai\/run\//i
-    .test(String(value || ''));
-}
-
-/// URL upstream untuk satu model provider. Cloudflare Workers AI bisa
-/// memakai URL `/ai/run/<model>` lengkap, root `…/ai/run`, atau root akun
-/// `…/accounts/<id>` (model ditempel otomatis).
-function apiProviderTargetUrl(provider, model) {
-  const raw = String(provider.baseUrl || '').trim();
-  if (!raw) return '';
-  const base = raw.replace(/\/+$/, '');
-  const endpoint = String((model && model.modelId) || provider.model || '')
-    .trim()
-    .replace(/^\/+/, '');
-  if (/\/ai\/run$/i.test(base)) {
-    return endpoint ? `${base}/${endpoint}` : base;
-  }
-  if (/\/accounts\/[^/]+$/i.test(base) && endpoint.startsWith('@cf/')) {
-    return `${base}/ai/run/${endpoint}`;
-  }
-  if (isCloudflareAiUrl(base) || /\/ai\/run\//i.test(base)) return base;
-  if (/\/chat\/completions$/i.test(base)) return base;
-  if (/\/v\d+$/i.test(base)) return `${base}/chat/completions`;
-  return `${base}/v1/chat/completions`;
-}
-
 function apiProviderModelName(provider, model) {
   return String((model && model.modelId) || provider.model || provider.id || '')
     .trim();
+}
+
+function isCloudflareApiHost(value) {
+  return /(^|\/\/)api\.cloudflare\.com\//i.test(String(value || ''));
+}
+
+/// Cara memanggil upstream. Cloudflare punya beberapa endpoint:
+/// - `/ai/run/<model>`  → Workers AI path (model di URL, body `{messages}`)
+/// - `/ai/run`          → REST universal (body `{model, input}`), bisa untuk
+///                        Workers AI maupun model pihak ketiga (openai/…,
+///                        anthropic/…, google/…)
+/// - `/ai/v1`           → OpenAI-compatible (`/ai/v1/chat/completions`)
+/// - `/ai/v1/messages`  → Anthropic Messages
+/// Provider lain: OpenAI-compatible `/v1/chat/completions` atau Anthropic
+/// `/v1/messages`.
+function apiProviderMode(provider, model) {
+  const explicit = String(provider.format || 'auto');
+  if (['openai', 'anthropic', 'cloudflare', 'cloudflare-universal']
+    .includes(explicit)) {
+    return explicit;
+  }
+  const raw = String(provider.baseUrl || '').trim().replace(/\/+$/, '');
+  const modelId = apiProviderModelName(provider, model);
+  const anthropicHost = /(^|\/\/)api\.anthropic\.com\//i.test(raw);
+  const anthropicModel = /^anthropic\//i.test(modelId) ||
+    /^claude/i.test(modelId);
+  if (/\/ai\/run\/.+/i.test(raw)) return 'cloudflare'; // model sudah di URL
+  if (/\/ai\/run$/i.test(raw)) {
+    // Model Workers AI memakai endpoint path; model pihak ketiga memakai
+    // envelope `/ai/run` (`{model, input}`).
+    return modelId.startsWith('@cf/') ? 'cloudflare' : 'cloudflare-universal';
+  }
+  if (/\/accounts\/[^/]+$/i.test(raw)) return 'cloudflare-universal';
+  if (/\/ai\/v1\/messages$/i.test(raw) || /\/v1\/messages$/i.test(raw)) {
+    return 'anthropic';
+  }
+  if (/\/ai\/v1(\/chat\/completions)?$/i.test(raw)) {
+    // Cloudflare `/ai/v1` bisa OpenAI-compatible atau Anthropic Messages,
+    // tergantung nama model (`anthropic/...`).
+    return anthropicModel ? 'anthropic' : 'openai';
+  }
+  if (/\/chat\/completions$/i.test(raw)) return 'openai';
+  if (/\/compat(\/chat\/completions)?$/i.test(raw)) return 'openai';
+  if (anthropicHost) return 'anthropic';
+  return 'openai';
+}
+
+/// URL final yang dipanggil gateway + mode body-nya.
+/// Admin cukup menempel salah satu bentuk base URL Cloudflare; sisa path
+/// dilengkapi otomatis supaya tidak perlu paham perbedaan endpoint.
+function apiProviderTarget(provider, model) {
+  const raw = String(provider.baseUrl || '').trim();
+  if (!raw) return { url: '', mode: 'openai' };
+  const base = raw.replace(/\/+$/, '');
+  const modelId = apiProviderModelName(provider, model).replace(/^\/+/, '');
+  const mode = apiProviderMode(provider, model);
+
+  if (mode === 'cloudflare') {
+    if (/\/ai\/run\/.+/i.test(base)) return { url: base, mode };
+    if (/\/ai\/run$/i.test(base)) {
+      return { url: `${base}/${modelId}`, mode };
+    }
+    if (/\/accounts\/[^/]+$/i.test(base)) {
+      return { url: `${base}/ai/run/${modelId}`, mode };
+    }
+    return { url: base, mode };
+  }
+
+  if (mode === 'cloudflare-universal') {
+    if (/\/ai\/run$/i.test(base)) return { url: base, mode };
+    if (/\/ai\/v1$/i.test(base)) {
+      return { url: `${base.replace(/\/ai\/v1$/i, '')}/ai/run`, mode };
+    }
+    if (/\/accounts\/[^/]+$/i.test(base)) {
+      return { url: `${base}/ai/run`, mode };
+    }
+    return { url: base, mode };
+  }
+
+  if (mode === 'anthropic') {
+    if (/\/messages$/i.test(base)) return { url: base, mode };
+    if (/\/ai\/v1$/i.test(base) || /\/v\d+$/i.test(base)) {
+      return { url: `${base}/messages`, mode };
+    }
+    return { url: `${base}/v1/messages`, mode };
+  }
+
+  // OpenAI-compatible.
+  if (/\/chat\/completions$/i.test(base)) return { url: base, mode };
+  if (/\/compat$/i.test(base)) return { url: `${base}/chat/completions`, mode };
+  if (/\/ai\/run$/i.test(base)) {
+    return {
+      url: `${base.replace(/\/ai\/run$/i, '')}/ai/v1/chat/completions`,
+      mode,
+    };
+  }
+  if (/\/ai\/v1$/i.test(base) || /\/v\d+$/i.test(base)) {
+    return { url: `${base}/chat/completions`, mode };
+  }
+  return { url: `${base}/v1/chat/completions`, mode };
+}
+
+/// Header auth per jenis API. Cloudflare & OpenAI-compatible memakai
+/// `Authorization: Bearer`. Anthropic native memakai `x-api-key` +
+/// `anthropic-version`, sedangkan endpoint Anthropic milik Cloudflare
+/// (`/ai/v1/messages`) tetap memakai Bearer token Cloudflare.
+function apiProviderHeaders(provider, mode, model) {
+  const headers = new Headers();
+  headers.set('Content-Type', 'application/json');
+  const key = String(provider.apiKey || '').trim();
+  const nativeAnthropic =
+    mode === 'anthropic' && /anthropic\.com/i.test(String(provider.baseUrl));
+  if (nativeAnthropic) {
+    if (key) headers.set('x-api-key', key);
+    headers.set('anthropic-version', '2023-06-01');
+  } else if (key) {
+    headers.set('Authorization', `Bearer ${key}`);
+  }
+  const gatewayId = String(provider.gatewayId || '').trim();
+  const modelId = apiProviderModelName(provider, model);
+  if (gatewayId) {
+    headers.set('cf-aig-gateway-id', gatewayId);
+  } else if (isCloudflareApiHost(provider.baseUrl) &&
+      modelId.startsWith('@cf/')) {
+    // Workers AI wajib menyebut gateway; `default` dibuat otomatis.
+    headers.set('cf-aig-gateway-id', 'default');
+  }
+  return headers;
+}
+
+/// Ubah `content` gaya OpenAI (string atau array part) ke bentuk Anthropic.
+function openAiContentToAnthropic(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const blocks = [];
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue;
+    if (part.type === 'text' && typeof part.text === 'string') {
+      blocks.push({ type: 'text', text: part.text });
+    } else if (part.type === 'image_url' && part.image_url &&
+        typeof part.image_url.url === 'string') {
+      const url = part.image_url.url;
+      const dataUrl = /^data:([^;]+);base64,(.+)$/i.exec(url);
+      if (dataUrl) {
+        blocks.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: dataUrl[1],
+            data: dataUrl[2],
+          },
+        });
+      } else if (/^https?:/i.test(url)) {
+        blocks.push({ type: 'image', source: { type: 'url', url } });
+      }
+    }
+  }
+  if (!blocks.length) return '';
+  if (blocks.length === 1 && blocks[0].type === 'text') return blocks[0].text;
+  return blocks;
+}
+
+/// Body Anthropic Messages dari body OpenAI chat completions.
+function openAiToAnthropic(body, modelId, maxTokens) {
+  const systemParts = [];
+  const messages = [];
+  for (const message of Array.isArray(body.messages) ? body.messages : []) {
+    if (!message || !message.role) continue;
+    const content = openAiContentToAnthropic(message.content);
+    if (message.role === 'system' || message.role === 'developer') {
+      if (typeof content === 'string') {
+        if (content.trim()) systemParts.push(content);
+      } else if (Array.isArray(content)) {
+        const text = content.filter((block) => block.type === 'text')
+          .map((block) => block.text).join('\n');
+        if (text.trim()) systemParts.push(text);
+      }
+      continue;
+    }
+    if (message.role !== 'user' && message.role !== 'assistant') continue;
+    if (content === '' || (Array.isArray(content) && !content.length)) continue;
+    messages.push({ role: message.role, content });
+  }
+  if (!messages.length) messages.push({ role: 'user', content: 'Halo' });
+  const result = {
+    model: modelId,
+    // Anthropic mewajibkan max_tokens.
+    max_tokens: Math.max(1, Number(maxTokens) || 1024),
+    messages,
+  };
+  if (systemParts.length) result.system = systemParts.join('\n\n');
+  if (body.temperature !== undefined) result.temperature = body.temperature;
+  if (body.top_p !== undefined) result.top_p = body.top_p;
+  if (body.stop !== undefined) {
+    result.stop_sequences = Array.isArray(body.stop) ? body.stop : [body.stop];
+  }
+  if (body.stream === true) result.stream = true;
+  return result;
+}
+
+/// Body request sesuai mode upstream.
+function apiProviderBody(provider, model, body, maxTokens) {
+  const mode = apiProviderMode(provider, model);
+  const modelId = apiProviderModelName(provider, model);
+  if (mode === 'anthropic') {
+    return openAiToAnthropic(body, modelId, maxTokens);
+  }
+  const base = { ...body, max_tokens: maxTokens };
+  delete base.model;
+  delete base.stream_options;
+  if (mode === 'cloudflare') {
+    // Workers AI path: model sudah di URL. `model` tetap dikirim supaya
+    // kompatibel dengan proxy/relay yang membacanya.
+    return { ...base, model: modelId };
+  }
+  if (mode === 'cloudflare-universal') {
+    // REST universal: { model, input: { ...parameter model } }.
+    return { model: modelId, input: base };
+  }
+  const openai = { ...base, model: modelId };
+  if (body.max_completion_tokens !== undefined) {
+    openai.max_completion_tokens = maxTokens;
+  }
+  delete openai.input;
+  return openai;
+}
+
+/// Ambil teks dari respons non-OpenAI (Anthropic / Workers AI / universal).
+function providerText(data) {
+  if (!data) return '';
+  if (typeof data === 'string') return data;
+  if (typeof data.response === 'string') return data.response;
+  if (typeof data.output_text === 'string') return data.output_text;
+  if (typeof data.text === 'string') return data.text;
+  if (Array.isArray(data.content)) {
+    return data.content
+      .filter((block) => block && block.type === 'text' &&
+        typeof block.text === 'string')
+      .map((block) => block.text)
+      .join('');
+  }
+  return '';
+}
+
+/// Buka pembungkus `{success, result}` milik Cloudflare bila isinya respons
+/// chat, tanpa membuang bentuk aslinya kalau bukan.
+function unwrapProviderResult(data) {
+  if (!data || typeof data !== 'object' || data.result === undefined) {
+    return data;
+  }
+  const inner = data.result;
+  if (typeof inner === 'string') return { response: inner };
+  if (inner && typeof inner === 'object' &&
+      (inner.choices || inner.content || inner.response !== undefined ||
+        inner.output_text !== undefined || inner.usage)) {
+    return inner;
+  }
+  return data;
+}
+
+/// Normalisasi respons provider apa pun menjadi `chat.completion` OpenAI.
+function normalizeProviderChatResponse(data, modelId, fallbackPromptTokens) {
+  const root = unwrapProviderResult(data);
+  const rawUsage = (root && root.usage) || (data && data.usage) || {};
+  let promptTokens = Number(
+    rawUsage.prompt_tokens ?? rawUsage.input_tokens) || 0;
+  let completionTokens = Number(
+    rawUsage.completion_tokens ?? rawUsage.output_tokens) || 0;
+  if (!promptTokens) promptTokens = Number(fallbackPromptTokens) || 0;
+  const finish = (text) => {
+    if (!completionTokens) {
+      completionTokens = Math.max(1, Math.ceil(String(text).length / 4));
+    }
+    return {
+      id: `chatcmpl-${Date.now()}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: modelId,
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: text },
+        finish_reason: 'stop',
+      }],
+      usage: {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: promptTokens + completionTokens,
+      },
+    };
+  };
+  if (root && Array.isArray(root.choices) && root.choices.length) {
+    const message = root.choices[0] && root.choices[0].message;
+    if (!completionTokens && message && typeof message.content === 'string') {
+      completionTokens = Math.max(1, Math.ceil(message.content.length / 4));
+    }
+    return {
+      ...root,
+      id: root.id || `chatcmpl-${Date.now()}`,
+      object: 'chat.completion',
+      created: root.created || Math.floor(Date.now() / 1000),
+      model: modelId,
+      usage: {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: promptTokens + completionTokens,
+      },
+    };
+  }
+  const text = providerText(root);
+  if (text) return finish(text);
+  return data;
+}
+
+/// Satu event SSE provider → event OpenAI (0..n chunk).
+function providerSseChunks(parsed, modelId) {
+  if (!parsed || typeof parsed !== 'object') return [];
+  // Cloudflare REST/Workers AI bisa membungkus event di `result`.
+  const event = unwrapProviderResult(parsed);
+  const type = String(event.type || '');
+  // Anthropic: teks ada di `content_block_delta.delta.text`.
+  if (type === 'content_block_delta') {
+    const delta = event.delta || {};
+    if (typeof delta.text === 'string' && delta.text) {
+      return [providerOpenAiChunk(delta.text, modelId)];
+    }
+    return [];
+  }
+  if (type === 'content_block_start') {
+    const block = event.content_block || {};
+    if (block.type === 'text' && typeof block.text === 'string' && block.text) {
+      return [providerOpenAiChunk(block.text, modelId)];
+    }
+    return [];
+  }
+  if (type === 'message_start' || type === 'message_delta' ||
+      type === 'message_stop' || type === 'ping') {
+    return [];
+  }
+  // OpenAI-compatible (termasuk Cloudflare `/ai/v1/chat/completions`).
+  if (Array.isArray(event.choices)) {
+    return event.choices.length ? [event] : [];
+  }
+  // Workers AI / REST universal: `{response: "..."}`.
+  const text = providerText(event);
+  if (text) return [providerOpenAiChunk(text, modelId)];
+  return [];
+}
+
+/// Usage dari event SSE (OpenAI, Anthropic, atau universal).
+function providerSseUsage(parsed, current) {
+  const usage = {};
+  const collect = (raw) => {
+    if (!raw || typeof raw !== 'object') return;
+    const prompt = Number(raw.prompt_tokens ?? raw.input_tokens) || 0;
+    const completion = Number(raw.completion_tokens ?? raw.output_tokens) || 0;
+    if (prompt) usage.prompt_tokens = prompt;
+    if (completion) usage.completion_tokens = completion;
+  };
+  const event = unwrapProviderResult(parsed);
+  collect(parsed && parsed.usage);
+  collect(event && event.usage);
+  collect(event && event.message && event.message.usage);
+  return {
+    prompt_tokens: usage.prompt_tokens || current.prompt_tokens || 0,
+    completion_tokens: usage.completion_tokens || current.completion_tokens || 0,
+  };
 }
 
 function dailyDateKey() {
@@ -596,8 +943,8 @@ async function handleApiProviders(request, env, pathname) {
     const provider = cleanApiProvider(body, existing);
     const testModel = apiProviderModels(provider)
       .find((m) => m.enabled !== false) || apiProviderModels(provider)[0];
-    const target = apiProviderTargetUrl(provider, testModel);
-    if (!target || !provider.apiKey) {
+    const target = apiProviderTarget(provider, testModel);
+    if (!target.url || !provider.apiKey) {
       return jsonResponse(request, 400, {
         error: 'Base URL dan API key wajib diisi untuk tes koneksi.',
       });
@@ -610,32 +957,30 @@ async function handleApiProviders(request, env, pathname) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20000);
     try {
-      const res = await fetch(target, {
+      const res = await fetch(target.url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${provider.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: apiProviderModelName(provider, testModel),
+        headers: apiProviderHeaders(provider, target.mode, testModel),
+        body: JSON.stringify(apiProviderBody(provider, testModel, {
           messages: [{ role: 'user', content: 'ping' }],
           max_tokens: 8,
           stream: false,
-        }),
+        }, 8)),
         signal: controller.signal,
       });
       const text = await res.text();
       return jsonResponse(request, 200, {
         ok: res.ok,
         status: res.status,
-        target,
+        target: target.url,
+        mode: target.mode,
         preview: text.slice(0, 400),
       });
     } catch (error) {
       return jsonResponse(request, 502, {
         ok: false,
         error: `Gagal menghubungi provider: ${error}`,
-        target,
+        target: target.url,
+        mode: target.mode,
       });
     } finally {
       clearTimeout(timer);
@@ -2743,8 +3088,11 @@ async function handleGateway(request, env, pathname) {
     }
 
     const base = backendUrl.replace(/\/+$/, '');
-    const targetUrl = providerConfig
-      ? apiProviderTargetUrl(providerConfig, providerModel)
+    const providerTarget = providerConfig
+      ? apiProviderTarget(providerConfig, providerModel)
+      : null;
+    const targetUrl = providerTarget
+      ? providerTarget.url
       : (/\/v\d+$/i.test(base)
         ? `${base}/chat/completions`
         : `${base}/v1/chat/completions`);
@@ -2761,14 +3109,15 @@ async function handleGateway(request, env, pathname) {
       });
     }
 
-    const headers = new Headers();
-    headers.set('Content-Type', 'application/json');
+    let headers;
     if (providerConfig) {
-      // Provider eksternal: hanya Authorization Bearer (API key provider).
-      if (providerConfig.apiKey) {
-        headers.set('Authorization', `Bearer ${providerConfig.apiKey}`);
-      }
+      // Provider eksternal: header mengikuti jenis API (Bearer, x-api-key
+      // untuk Anthropic native, plus `cf-aig-gateway-id` bila perlu).
+      headers = apiProviderHeaders(
+        providerConfig, providerTarget.mode, providerModel);
     } else {
+      headers = new Headers();
+      headers.set('Content-Type', 'application/json');
       // Secret inference = manager secret VPS (nginx memakai key yang sama
       // untuk /manager dan /). Entri model lama bisa punya apiKey sendiri.
       const backendKey = modelConfig.apiKey ||
@@ -2783,28 +3132,30 @@ async function handleGateway(request, env, pathname) {
 
     let upstream;
     try {
-      const upstreamBody = {
-        ...body,
-        // Backend selalu menerima nama model asli (bukan id publik
-        // `label:model:tier`) dan tanpa folder path.
-        model: providerConfig
-          ? apiProviderModelName(providerConfig, providerModel)
-          : backendModelName(modelConfig.backendModelId || modelId),
-        // Nilai hasil clamp dari context/max output server.
-        max_tokens: tokenLimit.maxTokens,
-      };
-      // Jaga dua nama field tetap sinkron untuk backend OpenAI-compatible
-      // baru yang hanya membaca `max_completion_tokens`.
-      if (body.max_completion_tokens !== undefined) {
-        upstreamBody.max_completion_tokens = tokenLimit.maxTokens;
-      }
-      // Minta usage di akhir stream supaya kuota tetap terhitung.
-      // Provider eksternal (mis. Cloudflare) tidak mengenal stream_options.
-      if (body.stream === true && !providerConfig) {
-        upstreamBody.stream_options = {
-          ...(body.stream_options || {}),
-          include_usage: true,
-        };
+      const upstreamBody = providerConfig
+        ? apiProviderBody(
+            providerConfig, providerModel, body, tokenLimit.maxTokens)
+        : {
+            ...body,
+            // Backend selalu menerima nama model asli (bukan id publik
+            // `label:model:tier`) dan tanpa folder path.
+            model: backendModelName(modelConfig.backendModelId || modelId),
+            // Nilai hasil clamp dari context/max output server.
+            max_tokens: tokenLimit.maxTokens,
+          };
+      if (!providerConfig) {
+        // Jaga dua nama field tetap sinkron untuk backend OpenAI-compatible
+        // baru yang hanya membaca `max_completion_tokens`.
+        if (body.max_completion_tokens !== undefined) {
+          upstreamBody.max_completion_tokens = tokenLimit.maxTokens;
+        }
+        // Minta usage di akhir stream supaya kuota tetap terhitung.
+        if (body.stream === true) {
+          upstreamBody.stream_options = {
+            ...(body.stream_options || {}),
+            include_usage: true,
+          };
+        }
       }
       // Hitung request harian per akun tepat sebelum panggilan upstream.
       if (dailyLimit > 0) {
@@ -2854,23 +3205,20 @@ async function handleGateway(request, env, pathname) {
               // Chunk keep-alive / bukan JSON — abaikan.
               continue;
             }
-            if (parsed && parsed.usage) usage = parsed.usage;
             if (parsed && parsed.timings) timings = parsed.timings;
-            // Cloudflare Workers AI: {response: "token"} → delta OpenAI.
-            if (parsed && typeof parsed.response === 'string') {
-              contentChars += parsed.response.length;
-              controller.enqueue(encoder.encode(
-                `data: ${JSON.stringify(
-                  providerOpenAiChunk(parsed.response, modelId))}\n\n`));
-              continue;
+            usage = providerSseUsage(parsed, usage);
+            // Normalisasi event provider (OpenAI / Anthropic / Workers AI /
+            // REST universal) menjadi delta OpenAI. Chunk OpenAI diteruskan
+            // apa adanya supaya metadata (finish_reason) tetap utuh.
+            for (const event of providerSseChunks(parsed, modelId)) {
+              const choice = event.choices && event.choices[0];
+              const delta = choice && choice.delta;
+              if (delta && typeof delta.content === 'string') {
+                contentChars += delta.content.length;
+              }
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
             }
-            const choice = parsed && parsed.choices && parsed.choices[0];
-            const delta = choice && choice.delta;
-            if (delta && typeof delta.content === 'string') {
-              contentChars += delta.content.length;
-            }
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify(parsed)}\n\n`));
           }
         },
         async flush(controller) {
@@ -2974,35 +3322,28 @@ async function handleGateway(request, env, pathname) {
     }
 
     // Provider eksternal bisa membalas dengan format non-OpenAI.
-    // Cloudflare Workers AI: { success, result: { response } }.
-    if (providerConfig && responseData && responseData.success === false &&
-        Array.isArray(responseData.errors) && responseData.errors.length) {
-      return jsonResponse(request, 502, {
-        error: responseData.errors[0]?.message ||
-          'Provider API mengembalikan error.',
-      });
-    }
-    if (providerConfig && responseData && responseData.result &&
-        typeof responseData.result.response === 'string') {
-      const text = responseData.result.response;
-      const promptTokens = estimatePromptTokens(body.messages);
-      const completionTokens = Math.max(1, Math.ceil(text.length / 4));
-      responseData = {
-        id: `chatcmpl-${Date.now()}`,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: modelId,
-        choices: [{
-          index: 0,
-          message: { role: 'assistant', content: text },
-          finish_reason: 'stop',
-        }],
-        usage: {
-          prompt_tokens: promptTokens,
-          completion_tokens: completionTokens,
-          total_tokens: promptTokens + completionTokens,
-        },
-      };
+    // Cloudflare REST/Workers AI: { success, result: ... }, Anthropic:
+    // { content: [{ type: 'text', text }], usage: { input_tokens, ... } }.
+    if (providerConfig && responseData) {
+      if (responseData.success === false) {
+        const firstError = Array.isArray(responseData.errors)
+          ? responseData.errors[0]
+          : null;
+        return jsonResponse(request, 502, {
+          error: firstError?.message ||
+            'Provider API mengembalikan error.',
+        });
+      }
+      if (responseData.error) {
+        const providerError = responseData.error;
+        return jsonResponse(request, 502, {
+          error: (providerError && providerError.message) ||
+            (typeof providerError === 'string' ? providerError
+              : 'Provider API mengembalikan error.'),
+        });
+      }
+      responseData = normalizeProviderChatResponse(
+        responseData, modelId, estimatePromptTokens(body.messages));
     }
 
     // Deduct tokens/credits based on usage

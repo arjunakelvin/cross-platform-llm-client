@@ -57,18 +57,45 @@ user memakai AI server tersebut lewat **gateway** dengan **API key sendiri**.
 ## Provider API eksternal (base URL + API key)
 
 Menu **Provider API** di dashboard menambah penyedia AI lain tanpa perlu VPS
-sendiri — cukup **base URL** + **API key** (contoh: Cloudflare Workers AI).
+sendiri — cukup **base URL** + **API key**. Pilih **Auto**, lalu tempel base
+URL yang biasa dipakai di dokumentasi provider; gateway memilih endpoint yang
+benar dan menampilkan **URL akhir** di form.
+
+### Base URL per jenis provider
+
+| Jenis | Base URL | Contoh model | API key |
+| --- | --- | --- | --- |
+| **Cloudflare Workers AI** | `https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/run` | `@cf/moonshotai/kimi-k2.6` | Cloudflare API token (permission **Workers AI Read**) |
+| **Cloudflare REST — OpenAI / Anthropic / Google** | `https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/run` | `openai/gpt-4.1`, `anthropic/claude-sonnet-4`, `google/gemini-3-flash` | Cloudflare API token yang sama |
+| **OpenAI-compatible lain** | `https://api.openai.com/v1`, `https://api.deepseek.com/v1`, dsb. | `gpt-4.1`, `deepseek-chat` | API key provider |
+| **Anthropic langsung** | `https://api.anthropic.com/v1` | `claude-sonnet-4-20250514` | Anthropic API key |
+
+Cara kerja **Auto**:
+
+- base URL berakhiran `/ai/run/<model>` → model sudah ada di URL;
+- base URL `/ai/run` + model `@cf/...` → endpoint Workers AI path;
+- base URL `/ai/run` + model `openai/...` atau `anthropic/...` → endpoint REST
+  universal dengan body `{model, input}` (persis seperti contoh `curl`
+  Cloudflare);
+- base URL `/ai/v1` atau `/v1` → OpenAI-compatible `/chat/completions`
+  (`/ai/v1/messages` untuk model `anthropic/...`);
+- base URL `api.anthropic.com` → Anthropic Messages (`x-api-key` +
+  `anthropic-version`).
+
+Isi **Gateway ID Cloudflare** kalau memakai gateway tertentu; untuk model
+`@cf/` gateway `default` dipakai otomatis sebagai header
+`cf-aig-gateway-id`.
 
 | Fitur | Penjelasan |
 | --- | --- |
-| **Tambah provider** | Isi nama (internal admin), base URL, API key, dan format respons (`auto` / `openai` / `cloudflare`). API key disimpan di KV dan **tidak pernah dikirim ke aplikasi**. |
+| **Tambah provider** | Isi nama (internal admin), base URL, API key, dan jenis API (`auto` / `openai` / `anthropic` / `cloudflare` / `cloudflare-universal`). API key disimpan di KV dan **tidak pernah dikirim ke aplikasi**. |
 | **Banyak model per provider** | Satu provider bisa memuat beberapa model sekaligus. Tiap model tampil di Model List dengan id `api:<provider>:<model>` (data lama tetap memakai `api:<provider>`). |
 | **Hanya nama model** | Nama provider tidak ditampilkan ke user — aplikasi hanya menampilkan nama model dan tag **API**. |
 | **Context & max output per model** | Admin mengisi sendiri jumlah context dan max output tiap model. Gateway memakai nilai itu untuk membatasi `max_tokens`; prompt yang melebihi context ditolak **413** dengan pesan jelas. |
 | **Harga per model** | Harga input/output bisa `/1M token` atau `/req`, diatur per model supaya tidak rugi. |
 | **On/off per model** | Model bisa disembunyikan tanpa dihapus; request ke id-nya ditolak gateway. |
 | **Batas request/hari per akun** | Diatur per model (menimpa limit provider) atau global di tab **Tier & kuota token**. Counter per akun memakai tanggal UTC dan reset tengah malam; request ke-`N+1` dibalas **429** `{limit, used, resetAt}`. |
-| **Format Cloudflare** | Respons non-stream `{result:{response}}` dan stream `data:{"response":...}` dikonversi Worker ke format OpenAI, jadi aplikasi tidak perlu diubah. |
+| **Normalisasi respons** | Respons Cloudflare `{result:{response}}`, REST universal `{result:{choices}}`, dan Anthropic `{content:[{text}],usage:{input_tokens,...}}` diubah Worker ke format OpenAI (non-stream & SSE), jadi aplikasi tidak perlu diubah. |
 
 > **Context penuh tidak bisa di-reset.** Kalau percakapan mencapai batas
 > context model, kolom chat diganti panel **hitung mundur reset** (00:00 UTC)
@@ -166,15 +193,20 @@ Klik **Edit** pada model → ubah:
 ### Provider API eksternal
 
 1. Buka tab **Provider API** di sidebar.
-2. Isi **Nama provider**, **Base URL**, **API key**, dan **Format respons**.
-   Untuk Cloudflare cukup tempel base URL akun
-   (`https://api.cloudflare.com/client/v4/accounts/<id>/ai/run`) — nama model
-   ditempel otomatis saat request.
-3. Di tabel **Model yang tampil di aplikasi**, tambahkan satu baris per model:
+2. Isi **Nama provider**, **Base URL**, **API key**, lalu pilih **Jenis API**
+   (`Auto` disarankan). Form menampilkan **URL yang akan dipanggil gateway**
+   supaya base URL tidak perlu dirahasiakan sendiri.
+3. Untuk Cloudflare cukup tempel base URL akun
+   (`https://api.cloudflare.com/client/v4/accounts/<id>/ai/run`), isi
+   **Gateway ID** `default`, lalu model `@cf/...` (Workers AI) atau
+   `openai/...` / `anthropic/...` (REST universal). Model ditempel otomatis
+   ke path atau dikirim di body sesuai jenis endpoint.
+4. Di tabel **Model yang tampil di aplikasi**, tambahkan satu baris per model:
    nama tampilan, model/endpoint ID, context, max output, limit request/hari,
    dan harga (`/1M` atau `/req`).
-4. Toggle **On** menampilkan model; matikan untuk menyembunyikannya sementara.
-5. **Tes koneksi** memanggil model pertama yang aktif, lalu **Simpan provider**.
+5. Toggle **On** menampilkan model; matikan untuk menyembunyikannya sementara.
+6. **Tes koneksi** memanggil model pertama yang aktif (status menampilkan URL
+   dan jenis endpoint), lalu **Simpan provider**.
 
 Model langsung muncul di tab **Model List** aplikasi (tag **API**) tanpa nama
 provider. Semua request tetap lewat gateway sehingga API key aman di server.
