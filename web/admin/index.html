@@ -1105,8 +1105,16 @@ function formatRupiah(v) {
 }
 
 function fmtProofCell(o) {
-  if (!o.proof) return '<td style="color:var(--muted)">—</td>';
+  if (!o.proof) {
+    return '<td style="color:var(--muted)">' +
+      (o.proofDeletedAt ? 'dihapus (3 hari)' : '—') + '</td>';
+  }
   const src = o.proof;
+  if (/^data:video\//i.test(src)) {
+    return '<td><video controls playsinline preload="metadata" ' +
+      'src="' + src + '" style="max-height:120px; max-width:170px; ' +
+      'border-radius:8px; background:#000"></video></td>';
+  }
   return '<td><img loading="lazy" alt="bukti" src="' + src + '" ' +
     'style="max-height:120px; max-width:150px; border-radius:8px; cursor:zoom-in" ' +
     'onclick="window.open(this.src, \'_blank\')"></td>';

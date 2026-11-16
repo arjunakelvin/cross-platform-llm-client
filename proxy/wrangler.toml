@@ -45,3 +45,5 @@ routes = [
   { pattern = "piercingblow.ai.id/api", zone_name = "piercingblow.ai.id" },
   { pattern = "piercingblow.ai.id/api/", zone_name = "piercingblow.ai.id" }
 ]
+
+triggers = { crons = ["0 3 * * *"] }

@@ -249,7 +249,7 @@ class _PlansViewState extends State<PlansView> {
                   if (o.status == 'pending')
                     TextButton(
                       onPressed: () => _pickAndUploadProof(context, o.id),
-                      child: Text(o.hasProof ? 'Ganti foto' : 'Unggah bukti',
+                      child: Text(o.hasProof ? 'Ganti bukti' : 'Unggah bukti',
                           style:
                               GoogleFonts.inter(fontWeight: FontWeight.w600)),
                     ),
@@ -401,20 +401,54 @@ class _PlansViewState extends State<PlansView> {
   }
 
   Future<void> _pickAndUploadProof(BuildContext context, String orderId) async {
+    final mode = await showAppSheet<String>(
+      context,
+      title: 'Unggah bukti',
+      subtitle: 'Pilih foto atau video bukti pembayaran',
+      builder: (ctx) => AppGroup(dividerIndent: 60, children: [
+        AppRow(
+          icon: Icons.photo_camera_outlined,
+          title: 'Foto',
+          subtitle: 'JPEG/PNG/WebP — maksimal ~320 KB',
+          chevron: true,
+          onTap: () => Navigator.pop(ctx, 'image'),
+        ),
+        AppRow(
+          icon: Icons.videocam_outlined,
+          title: 'Video',
+          subtitle: 'MP4/WebM/MOV — maksimal ~1.5 MB',
+          chevron: true,
+          onTap: () => Navigator.pop(ctx, 'video'),
+        ),
+      ]),
+    );
+    if (mode == null || !mounted) return;
+
     try {
       final picker = ImagePicker();
-      final file = await picker.pickImage(
-        source: ImageSource.gallery,
-        maxWidth: 1280,
-        maxHeight: 1280,
-        imageQuality: 60,
-      );
+      XFile? file;
+      if (mode == 'image') {
+        file = await picker.pickImage(
+          source: ImageSource.gallery,
+          maxWidth: 1280,
+          maxHeight: 1280,
+          imageQuality: 60,
+        );
+      } else {
+        file = await picker.pickVideo(
+          source: ImageSource.gallery,
+          maxDuration: const Duration(seconds: 30),
+        );
+      }
       if (file == null) return;
       // XFile.readAsBytes() bekerja di native & Flutter web (dart:io File
       // tidak tersedia di browser).
       final bytes = await file.readAsBytes();
-      final mime =
-          file.name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+      final mime = file.name.toLowerCase().endsWith('.png')
+          ? 'image/png'
+          : mode == 'video'
+              ? 'video/mp4'
+              : 'image/jpeg';
       final dataUrl = 'data:$mime;base64,${base64Encode(bytes)}';
       final ok = await Get.find<PlansService>().uploadProof(orderId, dataUrl);
       if (!mounted || !context.mounted) return;
@@ -428,7 +462,7 @@ class _PlansViewState extends State<PlansView> {
       if (ok && mounted) setState(_reload);
     } catch (_) {
       if (mounted && context.mounted) {
-        showToast('Gagal unggah', 'Tidak bisa membaca gambar.',
+        showToast('Gagal unggah', 'Tidak bisa membaca file.',
             tone: ToastTone.error);
       }
     }

@@ -182,6 +182,23 @@ async function savePlanOrders(env, orders) {
   await env.PB_KV.put('plan_orders', JSON.stringify(orders.slice(0, 200)));
 }
 
+/// Hapus bukti pembayaran (foto/video) yang disimpan > N hari.
+/// Pesanan tetap ada, hanya bukti yang dihapus — biar KV tidak penuh.
+async function purgeOldProofs(env, maxAgeDays = 3) {
+  const orders = await getPlanOrders(env);
+  const cutoff = Date.now() - maxAgeDays * MS_PER_DAY;
+  let changed = false;
+  for (const order of orders) {
+    if (order && order.proof && (Number(order.createdAt) || 0) < cutoff) {
+      order.proof = '';
+      order.proofDeletedAt = Date.now();
+      changed = true;
+    }
+  }
+  if (changed) await savePlanOrders(env, orders);
+  return { changed };
+}
+
 const DEFAULT_CONFIG = {
   discord: { enabled: false, clientId: '', clientSecret: '', redirectUri: '' },
   tiers: ['free', 'pro', 'vip'],
@@ -3128,8 +3145,12 @@ function priceSide(perReq, per1M, tokens) {
 /// Catat pemakaian (token + credit) ke akun dan ke log pemakaian.
 async function chargeUsage(env, account, options) {
   const pricing = options.pricing || {};
-  const promptTokens = Number(options.promptTokens) || 0;
-  const completionTokens = Number(options.completionTokens) || 0;
+  let promptTokens = Number(options.promptTokens) || 0;
+  let completionTokens = Number(options.completionTokens) || 0;
+  // Media (gambar/video) = 2x token charge untuk mode token.
+  const mediaMultiplier = Math.max(1, Number(options.mediaMultiplier) || 1);
+  promptTokens = Math.floor(promptTokens * mediaMultiplier);
+  completionTokens = Math.floor(completionTokens * mediaMultiplier);
   const totalTokens = promptTokens + completionTokens;
   const useCredits = !!options.useCredits;
   const fresh = await getJson(
@@ -3265,6 +3286,32 @@ async function handleApiKey(request, env, pathname) {
 
 const GATEWAY_HARD_MAX_TOKENS = 8192;
 
+/// Mendeteksi apakah pesan mengandung media (gambar/video) — token dihitung
+/// lebih mahal untuk request yang menyertakan media (2x, diatur user).
+function hasMediaContent(messages) {
+  if (!Array.isArray(messages)) return false;
+  for (const message of messages) {
+    const content = message && message.content;
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        if (!part || typeof part !== 'object') continue;
+        // Bentuk OpenAI: {type: 'image_url' | 'video_url' | 'image' | 'video',
+        //                  url: 'data:image/...'}. Bentuk lain (Anthropic):
+        // {type: 'image', source: {...}}, {type: 'media', ...}.
+        if (part.type === 'image_url' || part.type === 'video_url' ||
+            part.type === 'image' || part.type === 'video' ||
+            part.type === 'input_image' || part.type === 'input_video') {
+          return true;
+        }
+      }
+    } else if (typeof content === 'string') {
+      // Heuristik data-URI di dalam teks (jarang, tapi lebih aman count).
+      if (/data:image\/|data:video\//i.test(content)) return true;
+    }
+  }
+  return false;
+}
+
 /// Perkiraan token prompt dari isi pesan (≈4 karakter/token, bahasa campur).
 function estimatePromptTokens(messages) {
   if (!Array.isArray(messages)) return 0;
@@ -3276,7 +3323,15 @@ function estimatePromptTokens(messages) {
       chars += content.length;
     } else if (Array.isArray(content)) {
       for (const part of content) {
-        if (part && typeof part.text === 'string') chars += part.text.length;
+        if (!part || typeof part !== 'object') continue;
+        if (typeof part.text === 'string') chars += part.text.length;
+        // Media (gambar/video) kena ~1000 token per item — termasuk biaya
+        // processing vision di provider.
+        const isMedia = part.type === 'image_url' || part.type === 'video_url' ||
+            part.type === 'image' || part.type === 'video' ||
+            part.type === 'input_image' || part.type === 'input_video' ||
+            (typeof part.url === 'string' && /^data:(image|video)\//i.test(part.url));
+        if (isMedia) chars += 4000; // ~1000 token
       }
     }
     chars += 8; // role + pemisah pesan
@@ -3522,14 +3577,19 @@ async function handleGateway(request, env, pathname) {
     if (!orderId) {
       return jsonResponse(request, 400, { error: 'orderId wajib.' });
     }
-    if (!/^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) {
+    const isImage = /^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(dataUrl);
+    const isVideo = /^data:video\/(mp4|webm|quicktime|x-msvideo|ogv|avi);base64,[A-Za-z0-9+/=]+$/.test(dataUrl);
+    if (!isImage && !isVideo) {
       return jsonResponse(request, 400, {
-        error: 'Bukti harus berupa gambar JPEG/PNG/WebP (data URL).',
+        error: 'Bukti harus berupa gambar JPEG/PNG/WebP atau video MP4/WebM/MOV (data URL).',
       });
     }
-    if (dataUrl.length > 450000) {
+    // Video lebih besar, tapi KV tetap dibatasi ~1.5 MB per bukti.
+    if (dataUrl.length > (isVideo ? 2_000_000 : 450_000)) {
       return jsonResponse(request, 413, {
-        error: 'Bukti terlalu besar. Kompres dulu (maks ~320 KB).',
+        error: isVideo
+          ? 'Video terlalu besar. Maksimal ~1.5 MB (potong durasi/ukuran dulu).'
+          : 'Bukti terlalu besar. Kompres dulu (maks ~320 KB).',
       });
     }
     const orders = await getPlanOrders(env);
@@ -3935,6 +3995,7 @@ async function handleGateway(request, env, pathname) {
               promptTokens,
               completionTokens,
               useCredits,
+              mediaMultiplier: hasMediaContent(body.messages) ? 2 : 1,
             });
             credits = useCredits
               ? Math.max(
@@ -4053,6 +4114,7 @@ async function handleGateway(request, env, pathname) {
       promptTokens,
       completionTokens,
       useCredits,
+      mediaMultiplier: hasMediaContent(body.messages) ? 2 : 1,
     });
     // Kredit terpakai = saldo sebelum - saldo sesudah (jangan dibalik).
     const creditsUsed = useCredits
@@ -4287,5 +4349,10 @@ export default {
     } catch (error) {
       return jsonResponse(request, 500, { error: `Worker error: ${error}` });
     }
+  },
+  // Cron harian (03:00 UTC): hapus bukti pembayaran yang >3 hari supaya KV
+  // tidak penuh dengan media besar.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(purgeOldProofs(env, 3));
   },
 };

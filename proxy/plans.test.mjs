@@ -26,6 +26,8 @@ const ADMIN_KEY = 'test-admin';
 const SESSION = 'session-plans-1';
 const PNG_DATA_URL =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+const MP4_DATA_URL =
+  'data:video/mp4;base64,' + Buffer.from([0, 1, 2, 3, 4, 5, 6, 7]).toString('base64');
 
 function makeEnv() {
   const store = new Map();
@@ -232,6 +234,67 @@ test('order ditolak kalau belum ada wallet', async () => {
     body: JSON.stringify({ planId: 'credit-starter', method: 'shopeepay' }),
   });
   assert.equal(order.status, 503);
+});
+
+test('cron scheduled menghapus bukti pembayaran > 3 hari', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+  seedWallet(store);
+
+  // Buat pesanan lewat API, lalu unggah bukti untuknya.
+  const created = await call(env, '/api/gateway/plans/order', {
+    method: 'POST',
+    headers: jsonHeader(),
+    body: JSON.stringify({ planId: 'credit-starter', method: 'shopeepay' }),
+  });
+  const orderBody = await created.json();
+  const upload = await call(env, '/api/gateway/plans/order/proof', {
+    method: 'POST',
+    headers: jsonHeader(),
+    body: JSON.stringify({ orderId: orderBody.order.id, dataUrl: PNG_DATA_URL }),
+  });
+  assert.equal(upload.status, 200);
+
+  // Sisipkan pesanan lama dengan bukti video (4 hari lalu).
+  const oldProof = MP4_DATA_URL;
+  const orders = JSON.parse(store.get('plan_orders'));
+  orders.unshift({
+    id: 'po_old_1',
+    accountId: 'u1',
+    accountName: 'user',
+    planId: 'credit-starter',
+    planName: 'Starter',
+    priceIdr: 50000,
+    method: 'shopeepay',
+    status: 'pending',
+    proof: oldProof,
+    createdAt: Date.now() - 4 * 24 * 60 * 60 * 1000,
+    updatedAt: Date.now() - 4 * 24 * 60 * 60 * 1000,
+    grants: {},
+  });
+  store.set('plan_orders', JSON.stringify(orders));
+
+  // Jalankan handler cron yang sama dengan wrangler. Cloudflare menjalankan
+  // waitUntil; di sini kita tangkap & await promise-nya secara eksplisit.
+  if (typeof worker.scheduled !== 'function') {
+    assert.fail('worker.scheduled harus ada di export default');
+  }
+  let pending;
+  await worker.scheduled({}, env, {
+    waitUntil: (p) => { pending = p; },
+  });
+  if (pending) await pending;
+
+  const after = JSON.parse(store.get('plan_orders'));
+  const old = after.find((o) => o.id === 'po_old_1');
+  assert.equal(old.proof, '');
+  assert.ok(old.proofDeletedAt, 'bukti lama harus ditandai terhapus');
+
+  // Pesanan yang baru tidak terpengaruh.
+  const fresh = after.find((o) => o.id === orderBody.order.id);
+  if (fresh) {
+    assert.notEqual(fresh.proof, '');
+  }
 });
 
 test('method pembayaran selain shopeepay/gopay ditolak', async () => {
