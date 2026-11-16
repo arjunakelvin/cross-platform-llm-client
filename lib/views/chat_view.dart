@@ -1347,18 +1347,33 @@ class _AttachButton extends StatelessWidget {
     final dark = Theme.of(ctx).brightness == Brightness.dark;
 
     final items = [
-      (
-        icon: Icons.photo_camera_outlined,
-        label: 'Camera',
-        enabled: allowMedia,
-        onTap: onCamera,
-      ),
-      (
-        icon: Icons.photo_outlined,
-        label: 'Photos',
-        enabled: allowMedia,
-        onTap: onImage,
-      ),
+      if (allowMedia) ...[
+        (
+          icon: Icons.photo_camera_outlined,
+          label: 'Camera',
+          enabled: allowMedia,
+          onTap: onCamera,
+        ),
+        (
+          icon: Icons.photo_outlined,
+          label: 'Photos',
+          enabled: allowMedia,
+          onTap: onImage,
+        ),
+      ] else ...[
+        (
+          icon: Icons.photo_camera_outlined,
+          label: 'Camera (butuh model vision)',
+          enabled: false,
+          onTap: onCamera,
+        ),
+        (
+          icon: Icons.photo_outlined,
+          label: 'Photos (butuh model vision)',
+          enabled: false,
+          onTap: onImage,
+        ),
+      ],
       (
         icon: Icons.attach_file_rounded,
         label: 'Files',
