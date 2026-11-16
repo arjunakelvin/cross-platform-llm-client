@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:privatelm/core/ui.dart';
+import 'package:privatelm/services/admin_db_service.dart';
 import 'package:privatelm/widgets/account_info_sheet.dart';
 
 void main() {
@@ -12,54 +12,53 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
   }
 
-  testWidgets('kartu token: bar sisa + persen + angka ribuan (tanpa overflow)',
+  testWidgets('kartu plan: limit token + sisa hari, tanpa progress bar',
       (tester) async {
+    final plan = PlanInfo(
+      id: 'p1',
+      name: 'VIP Membership',
+      tier: 'vip',
+      expiresAt:
+          DateTime.now().add(const Duration(days: 12)).millisecondsSinceEpoch,
+      durationDays: 30,
+    );
     await pump(
       tester,
-      const TokenQuotaCard(
-        maxTokens: 20000000,
-        used: 7400000,
-        remaining: 12600000,
-        ratio: 0.37,
-        resetDays: 1,
-        countdown: 'Resets in 23h 59m',
+      MembershipPlanCard(
+        tier: 'vip',
+        plan: plan,
+        tokenLimit: 20000000,
+        tokenUsed: 7400000,
         isLoggedIn: true,
       ),
     );
 
     expect(tester.takeException(), isNull);
-
-    final bar =
-        tester.widget<QuotaProgressBar>(find.byType(QuotaProgressBar).first);
-    // Sisa 63% (7.4jt dari 20jt terpakai).
-    expect(bar.remaining, closeTo(0.63, 0.001));
-
-    expect(find.textContaining('37% terpakai'), findsOneWidget);
-    expect(find.textContaining('12,600,000 / 20,000,000 tersisa'),
-        findsOneWidget);
-    expect(find.textContaining('20,000,000 Limit (Login)'), findsOneWidget);
+    expect(find.text('20M'), findsOneWidget);
+    expect(find.textContaining('token limit'), findsOneWidget);
+    expect(find.text('12'), findsOneWidget);
+    expect(find.textContaining('Aktif sampai'), findsOneWidget);
+    expect(find.textContaining('Sisa 12.6M token'), findsOneWidget);
+    expect(find.byType(LinearProgressIndicator), findsNothing);
   });
 
-  testWidgets('kartu token habis: bar kosong + peringatan reset',
+  testWidgets('kartu plan free guest: 10M limit, tanpa kedaluwarsa',
       (tester) async {
     await pump(
       tester,
-      const TokenQuotaCard(
-        maxTokens: 1000,
-        used: 1000,
-        remaining: 0,
-        ratio: 1,
-        resetDays: 1,
-        countdown: 'Resets today',
-        isLoggedIn: true,
+      const MembershipPlanCard(
+        tier: 'Free',
+        tokenLimit: 10000000,
+        tokenUsed: 10000000,
+        isLoggedIn: false,
       ),
     );
 
     expect(tester.takeException(), isNull);
-    final bar =
-        tester.widget<QuotaProgressBar>(find.byType(QuotaProgressBar).first);
-    expect(bar.remaining, 0);
-    expect(find.textContaining('Kuota token sudah habis'), findsOneWidget);
+    expect(find.text('10M'), findsOneWidget);
+    expect(find.textContaining('Kuota habis'), findsOneWidget);
+    expect(find.textContaining('Berlaku tanpa batas waktu'), findsOneWidget);
+    expect(find.byType(LinearProgressIndicator), findsNothing);
   });
 
   testWidgets('kartu kredit: sisa + persen + format ribuan (tanpa overflow)',

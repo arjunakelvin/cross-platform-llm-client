@@ -13,8 +13,6 @@ import '../services/update_service.dart';
 import '../services/device_info_service.dart';
 import '../services/device_info_native.dart'
     if (dart.library.html) '../services/device_info_web.dart' as platform_info;
-import '../ffi/sd_ffi_bindings.dart'
-    if (dart.library.html) '../ffi/sd_ffi_bindings_web.dart';
 import '../services/cluster_service.dart';
 import 'cluster_view.dart';
 import 'log_view.dart';
@@ -352,11 +350,11 @@ class SettingsView extends GetView<SettingsController> {
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    Icon(Icons.schedule_rounded, size: 14, color: t.muted),
+                    Icon(Icons.autorenew_rounded, size: 14, color: t.muted),
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        controller.tokenResetCountdownLabel,
+                        controller.tokenResetLabel,
                         style: t.small.copyWith(color: t.muted),
                       ),
                     ),
@@ -365,16 +363,15 @@ class SettingsView extends GetView<SettingsController> {
                 if (remaining <= 0) ...[
                   const SizedBox(height: 10),
                   AppNotice(
-                    'Kuota token sudah habis. Kuota akan reset otomatis sesuai '
-                    'jadwal di atas.',
+                    'Kuota token sudah habis. Kuota di-reset otomatis saat '
+                    'habis tanpa menambah batas akun.',
                     icon: Icons.warning_amber_rounded,
                     color: t.red,
                   ),
                 ] else if (ratio >= 0.8) ...[
                   const SizedBox(height: 10),
                   AppNotice(
-                    'Kuota tinggal ${(ratio * 100).round()}%. Reset dalam '
-                    '${controller.tokenResetCountdownLabel.toLowerCase()}.',
+                    'Kuota tinggal ${(ratio * 100).round()}%.',
                     icon: Icons.warning_amber_rounded,
                     color: t.orange,
                   ),

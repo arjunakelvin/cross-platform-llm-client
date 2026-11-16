@@ -23,6 +23,19 @@ String _fmtComma(num v) {
   return buf.toString().split('').reversed.join();
 }
 
+/// Angka token ringkas: 10M, 1.5M, 500rb, 900.
+String _fmtTokensShort(num v) {
+  if (v >= 1000000) {
+    final m = v / 1000000;
+    return '${m.toStringAsFixed(m % 1 == 0 ? 0 : 1)}M';
+  }
+  if (v >= 1000) {
+    final k = v / 1000;
+    return '${k.toStringAsFixed(k % 1 == 0 ? 0 : 1)}rb';
+  }
+  return _fmtComma(v);
+}
+
 /// Uang dengan pemisah ribuan + 2 desimal (mis. $1,999.99).
 ///
 /// Saldo kredit: 2 desimal (nilai besar tetap ringkas).
@@ -32,148 +45,30 @@ String _fmtMoney(num v) => formatMoney(v);
 /// tidak terlihat seperti $0.01.
 String _fmtCharge(num v) => formatCreditCharge(v);
 
-/// Kartu kuota token: bar menampilkan SISA kuota (memendek saat terpakai),
-/// persentase, dan peringatan saat habis.
-class TokenQuotaCard extends StatelessWidget {
-  final int maxTokens;
-  final int used;
-  final int remaining;
-  final double ratio;
-  final int resetDays;
-  final String countdown;
-  final bool isLoggedIn;
-  final Color? limitLabelColor;
 
-  const TokenQuotaCard({
-    super.key,
-    required this.maxTokens,
-    required this.used,
-    required this.remaining,
-    required this.ratio,
-    required this.resetDays,
-    required this.countdown,
-    required this.isLoggedIn,
-    this.limitLabelColor,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final t = AppTokens.of(context);
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: t.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: t.hairline),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Flexible(
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.token_rounded, size: 18, color: t.accent),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      child: Text('Kuota Token AI',
-                          style: t.bodyStrong,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  isLoggedIn
-                      ? '${_fmtComma(maxTokens)} Limit (Login)'
-                      : '${_fmtComma(maxTokens)} Limit (Guest)',
-                  style: t.small.copyWith(
-                    color: limitLabelColor ?? t.muted,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  textAlign: TextAlign.right,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          QuotaProgressBar(
-            remaining: (1 - ratio).clamp(0.0, 1.0),
-            color: ratio >= 0.8 ? t.red : (ratio >= 0.5 ? t.orange : t.green),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Flexible(
-                child: Text(
-                  '${(ratio * 100).round()}% terpakai · ${_fmtComma(used)} token',
-                  style: t.small.copyWith(
-                    color: ratio >= 0.5 ? t.orange : t.muted,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  '${_fmtComma(remaining)} / ${_fmtComma(maxTokens)} tersisa',
-                  style: t.small.copyWith(
-                    color: remaining <= 0 ? t.red : t.text,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  textAlign: TextAlign.right,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Icon(Icons.update_rounded, size: 14, color: t.muted),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  'Reset setiap $resetDays hari · $countdown',
-                  style: t.small.copyWith(color: t.muted),
-                ),
-              ),
-            ],
-          ),
-          if (remaining <= 0) ...[
-            const SizedBox(height: 10),
-            AppNotice(
-              'Kuota token sudah habis. Kuota akan reset otomatis sesuai '
-              'jadwal di atas.',
-              icon: Icons.warning_amber_rounded,
-              color: t.red,
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-/// Kartu Membership Plan (VIP/Pro) — tampilkan paket aktif beserta hitung
-/// mundur kedaluwarsa. Saat expired, akun otomatis kembali ke tier Free.
+/// Kartu plan + kuota token. Satu kartu untuk tier aktif (Free/VIP/Pro):
+/// menampilkan limit token sesuai tier dan masa aktif (angka hari + tanggal
+/// kedaluwarsa), tanpa progress bar.
 class MembershipPlanCard extends StatelessWidget {
   final String tier;
   final PlanInfo? plan;
+  final int tokenLimit;
+  final int tokenUsed;
+  final bool isLoggedIn;
 
-  const MembershipPlanCard({super.key, required this.tier, this.plan});
+  const MembershipPlanCard({
+    super.key,
+    required this.tier,
+    this.plan,
+    this.tokenLimit = 0,
+    this.tokenUsed = 0,
+    this.isLoggedIn = false,
+  });
 
+  static const _freeGradient = [
+    Color(0xFF3A3A3C),
+    Color(0xFF1C1C1E),
+  ];
   static const _vipGradient = [
     Color(0xFF8B5CF6),
     Color(0xFFC026D3),
@@ -186,26 +81,36 @@ class MembershipPlanCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final effectiveTier = tier.toLowerCase();
-    if (effectiveTier != 'vip' && effectiveTier != 'pro') {
-      return const SizedBox.shrink();
-    }
-
     final isVip = effectiveTier == 'vip';
-    final gradient = isVip ? _vipGradient : _proGradient;
-    final tagLabel = isVip ? 'VIP MEMBERSHIP' : 'PRO MEMBERSHIP';
+    final isPro = effectiveTier == 'pro' || effectiveTier == 'premium';
+    final isFree = !isVip && !isPro;
+    final gradient = isFree
+        ? _freeGradient
+        : (isVip ? _vipGradient : _proGradient);
+    final tagLabel = isFree
+        ? (isLoggedIn ? 'FREE PLAN' : 'FREE · GUEST')
+        : (isVip ? 'VIP MEMBERSHIP' : 'PRO MEMBERSHIP');
     final planName = plan == null || plan!.name.trim().isEmpty
-        ? '${effectiveTier.toUpperCase()} Membership'
+        ? (isFree ? 'Free' : '${effectiveTier.toUpperCase()} Membership')
         : plan!.name;
+    final icon = isFree
+        ? Icons.person_rounded
+        : (isVip
+            ? Icons.workspace_premium_rounded
+            : Icons.rocket_launch_rounded);
+    final accentIcon = isFree
+        ? Icons.lock_open_rounded
+        : (isVip ? Icons.auto_awesome : Icons.bolt_rounded);
 
-    // Hitung mundur kedaluwarsa. Membership VIP/PRO selalu berdurasi
-    // (default 30 hari); kalau plan belum diterima dari server, tetap
-    // tampilkan paket 30 hari — jangan pernah "tanpa batas".
-    final hasExpiry = plan != null && (plan!.expiresAt) > 0;
+    // Membership VIP/PRO selalu berdurasi (default 30 hari). Free tidak
+    // punya tanggal kedaluwarsa.
+    final hasExpiry =
+        !isFree && plan != null && plan!.expiresAt > 0;
     final daysLeft = hasExpiry ? plan!.daysLeft : 0;
-    final totalDays = plan?.durationDays ?? 30;
-    final remainingRatio = hasExpiry && totalDays > 0
-        ? (daysLeft / totalDays).clamp(0.0, 1.0)
-        : 1.0;
+    final limit = tokenLimit < 0 ? 0 : tokenLimit;
+    final remaining = (limit - tokenUsed).clamp(0, limit).toInt();
+    final usedPct =
+        limit <= 0 ? 0 : ((tokenUsed / limit) * 100).round().clamp(0, 100);
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -239,13 +144,7 @@ class MembershipPlanCard extends StatelessWidget {
                   color: Colors.white.withValues(alpha: 0.2),
                   shape: BoxShape.circle,
                 ),
-                child: Icon(
-                  isVip
-                      ? Icons.workspace_premium_rounded
-                      : Icons.rocket_launch_rounded,
-                  color: Colors.white,
-                  size: 22,
-                ),
+                child: Icon(icon, color: Colors.white, size: 22),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -268,83 +167,100 @@ class MembershipPlanCard extends StatelessWidget {
                   ],
                 ),
               ),
-              Icon(isVip ? Icons.auto_awesome : Icons.bolt_rounded,
+              Icon(accentIcon,
                   color: Colors.white.withValues(alpha: 0.9), size: 26),
             ],
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 16),
+
+          // Limit token per tier + sisa hari. Tanpa bar progres.
           Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (hasExpiry) ...[
-                Text('$daysLeft',
-                    style: GoogleFonts.inter(
-                        fontSize: 34,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: -1,
-                        color: Colors.white)),
-                const SizedBox(width: 8),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Text(daysLeft == 1 ? 'hari tersisa' : 'hari tersisa',
-                      style: GoogleFonts.inter(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.white.withValues(alpha: 0.85))),
+              Expanded(
+                child: _stat(
+                  value: _fmtTokensShort(limit),
+                  label: 'token limit',
                 ),
-              ] else ...[
-                Text('$totalDays',
-                    style: GoogleFonts.inter(
-                        fontSize: 38,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: -1,
-                        color: Colors.white)),
-                const SizedBox(width: 8),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Text('hari (paket)',
-                      style: GoogleFonts.inter(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.white.withValues(alpha: 0.85))),
+              ),
+              Container(
+                width: 1,
+                height: 34,
+                margin: const EdgeInsets.symmetric(horizontal: 12),
+                color: Colors.white.withValues(alpha: 0.25),
+              ),
+              Expanded(
+                child: _stat(
+                  value: isFree ? '∞' : '$daysLeft',
+                  label: isFree ? 'tanpa batas' : 'hari tersisa',
                 ),
-              ],
+              ),
             ],
           ),
-          const SizedBox(height: 10),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: SizedBox(
-              height: 8,
-              child: LinearProgressIndicator(
-                value: remainingRatio,
-                backgroundColor: Colors.white.withValues(alpha: 0.25),
-                valueColor: AlwaysStoppedAnimation<Color>(
-                    Colors.white.withValues(alpha: 0.95)),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Icon(Icons.token_rounded,
+                  size: 13, color: Colors.white.withValues(alpha: 0.8)),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(
+                  remaining <= 0
+                      ? 'Kuota habis · reset otomatis saat kuota habis'
+                      : 'Sisa ${_fmtTokensShort(remaining)} token · '
+                          '$usedPct% terpakai',
+                  style: GoogleFonts.inter(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white.withValues(alpha: 0.85)),
+                ),
               ),
-            ),
+            ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 5),
           Row(
             children: [
               Icon(Icons.schedule_rounded,
                   size: 12, color: Colors.white.withValues(alpha: 0.8)),
               const SizedBox(width: 4),
-              Text(
-                hasExpiry
-                    ? (daysLeft <= 3
-                        ? 'Segera berakhir — perpanjang sekarang!'
-                        : 'Aktif sampai ${_fmtPlanDate(plan!.expiresAt)}')
-                    : 'Paket membership $totalDays hari — menunggu data server',
-                style: GoogleFonts.inter(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white.withValues(alpha: 0.85)),
+              Expanded(
+                child: Text(
+                  hasExpiry
+                      ? (daysLeft <= 3
+                          ? 'Segera berakhir — aktif sampai '
+                              '${_fmtPlanDate(plan!.expiresAt)}'
+                          : 'Aktif sampai ${_fmtPlanDate(plan!.expiresAt)}')
+                      : 'Berlaku tanpa batas waktu',
+                  style: GoogleFonts.inter(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white.withValues(alpha: 0.85)),
+                ),
               ),
             ],
           ),
         ],
       ),
+    );
+  }
+
+  Widget _stat({required String value, required String label}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(value,
+            style: GoogleFonts.inter(
+                fontSize: 26,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.8,
+                color: Colors.white)),
+        const SizedBox(height: 1),
+        Text(label,
+            style: GoogleFonts.inter(
+                fontSize: 10.5,
+                fontWeight: FontWeight.w600,
+                color: Colors.white.withValues(alpha: 0.8))),
+      ],
     );
   }
 
@@ -618,10 +534,6 @@ class AccountInfoSheet extends StatelessWidget {
 
             final maxTokens = settings.maxTokenBalance;
             final used = settings.tokenUsed.value;
-            final remaining = settings.tokenRemaining;
-            final ratio = settings.tokenUsageRatio;
-            final resetDays = settings.tokenResetDays.value;
-            final countdown = settings.tokenResetCountdownLabel;
 
             const discordPurple = Color(0xFF5865F2);
 
@@ -710,6 +622,11 @@ class AccountInfoSheet extends StatelessWidget {
                         ],
                       ),
                     ),
+                    IconButton(
+                      tooltip: 'Tutup',
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: Icon(Icons.close_rounded, color: t.muted),
+                    ),
                   ],
                 ),
 
@@ -717,25 +634,14 @@ class AccountInfoSheet extends StatelessWidget {
                 Divider(height: 1, color: t.hairline),
                 const SizedBox(height: 16),
 
-                // Kartu Membership Plan (VIP/Pro) + hitung mundur kedaluwarsa.
+                // Kartu plan + kuota token sesuai tier (Free/VIP/Pro).
                 MembershipPlanCard(
                   tier: accountTier,
                   plan: account?.plan,
-                ),
-                const SizedBox(height: 14),
-
-                // Card Kuota Token
-                TokenQuotaCard(
-                  maxTokens: maxTokens,
-                  used: used,
-                  remaining: remaining,
-                  ratio: ratio,
-                  resetDays: resetDays,
-                  countdown: countdown,
+                  tokenLimit: maxTokens,
+                  tokenUsed: used,
                   isLoggedIn: isLoggedIn,
-                  limitLabelColor: isLoggedIn ? discordPurple : t.muted,
                 ),
-
                 const SizedBox(height: 14),
 
                 // Card Kredit

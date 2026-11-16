@@ -148,6 +148,117 @@ test('admin bisa menambah provider; API key tidak pernah dibuka', async () => {
   assert.equal(list.providers[0].apiKey, '');
 });
 
+test('Auto limit provider memakai metadata model dari provider', async () => {
+  const { env } = makeEnv();
+  const restore = mockFetch(async (url) => {
+    assert.match(String(url), /\/models$/);
+    return new Response(JSON.stringify({
+      data: [{
+        id: 'gpt-4o-mini',
+        context_length: 128000,
+        max_completion_tokens: 16384,
+      }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  });
+  try {
+    const res = await call(env, '/api/admin/api-providers', {
+      method: 'POST',
+      headers: { 'X-Admin-Key': ADMIN_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'OpenAI',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'sk-test',
+        format: 'openai',
+        models: [{
+          name: 'GPT-4o mini',
+          modelId: 'gpt-4o-mini',
+          contextSize: 0,
+          maxOutput: 0,
+          limitsAuto: true,
+        }],
+      }),
+    });
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    const model = body.provider.models[0];
+    assert.equal(model.contextSize, 128000, 'context dari metadata');
+    assert.equal(model.maxOutput, 16384, 'max output dari metadata');
+    assert.equal(model.limitsAuto, true);
+  } finally {
+    restore();
+  }
+});
+
+test('Auto limit provider fallback ke katalog saat metadata gagal', async () => {
+  const { env } = makeEnv();
+  const restore = mockFetch(async () => {
+    throw new Error('provider offline');
+  });
+  try {
+    const res = await call(env, '/api/admin/api-providers', {
+      method: 'POST',
+      headers: { 'X-Admin-Key': ADMIN_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Kimi',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'sk-test',
+        format: 'openai',
+        models: [{
+          name: 'Kimi K2',
+          modelId: 'kimi-k2',
+          contextSize: 0,
+          maxOutput: 0,
+          limitsAuto: true,
+        }],
+      }),
+    });
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    const model = body.provider.models[0];
+    assert.equal(model.contextSize, 262144, 'fallback katalog');
+    assert.equal(model.maxOutput, 32768, 'fallback katalog');
+  } finally {
+    restore();
+  }
+});
+
+test('Auto limit dimatikan mempertahankan context/max manual', async () => {
+  const { env } = makeEnv();
+  let fetched = 0;
+  const restore = mockFetch(async () => {
+    fetched++;
+    return new Response('{}', { status: 200 });
+  });
+  try {
+    const res = await call(env, '/api/admin/api-providers', {
+      method: 'POST',
+      headers: { 'X-Admin-Key': ADMIN_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Manual',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'sk-test',
+        format: 'openai',
+        models: [{
+          name: 'Custom',
+          modelId: 'custom-model',
+          contextSize: 64000,
+          maxOutput: 4096,
+          limitsAuto: false,
+        }],
+      }),
+    });
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    const model = body.provider.models[0];
+    assert.equal(model.contextSize, 64000);
+    assert.equal(model.maxOutput, 4096);
+    assert.equal(model.limitsAuto, false);
+    assert.equal(fetched, 0, 'model manual tidak memicu fetch metadata');
+  } finally {
+    restore();
+  }
+});
+
 test('config aplikasi memuat model provider tanpa API key', async () => {
   const { store, env } = makeEnv();
   seedProvider(store);
@@ -295,6 +406,87 @@ test('batas request harian per akun (tier free default 15)', async () => {
   } finally {
     restore();
   }
+});
+
+test('reset harian /req dimulai saat kuota habis dan berlangsung 24 jam',
+  async () => {
+    const { store, env } = makeEnv();
+    seedAccount(store);
+    const account = JSON.parse(store.get('account:u1'));
+    account.tier = 'vip';
+    account.dailyRequestLimit = 2;
+    store.set('account:u1', JSON.stringify(account));
+    seedProvider(store);
+    store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
+
+    const restore = okProviderFetch();
+    try {
+      for (let i = 0; i < 2; i++) {
+        const res = await chat(env);
+        assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
+      }
+
+      const state = JSON.parse(store.get('dailyreq:u1'));
+      assert.equal(state.used, 2);
+      const resetAt = state.resetAt;
+      assert.ok(resetAt > Date.now() + 23 * 60 * 60 * 1000,
+        'reset harus 24 jam sejak kuota habis');
+      assert.ok(resetAt < Date.now() + 25 * 60 * 60 * 1000);
+
+      const blocked = await chat(env);
+      const body = await blocked.json();
+      assert.equal(blocked.status, 429);
+      assert.equal(body.resetAt, resetAt);
+
+      // Lewati masa tunggu → kuota baru dimulai dari 0.
+      store.set('dailyreq:u1', JSON.stringify({
+        used: 2, resetAt: Date.now() - 1000, date: '2000-01-01',
+      }));
+      const allowed = await chat(env);
+      assert.equal(allowed.status, 200, 'setelah 24 jam kuota reset');
+      const fresh = JSON.parse(store.get('dailyreq:u1'));
+      assert.equal(fresh.used, 1);
+      assert.equal(fresh.resetAt, 0);
+    } finally {
+      restore();
+    }
+  });
+
+test('reset token hanya saat kuota habis, tanpa menambah batas akun', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+  const account = JSON.parse(store.get('account:u1'));
+  account.tokenBalance = 100000;
+  account.tokenUsed = 100000;
+  store.set('account:u1', JSON.stringify(account));
+
+  const res = await call(env, '/api/auth/me', {
+    headers: { Authorization: `Bearer ${SESSION}` },
+  });
+  const body = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(body.account.tokenUsed, 0, 'token habis → direset');
+  assert.equal(body.account.tokenBalance, 100000, 'batas akun tidak bertambah');
+  const saved = JSON.parse(store.get('account:u1'));
+  assert.equal(saved.tokenBalance, 100000);
+  assert.equal(saved.tokenUsed, 0);
+});
+
+test('token yang belum habis tidak direset', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+  const account = JSON.parse(store.get('account:u1'));
+  account.tokenBalance = 100000;
+  account.tokenUsed = 99999;
+  store.set('account:u1', JSON.stringify(account));
+
+  const res = await call(env, '/api/auth/me', {
+    headers: { Authorization: `Bearer ${SESSION}` },
+  });
+  const body = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(body.account.tokenUsed, 99999);
+  assert.equal(body.account.tokenBalance, 100000);
 });
 
 test('batas request per akun (override admin untuk pro/vip)', async () => {

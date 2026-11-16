@@ -210,8 +210,8 @@
      sempit supaya field harga tetap terbaca. */
   .ap-models { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
   .ap-model-head, .ap-model-row {
-    display: grid; min-width: 1040px; gap: 6px; align-items: center;
-    grid-template-columns: 1.5fr 1.7fr .7fr .7fr .7fr .7fr .7fr .7fr .7fr .5fr 34px;
+    display: grid; min-width: 1100px; gap: 6px; align-items: center;
+    grid-template-columns: 1.5fr 1.7fr .7fr .7fr .55fr .7fr .7fr .7fr .7fr .7fr .5fr 34px;
     padding: 6px 8px;
   }
   .ap-model-head {
@@ -375,8 +375,11 @@
           <select id="defaultTier"></select>
         </div>
         <div>
-          <label for="tokenResetDays">Durasi reset token (hari)</label>
-          <input type="number" id="tokenResetDays" min="1" step="1" placeholder="1">
+          <label>Reset token</label>
+          <div class="hint" style="margin-top:6px;line-height:1.5">
+            Otomatis saat kuota habis — tidak lagi berbasis periode waktu.
+            Kuota tidak akan bertambah melebihi batas akun.
+          </div>
         </div>
       </div>
       <div class="row" style="margin-top:8px">
@@ -647,9 +650,10 @@ async with aiohttp.ClientSession() as session:<br>
 
       <h3 style="margin-top:16px">Model yang tampil di aplikasi</h3>
       <p class="hint" style="margin:0 0 8px">
-        User hanya melihat <b>nama model</b>, bukan nama provider. Isi
-        <b>Context</b> &amp; <b>Max out</b> sesuai spesifikasi model dari
-        provider (context model besar umumnya <span class="mono">1.000.000</span>).
+        User hanya melihat <b>nama model</b>, bukan nama provider.
+        <b>Context</b> &amp; <b>Max out</b> diisi <b>otomatis</b> dari metadata
+        model provider saat provider disimpan (bisa juga dari katalog model
+        populer). Matikan <b>Auto</b> kalau ingin mengisi angkanya manual.
         <b>Req/hari</b> kosong = ikut batas akun (default <b>20 request/hari</b>).
         Harga <b>In/Out</b> biarkan <b>0</b> kalau model memakai kuota token —
         isi harga hanya kalau model itu memotong <b>kredit</b>. Matikan toggle
@@ -660,6 +664,7 @@ async with aiohttp.ClientSession() as session:<br>
           <span>Model / endpoint ID</span>
           <span>Context</span>
           <span>Max out</span>
+          <span>Auto</span>
           <span>Req/hari</span>
           <span>In /1M</span>
           <span>Out /1M</span>
@@ -1332,7 +1337,6 @@ async function loadConfig() {
     ? 'Server memakai: ' + config.discord.redirectUri
     : 'Server memakai default: ' + DEFAULT_REDIRECT_URI;
   $('tiers').value = (config.tiers || []).join(', ');
-  $('tokenResetDays').value = config.tokenResetDays ?? 1;
   $('dailyReqLimit').value = config.dailyRequestLimit ?? 0;
   $('guestTokens').value = config.guestTokenBalance ?? 10000000;
   $('loginTokens').value = config.loginTokenBalance ?? 20000000;
@@ -1771,7 +1775,6 @@ $('saveTiers').addEventListener('click', async () => {
     setStatus($('tierStatus'), 'Minimal satu tier.', false);
     return;
   }
-  const resetDays = Math.max(1, Number($('tokenResetDays').value) || 1);
   const dailyReqLimit = Math.max(0, Number($('dailyReqLimit').value) || 0);
   const guestTokens = Math.max(0, Number($('guestTokens').value) || 10000000);
   const loginTokens = Math.max(0, Number($('loginTokens').value) || 20000000);
@@ -1779,7 +1782,6 @@ $('saveTiers').addEventListener('click', async () => {
     await api('PATCH', '/api/admin/config', {
       tiers,
       defaultTier: $('defaultTier').value,
-      tokenResetDays: resetDays,
       dailyRequestLimit: dailyReqLimit,
       guestTokenBalance: guestTokens,
       loginTokenBalance: loginTokens,
@@ -2673,6 +2675,13 @@ function providerModelRowHtml(model) {
     ? (isNew ? 1000000 : 0) : m.contextSize;
   const maxOutputValue = m.maxOutput === undefined || m.maxOutput === null
     ? (isNew ? 8192 : 0) : m.maxOutput;
+  // Model lama tanpa flag `limitsAuto` dianggap manual kalau sudah punya
+  // angka context/max output. Model baru otomatis memakai Auto.
+  const hasExplicitLimits =
+    Number(m.contextSize) > 0 || Number(m.maxOutput) > 0;
+  const autoLimits = m.limitsAuto === undefined
+    ? (isNew || !hasExplicitLimits)
+    : !!m.limitsAuto;
   const input = (field, type, value, extra) =>
     '<input type="' + type + '" data-f="' + field + '" value="' +
     escapeAttr(value === undefined || value === null ? '' : value) + '"' +
@@ -2685,6 +2694,9 @@ function providerModelRowHtml(model) {
       ' min="0" step="1" placeholder="1000000"') +
     input('maxOutput', 'number', maxOutputValue,
       ' min="0" step="1" placeholder="8192"') +
+    '<label class="ap-on" title="Isi otomatis dari metadata model provider">' +
+    '<input type="checkbox" data-f="limitsAuto"' +
+    (autoLimits ? ' checked' : '') + '> Auto</label>' +
     input('dailyRequestLimit', 'number', m.dailyRequestLimit || 0,
       ' min="0" step="1" placeholder="20"') +
     input('inputPer1M', 'number', pricing.inputPer1M || 0, ' min="0" step="0.01" placeholder="0"') +
@@ -2712,6 +2724,7 @@ function collectProviderModels() {
       modelId: get('modelId').value.trim(),
       contextSize: Math.max(0, Number(get('contextSize').value) || 0),
       maxOutput: Math.max(0, Number(get('maxOutput').value) || 0),
+      limitsAuto: get('limitsAuto').checked,
       dailyRequestLimit: Math.max(0, Number(get('dailyRequestLimit').value) || 0),
       pricing: {
         inputPer1M: Number(get('inputPer1M').value) || 0,
@@ -2965,6 +2978,16 @@ $('apBaseUrl').addEventListener('input', updateApiEndpointPreview);
 $('apFormat').addEventListener('change', updateApiEndpointPreview);
 $('apModelRows').addEventListener('input', updateApiEndpointPreview);
 $('apModelRows').addEventListener('change', updateApiEndpointPreview);
+
+// Admin mengetik context/max output secara manual → matikan Auto untuk baris
+// itu supaya nilai manual tidak ditimpa metadata provider saat disimpan.
+$('apModelRows').addEventListener('input', (ev) => {
+  const field = ev.target && ev.target.getAttribute('data-f');
+  if (field !== 'contextSize' && field !== 'maxOutput') return;
+  const row = ev.target.closest('.ap-model-row');
+  const auto = row && row.querySelector('[data-f="limitsAuto"]');
+  if (auto) auto.checked = false;
+});
 
 $('apModelRows').addEventListener('click', (ev) => {
   const rowId = ev.target.getAttribute('data-ap-remove-row');

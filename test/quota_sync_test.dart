@@ -125,4 +125,41 @@ void main() {
 
     expect(controller.creditBalance.value, 0);
   });
+
+  test('reset guest tidak menambah kuota dan dibatasi batas akun', () async {
+    // Guest: tidak ada sesi login di perangkat.
+    discord.sessionUser.value = null;
+    discord.sessionAccount.value = null;
+    await hive.setSetting(AppConstants.keyDiscordSessionUser, const {});
+
+    controller.tokenUsed.value = AppConstants.defaultTokenBalance;
+    controller.tokenBalance.value = 0;
+    controller.localTokenUsed.value = 0;
+
+    await controller.resetToken();
+
+    expect(controller.tokenUsed.value, 0);
+    expect(controller.tokenBalance.value, AppConstants.defaultTokenBalance);
+    expect(
+      controller.tokenBalance.value,
+      lessThanOrEqualTo(controller.maxTokenBalance),
+    );
+  });
+
+  test('sinkronisasi mendeteksi reset server dan membersihkan pemakaian lokal',
+      () async {
+    discord.sessionAccount.value = account(tokenUsed: 999000);
+    controller.syncTokenQuotaWithAuth();
+
+    await controller.consumeTokens(500);
+    expect(controller.tokenUsed.value, 999500);
+
+    // Server mereset `tokenUsed` (kuota habis lalu di-refill).
+    discord.sessionAccount.value = account(tokenUsed: 0);
+    controller.syncTokenQuotaWithAuth();
+
+    expect(controller.tokenUsed.value, 0);
+    expect(controller.localTokenUsed.value, 0);
+    expect(controller.tokenRemaining, 1000000);
+  });
 }

@@ -983,6 +983,11 @@ class ChatController extends GetxController {
         // Batas request harian dari gateway (429).
         if (lower.contains('request/hari')) {
           dailyLimitReached.value = true;
+          // Ambil `resetAt` terbaru dari gateway (24 jam sejak kuota habis).
+          if (Get.isRegistered<DashboardConfigService>()) {
+            unawaited(Get.find<DashboardConfigService>()
+                .refreshRequestQuota());
+          }
           _startResetCountdown();
           isLoading.value = false;
           imageGenStartTime.value = null;
@@ -1251,14 +1256,25 @@ class ChatController extends GetxController {
     return chars <= 0 ? 0 : (chars / 4).ceil() + 8;
   }
 
-  /// Hitung mundur sampai reset harian (00:00 UTC). Ditampilkan di kolom
-  /// chat yang diblokir, menggantikan input.
+  /// Hitung mundur sampai reset berikutnya. Kalau gateway sudah memberi
+  /// `resetAt` (kuota habis → 24 jam sejak habis), pakai itu; kalau belum,
+  /// fallback ke 00:00 UTC.
   void _startResetCountdown() {
     _resetTimer?.cancel();
     void tick() {
-      final now = DateTime.now().toUtc();
-      final nextMidnight = DateTime.utc(now.year, now.month, now.day + 1);
-      final total = nextMidnight.difference(now).inSeconds;
+      final now = DateTime.now();
+      DateTime? serverReset;
+      if (Get.isRegistered<DashboardConfigService>()) {
+        serverReset =
+            Get.find<DashboardConfigService>().requestQuota.value?.resetAt;
+      }
+      final utcNow = now.toUtc();
+      final fallbackMidnight =
+          DateTime.utc(utcNow.year, utcNow.month, utcNow.day + 1);
+      final target = serverReset != null && serverReset.isAfter(now)
+          ? serverReset
+          : fallbackMidnight;
+      final total = target.difference(now).inSeconds;
       if (total <= 0) {
         resetCountdown.value = '00:00:00';
         dailyLimitReached.value = false;

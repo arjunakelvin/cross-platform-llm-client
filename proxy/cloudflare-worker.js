@@ -618,6 +618,15 @@ function cleanProviderModel(raw, index, defaults) {
   const source = typeof raw === 'string' ? { modelId: raw } : (raw || {});
   const modelId = String(source.modelId ?? source.model ?? '').trim();
   const name = String(source.name ?? '').trim() || modelId;
+  const hasExplicitLimits =
+    (source.contextSize !== undefined && Number(source.contextSize) > 0) ||
+    (source.maxOutput !== undefined && Number(source.maxOutput) > 0);
+  // `limitsAuto` = context/max output diisi Worker dari metadata model
+  // provider. Kalau admin sudah memasukkan angka sendiri dan tidak mengirim
+  // flag ini, anggap nilai itu eksplisit (jangan ditimpa).
+  const limitsAuto = source.limitsAuto === undefined
+    ? !hasExplicitLimits
+    : !!source.limitsAuto;
   return {
     key: slugModelKey(source.key || name || modelId) || `model-${index + 1}`,
     modelId,
@@ -626,6 +635,7 @@ function cleanProviderModel(raw, index, defaults) {
       Number(source.contextSize ?? defaults.contextSize ?? 0) || 0),
     maxOutput: Math.max(0,
       Number(source.maxOutput ?? defaults.maxOutput ?? 0) || 0),
+    limitsAuto,
     dailyRequestLimit: Math.max(0, Math.floor(
       Number(source.dailyRequestLimit ?? defaults.dailyRequestLimit ?? 0) || 0)),
     pricing: cleanPricing(source.pricing, defaults.pricing),
@@ -745,6 +755,211 @@ function apiProviderModels(provider) {
     pricing: provider.pricing || {},
     enabled: true,
   }];
+}
+
+/// Batas context / max output bawaan untuk model populer. Dipakai kalau
+/// endpoint `/models` provider tidak mengirim metadata (OpenAI & Anthropic
+/// memang tidak mengirim context di endpoint itu) atau tidak bisa dihubungi.
+/// Nilai ini hanya titik awal — metadata provider selalu menang.
+const PROVIDER_LIMIT_CATALOG = [
+  [/gpt-5\.1/, 400000, 128000],
+  [/gpt-5/, 400000, 128000],
+  [/gpt-4\.5/, 1000000, 16384],
+  [/gpt-4\.1/, 1047576, 32768],
+  [/gpt-4o/, 128000, 16384],
+  [/gpt-4-turbo/, 128000, 4096],
+  [/gpt-4/, 8192, 4096],
+  [/gpt-3\.5/, 16385, 4096],
+  [/^o[134](-|$)/, 200000, 100000],
+  [/claude.*(opus|sonnet|haiku)/, 200000, 64000],
+  [/gemini-2\.5/, 1048576, 65536],
+  [/gemini-2\.0/, 1048576, 8192],
+  [/gemini-1\.5/, 1048576, 8192],
+  [/deepseek-(chat|reasoner|v3)/, 131072, 8192],
+  [/kimi-k2/, 262144, 32768],
+  [/llama-4/, 131072, 8192],
+  [/llama-3\.[13]/, 131072, 8192],
+  [/qwen/, 131072, 8192],
+  [/mixtral|mistral/, 131072, 8192],
+  [/grok/, 131072, 8192],
+  [/command-r/, 131072, 4096],
+  [/@cf\//, 131072, 8192],
+];
+
+function providerLimitNumber(...values) {
+  for (const value of values) {
+    const n = Math.floor(Number(value) || 0);
+    if (n > 0) return n;
+  }
+  return 0;
+}
+
+function providerModelCatalogLimits(modelId) {
+  const id = String(modelId || '').trim().toLowerCase();
+  if (!id) return { contextSize: 0, maxOutput: 0 };
+  for (const [pattern, contextSize, maxOutput] of PROVIDER_LIMIT_CATALOG) {
+    if (pattern.test(id)) return { contextSize, maxOutput };
+  }
+  return { contextSize: 0, maxOutput: 0 };
+}
+
+/// Batas efektif satu model provider. Nilai yang tersimpan selalu dipakai;
+/// katalog hanya mengisi kalau masih kosong (provider lama / model baru).
+function apiProviderModelLimits(model) {
+  const catalog = providerModelCatalogLimits(model && model.modelId);
+  const contextSize = Math.max(0, Number(model && model.contextSize) || 0);
+  const maxOutput = Math.max(0, Number(model && model.maxOutput) || 0);
+  return {
+    contextSize: contextSize > 0 ? contextSize : catalog.contextSize,
+    maxOutput: maxOutput > 0 ? maxOutput : catalog.maxOutput,
+  };
+}
+
+function providerMetadataItems(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  const candidates = [
+    payload.data,
+    payload.models,
+    payload.result,
+    payload.result && payload.result.models,
+    payload.result && payload.result.data,
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+  return [];
+}
+
+function providerMetadataLimitItem(item) {
+  if (!item || typeof item !== 'object') return null;
+  const id = String(
+    item.id || item.name || item.model || item.modelId || '').trim();
+  if (!id) return null;
+  const properties = item.properties || {};
+  const top = item.top_provider || item.topProvider || {};
+  const contextSize = providerLimitNumber(
+    item.context_length,
+    item.context_window,
+    item.max_context_length,
+    item.max_input_tokens,
+    item.input_token_limit,
+    item.contextSize,
+    item.context_size,
+    properties.context_length,
+    properties.max_input_tokens,
+  );
+  const maxOutput = providerLimitNumber(
+    item.max_completion_tokens,
+    item.max_output_tokens,
+    item.max_tokens,
+    item.output_token_limit,
+    item.maxOutput,
+    item.max_output,
+    top.max_completion_tokens,
+    top.max_output_tokens,
+    properties.max_output_tokens,
+    properties.max_tokens,
+  );
+  if (contextSize <= 0 && maxOutput <= 0) return null;
+  return { id, contextSize, maxOutput };
+}
+
+/// Endpoint `/models` yang mungkin dipakai provider. Format OpenAI-compatible
+/// umumnya `/v1/models`; Anthropic `/v1/models`; Cloudflare memakai
+/// `/ai/models/search`.
+function providerMetadataUrls(provider) {
+  const raw = String(provider && provider.baseUrl || '')
+    .trim().replace(/\/+$/, '');
+  if (!raw) return [];
+  const urls = [];
+  const add = (url) => {
+    const clean = String(url || '').replace(/([^:])\/{2,}/g, '$1/');
+    if (clean && !urls.includes(clean)) urls.push(clean);
+  };
+  const accountsMatch =
+    raw.match(/^(https?:\/\/[^/]+\/client\/v4\/accounts\/[^/]+)/i);
+  if (accountsMatch) {
+    add(`${accountsMatch[1]}/ai/models/search`);
+    add(`${accountsMatch[1]}/ai/models`);
+  }
+  if (/\/ai\/run(?:\/|$)/i.test(raw)) {
+    add(`${raw.replace(/\/ai\/run(?:\/.*)?$/i, '/ai')}/models`);
+  } else if (/\/ai\/v1$/i.test(raw)) {
+    add(`${raw}/models`);
+    add(`${raw.replace(/\/ai\/v1$/i, '')}/ai/models/search`);
+  } else if (/\/v\d+$/i.test(raw)) {
+    add(`${raw}/models`);
+  } else if (/\/messages$/i.test(raw)) {
+    add(`${raw.replace(/\/messages$/i, '')}/models`);
+    if (!/\/v\d+$/i.test(raw.replace(/\/messages$/i, ''))) {
+      add(`${raw.replace(/\/messages$/i, '')}/v1/models`);
+    }
+  } else {
+    add(`${raw}/v1/models`);
+    add(`${raw}/models`);
+  }
+  return urls;
+}
+
+function providerModelsMetadataMap(payload) {
+  const map = new Map();
+  for (const item of providerMetadataItems(payload)) {
+    const entry = providerMetadataLimitItem(item);
+    if (!entry) continue;
+    map.set(entry.id.toLowerCase(), entry);
+  }
+  return map;
+}
+
+/// Baca metadata model dari provider (context & max output). Gagal bukan
+/// error: pemanggil akan memakai katalog bawaan.
+async function fetchProviderModelMetadata(provider) {
+  const model = apiProviderModels(provider)[0] || {};
+  const mode = apiProviderMode(provider, model);
+  const headers = apiProviderHeaders(provider, mode, model);
+  headers.set('Accept', 'application/json');
+  for (const url of providerMetadataUrls(provider)) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7000);
+    try {
+      const res = await fetch(url, { headers, signal: controller.signal });
+      if (!res.ok) continue;
+      const payload = await res.json();
+      const map = providerModelsMetadataMap(payload);
+      if (map.size) return map;
+    } catch (_) {
+      // Coba endpoint berikutnya.
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return new Map();
+}
+
+/// Isi otomatis context/max output untuk model yang `limitsAuto` aktif.
+/// Metadata provider > katalog model > nilai lama (placeholder UI).
+async function enrichApiProviderLimits(provider) {
+  const autoModels = (provider.models || [])
+    .filter((model) => model && model.modelId && model.limitsAuto !== false);
+  if (!autoModels.length) return provider;
+  const metadata = await fetchProviderModelMetadata(provider);
+  provider.models = (provider.models || []).map((model) => {
+    if (!model || !model.modelId || model.limitsAuto === false) return model;
+    const found = metadata.get(String(model.modelId).toLowerCase()) || {};
+    const catalog = providerModelCatalogLimits(model.modelId);
+    const contextSize = providerLimitNumber(
+      found.contextSize, catalog.contextSize, model.contextSize);
+    const maxOutput = providerLimitNumber(
+      found.maxOutput, catalog.maxOutput, model.maxOutput);
+    return { ...model, contextSize, maxOutput };
+  });
+  if (provider.models.length) {
+    // Cermin legacy untuk klien/admin lama.
+    provider.contextSize = provider.models[0].contextSize;
+    provider.maxOutput = provider.models[0].maxOutput;
+  }
+  return provider;
 }
 
 function apiProviderModelName(provider, model) {
@@ -1142,9 +1357,64 @@ function effectiveDailyRequestLimit(value) {
   return n > 0 ? n : DEFAULT_DAILY_REQUEST_LIMIT;
 }
 
+const DAILY_REQ_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+async function saveDailyRequestState(env, accountId, state) {
+  const payload = JSON.stringify(state);
+  try {
+    await env.PB_KV.put(`dailyreq:${accountId}`, payload, {
+      expirationTtl: 2 * 24 * 60 * 60,
+    });
+  } catch {
+    // Mock KV lama / KV tanpa opsi tetap harus menyimpan angka.
+    await env.PB_KV.put(`dailyreq:${accountId}`, payload);
+  }
+}
+
+/// State jatah request per akun.
+///
+/// Sebelum kuota habis, counter mengikuti tanggal UTC (reset tengah malam).
+/// Begitu kuota habis, `resetAt` = waktu habis + 24 jam dan counter tidak ikut
+/// reset tengah malam — hitung mundur baru dimulai tepat saat kuota habis.
+async function dailyRequestState(env, accountId) {
+  const today = dailyDateKey();
+  let state = { used: 0, resetAt: 0, date: today };
+  const raw = await env.PB_KV.get(`dailyreq:${accountId}`);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        state.used = Math.max(0, Math.floor(Number(parsed.used) || 0));
+        state.resetAt = Math.max(0, Number(parsed.resetAt) || 0);
+        state.date = String(parsed.date || '');
+      } else {
+        state.used = Math.max(0, Math.floor(Number(raw) || 0));
+      }
+    } catch {
+      // Format lama: angka mentah.
+      state.used = Math.max(0, Math.floor(Number(raw) || 0));
+    }
+  }
+
+  const now = Date.now();
+  let changed = false;
+  if (state.resetAt > 0) {
+    if (now >= state.resetAt) {
+      // Masa tunggu 24 jam selesai → kuota baru dimulai.
+      state = { used: 0, resetAt: 0, date: today };
+      changed = true;
+    }
+  } else if (state.date && state.date !== today) {
+    // Belum pernah habis → reset harian normal (UTC).
+    state = { used: 0, resetAt: 0, date: today };
+    changed = true;
+  }
+  if (changed) await saveDailyRequestState(env, accountId, state);
+  return state;
+}
+
 async function dailyRequestUsed(env, accountId) {
-  const raw = await env.PB_KV.get(`dailyreq:${accountId}:${dailyDateKey()}`);
-  return Number(raw) || 0;
+  return (await dailyRequestState(env, accountId)).used;
 }
 
 /// Batas request harian untuk satu akun. Prioritas:
@@ -1165,26 +1435,26 @@ function accountDailyRequestLimit(config, account) {
 /// Jatah request hari ini untuk satu akun (dipakai Model List aplikasi).
 async function accountRequestQuota(env, account, config) {
   const limit = accountDailyRequestLimit(config, account);
-  const used = await dailyRequestUsed(env, account.id);
+  const state = await dailyRequestState(env, account.id);
+  const exhausted = limit > 0 && state.used >= limit;
   return {
     date: dailyDateKey(),
     limit,
-    used,
-    remaining: Math.max(0, limit - used),
-    resetAt: dailyResetAt(),
+    used: state.used,
+    remaining: Math.max(0, limit - state.used),
+    resetAt: exhausted && state.resetAt > 0 ? state.resetAt : dailyResetAt(),
     tier: String((account && account.tier) || ''),
   };
 }
 
-async function bumpDailyRequest(env, accountId) {
-  const key = `dailyreq:${accountId}:${dailyDateKey()}`;
-  const next = (Number(await env.PB_KV.get(key)) || 0) + 1;
-  try {
-    await env.PB_KV.put(key, String(next), { expirationTtl: 2 * 24 * 60 * 60 });
-  } catch {
-    // Mock KV lama / KV tanpa opsi tetap harus menyimpan angka.
-    await env.PB_KV.put(key, String(next));
-  }
+async function bumpDailyRequest(env, accountId, limit) {
+  const state = await dailyRequestState(env, accountId);
+  const next = state.used + 1;
+  const resetAt = limit > 0 && next >= limit
+    ? Date.now() + DAILY_REQ_WINDOW_MS
+    : state.resetAt;
+  const nextState = { used: next, resetAt, date: dailyDateKey() };
+  await saveDailyRequestState(env, accountId, nextState);
   return next;
 }
 
@@ -1212,6 +1482,7 @@ function apiProviderModelEntry(provider, model, total) {
   const tiers = Array.isArray(provider.tierAccess)
     ? provider.tierAccess
     : ['free', 'pro', 'vip'];
+  const limits = apiProviderModelLimits(model);
   return {
     modelId: apiProviderPublicId(provider, model, count),
     backendModelId: model.modelId,
@@ -1221,8 +1492,8 @@ function apiProviderModelEntry(provider, model, total) {
     serverBaseUrl: '',
     runtime: 'api',
     tierAccess: tiers,
-    contextSize: Number(model.contextSize) || 0,
-    maxOutput: Number(model.maxOutput) || 0,
+    contextSize: limits.contextSize,
+    maxOutput: limits.maxOutput,
     pricing: model.pricing || {},
     dailyRequestLimit: Number(model.dailyRequestLimit) || 0,
     provider: 'external',
@@ -1320,7 +1591,10 @@ async function handleApiProviders(request, env, pathname) {
     const idx = submittedId
       ? list.findIndex((p) => slugProviderId(p.id) === submittedId)
       : -1;
-    const entry = cleanApiProvider(body, idx >= 0 ? list[idx] : null);
+    let entry = cleanApiProvider(body, idx >= 0 ? list[idx] : null);
+    // Context & max output diisi otomatis dari metadata model provider.
+    // Admin tetap bisa menimpanya dengan mematikan toggle Auto per model.
+    entry = await enrichApiProviderLimits(entry);
     if (!entry.baseUrl || !/^https?:\/\//i.test(entry.baseUrl)) {
       return jsonResponse(request, 400, {
         error: 'Base URL wajib diisi dan diawali http:// atau https://.',
@@ -1497,6 +1771,35 @@ async function applyPlanExpiry(env, account) {
   return account;
 }
 
+/// Reset kuota HANYA saat token sudah habis (used >= balance). Tidak ada
+/// reset berbasis waktu: kuota baru diberikan ketika siklus sebelumnya habis.
+/// `tokenBalance` (total kuota akun) tidak pernah dinaikkan di sini, jadi
+/// reset tidak bisa membuat saldo melebihi batas akun (mis. 50M -> 54M).
+async function resetExhaustedToken(env, account) {
+  if (!account || !account.id) return account;
+  const tokenBalance = Math.max(0,
+    Math.floor(Number(account.tokenBalance) || 0));
+  const tokenUsed = Math.max(0,
+    Math.floor(Number(account.tokenUsed) || 0));
+  // Kuota 0 = tidak punya jatah; jangan "reset" menjadi tak terbatas.
+  if (tokenBalance <= 0 || tokenUsed < tokenBalance) return account;
+  const next = {
+    ...account,
+    tokenBalance,
+    tokenUsed: 0,
+    lastReset: Date.now(),
+  };
+  await env.PB_KV.put(`account:${next.id}`, JSON.stringify(next));
+  return next;
+}
+
+/// Siklus hidup akun saat dipakai: membership expired → free, lalu reset
+/// token kalau kuotanya sudah habis.
+async function applyAccountLifecycle(env, account) {
+  const withPlan = await applyPlanExpiry(env, account);
+  return resetExhaustedToken(env, withPlan);
+}
+
 async function sessionAccount(env, request) {
   const token = bearerToken(request);
   if (!token) return null;
@@ -1504,7 +1807,7 @@ async function sessionAccount(env, request) {
   if (!accountId) return null;
   const account = await getJson(env.PB_KV, `account:${accountId}`, null);
   if (!account) return null;
-  return { token, account: await applyPlanExpiry(env, account) };
+  return { token, account: await applyAccountLifecycle(env, account) };
 }
 
 /// Akun dari `Authorization: Bearer <sesi Discord | API key user>`.
@@ -1535,7 +1838,7 @@ async function accountFromBearer(env, request) {
     const account = await getJson(
       env.PB_KV, `account:${keyData.accountId}`, null);
     return account
-      ? { account: await applyPlanExpiry(env, account) }
+      ? { account: await applyAccountLifecycle(env, account) }
       : { status: 401, error: 'Invalid API key.' };
   }
   // Bukan API key → coba session token login. Nilai session di KV adalah
@@ -1545,7 +1848,7 @@ async function accountFromBearer(env, request) {
     ? await getJson(env.PB_KV, `account:${sessionAccountId}`, null)
     : null;
   return account
-    ? { account: await applyPlanExpiry(env, account) }
+    ? { account: await applyAccountLifecycle(env, account) }
     : { status: 401, error: 'Invalid API key.' };
 }
 
@@ -2753,12 +3056,13 @@ async function fetchAiProps(base, secret) {
   const ctxPerSlot = Number(payload.n_ctx) || Number(generation.n_ctx) || 0;
   const contextSize = ctxPerSlot > 0 ? Math.floor(ctxPerSlot * slots) : 0;
   // `n_predict` = batas output default; -1 (tanpa batas) → pakai perkiraan
-  // aman seperdua context, dibatasi 4096 supaya jawaban tidak menggantung.
+  // aman seperdua context (maksimum 32k) supaya jawaban tidak menggantung
+  // dan tetap mengikuti kapasitas model.
   const nPredict = Number(generation.n_predict);
   const maxOutput = nPredict > 0
     ? Math.floor(nPredict)
     : (contextSize > 0
-      ? Math.min(4096, Math.max(256, Math.floor(contextSize / 2)))
+      ? Math.min(32768, Math.max(256, Math.floor(contextSize / 2)))
       : 0);
   const modelPaths = payload.model_path ? [payload.model_path] : [];
   return {
@@ -3043,7 +3347,7 @@ async function handleBotApi(request, env, pathname) {
         message: 'Akun Discord belum terdaftar atau belum login di web.',
       });
     }
-    account = await applyPlanExpiry(env, account);
+    account = await applyAccountLifecycle(env, account);
 
     const tokenBalance = account.tokenBalance ?? config.loginTokenBalance ?? 20000000;
     const tokenUsed = account.tokenUsed ?? 0;
@@ -3089,7 +3393,7 @@ async function handleBotApi(request, env, pathname) {
     if (!account) {
       return jsonResponse(request, 404, { error: 'Account not found for this discord_id.' });
     }
-    account = await applyPlanExpiry(env, account);
+    account = await applyAccountLifecycle(env, account);
     // Tier dari bot mengikuti aturan yang sama: VIP/PRO selalu punya plan
     // 30 hari; tier lain tidak menyimpan plan.
     const nextTier = normalizeTier(tier);
@@ -3121,7 +3425,7 @@ async function handleBotApi(request, env, pathname) {
     if (!account) {
       return jsonResponse(request, 404, { error: 'Account not found for this discord_id.' });
     }
-    account = await applyPlanExpiry(env, account);
+    account = await applyAccountLifecycle(env, account);
     account.tokenBalance = (account.tokenBalance ?? 0) + tokens;
     await env.PB_KV.put(`account:${account.id}`, JSON.stringify(account));
     return jsonResponse(request, 200, { ok: true, account });
@@ -3403,7 +3707,9 @@ async function handleApiKey(request, env, pathname) {
 // memakai angka itu untuk membatasi permintaan user, jadi server tidak
 // pernah menerima output lebih panjang dari yang bisa diprosesnya.
 
-const GATEWAY_HARD_MAX_TOKENS = 8192;
+// Batas pengaman output gateway. Nilai per model (maxOutput hasil auto-detect)
+// tetap yang menentukan; batas ini hanya mencegah nilai tidak masuk akal.
+const GATEWAY_HARD_MAX_TOKENS = 262144;
 
 /// Mendeteksi apakah pesan mengandung media (gambar/video) — token dihitung
 /// lebih mahal untuk request yang menyertakan media (2x, diatur user).
@@ -3803,6 +4109,7 @@ async function handleGateway(request, env, pathname) {
         if (providerConfig) break;
       }
       if (providerConfig) {
+        const limits = apiProviderModelLimits(providerModel);
         modelConfig = {
           modelId: apiProviderPublicId(
             providerConfig, providerModel, apiProviderModels(providerConfig).length),
@@ -3811,8 +4118,8 @@ async function handleGateway(request, env, pathname) {
           serverId: '',
           apiUrl: providerConfig.baseUrl,
           apiKey: providerConfig.apiKey,
-          contextSize: Number(providerModel.contextSize) || 0,
-          maxOutput: Number(providerModel.maxOutput) || 0,
+          contextSize: limits.contextSize,
+          maxOutput: limits.maxOutput,
           pricing: providerModel.pricing || {},
           dailyRequestLimit: Number(providerModel.dailyRequestLimit) ||
             (Number(providerConfig.dailyRequestLimit) || 0),
@@ -3872,14 +4179,24 @@ async function handleGateway(request, env, pathname) {
       ? accountDailyRequestLimit(config, account)
       : 0;
     if (providerConfig && dailyLimit > 0) {
-      const used = await dailyRequestUsed(env, account.id);
-      if (used >= dailyLimit) {
+      const quota = await dailyRequestState(env, account.id);
+      if (quota.used >= dailyLimit) {
+        // Kuota habis: hitung mundur 24 jam dimulai dari saat habis. Kalau
+        // limit admin baru diturunkan sampai kuota sudah lewat, set sekarang.
+        let resetAt = quota.resetAt;
+        if (!resetAt) {
+          resetAt = Date.now() + DAILY_REQ_WINDOW_MS;
+          await saveDailyRequestState(env, account.id, {
+            ...quota,
+            resetAt,
+          });
+        }
         return jsonResponse(request, 429, {
           error: `Batas ${dailyLimit} request/hari untuk akun ini sudah ` +
-            'tercapai. Coba lagi besok atau minta admin menaikkan limit.',
+            'tercapai. Coba lagi setelah hitung mundur reset selesai.',
           limit: dailyLimit,
-          used,
-          resetAt: dailyResetAt(),
+          used: quota.used,
+          resetAt,
         });
       }
     }
@@ -3918,6 +4235,12 @@ async function handleGateway(request, env, pathname) {
         });
       }
     } else {
+      // Reset otomatis saat kuota habis (bukan berdasarkan waktu). Kalau
+      // akun belum punya kuota sama sekali (balance 0), tetap tolak.
+      if ((Number(account.tokenBalance) || 0) -
+        (Number(account.tokenUsed) || 0) <= 0) {
+        account = await resetExhaustedToken(env, account);
+      }
       if ((Number(account.tokenBalance) || 0) -
         (Number(account.tokenUsed) || 0) <= 0) {
         return jsonResponse(request, 402, {
@@ -4012,7 +4335,7 @@ async function handleGateway(request, env, pathname) {
       }
       // Hitung request harian per akun tepat sebelum panggilan upstream.
       if (dailyLimit > 0) {
-        await bumpDailyRequest(env, account.id);
+        await bumpDailyRequest(env, account.id, dailyLimit);
       }
       upstream = await fetch(targetUrl, {
         method: 'POST',

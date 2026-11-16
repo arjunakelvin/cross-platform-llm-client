@@ -81,6 +81,7 @@ class SettingsController extends GetxController {
   double _pendingGatewayCredits = 0;
   final tokenLastReset = 0.obs;
   final tokenResetDays = AppConstants.tokenResetDays.obs;
+  bool _tokenResetInFlight = false;
   final localServerUrl = AppConstants.defaultLocalServerUrl.obs;
   final localCloudModel = 'local'.obs;
   final localCloudKey = ''.obs;
@@ -266,7 +267,7 @@ class SettingsController extends GetxController {
     tokenResetDays.value = _hive.getSetting<int>(AppConstants.keyTokenResetDays,
             defaultValue: AppConstants.tokenResetDays) ??
         AppConstants.tokenResetDays;
-    _checkTokenReset();
+    unawaited(_checkTokenReset());
     localServerUrl.value = _hive.getSetting<String>(
             AppConstants.keyLocalServerUrl,
             defaultValue: AppConstants.defaultLocalServerUrl) ??
@@ -695,28 +696,29 @@ class SettingsController extends GetxController {
         AppConstants.keyCustomCloudProfileIndex, customCloudProfileIndex.value);
   }
 
-  /// One stop sequence per line. Escapes like `\n` are allowed so a stop
-  /// string can include a newline (e.g. `\nUser:`).
-  void _checkTokenReset() {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final last = tokenLastReset.value;
-    if (last == 0) {
-      tokenLastReset.value = now;
-      _hive.setSetting(AppConstants.keyTokenLastReset, now);
-      return;
-    }
-    final elapsed = now - last;
-    final resetMs = tokenResetDays.value * 24 * 60 * 60 * 1000;
-    if (elapsed >= resetMs) {
-      resetToken();
+  /// Token hanya di-reset ketika kuota benar-benar habis, bukan setiap
+  /// periode waktu. Untuk user login, reset dilakukan server (authoritative)
+  /// lewat `/api/auth/me`; guest di-reset lokal.
+  bool get tokenQuotaExhausted {
+    final max = maxTokenBalance;
+    return max > 0 && tokenUsed.value >= max;
+  }
+
+  Future<void> _checkTokenReset() async {
+    if (_tokenResetInFlight || !tokenQuotaExhausted) return;
+    _tokenResetInFlight = true;
+    try {
+      await resetToken();
+    } finally {
+      _tokenResetInFlight = false;
     }
   }
 
-  /// Admin-configurable reset cycle (days). Persists and re-checks the reset.
+  /// Reset cycle tersimpan untuk kompatibilitas config lama. Reset token
+  /// sekarang tidak lagi memakai periode waktu.
   Future<void> setTokenResetDays(int days) async {
     tokenResetDays.value = days < 1 ? 1 : days;
     await _hive.setSetting(AppConstants.keyTokenResetDays, tokenResetDays.value);
-    _checkTokenReset();
   }
 
   int get maxTokenBalance {
@@ -771,6 +773,10 @@ class SettingsController extends GetxController {
 
     if (loggedIn) {
       if (acc != null) {
+        // Kalau `tokenUsed` server turun, berarti server baru saja mereset
+        // kuota (mis. habis lalu di-refill). Pemakaian on-device lama ikut
+        // dibersihkan supaya tidak terhitung lagi di kuota baru.
+        final serverReset = acc.tokenUsed < _serverTokenUsed;
         // Kuota akun (dari server) yang jadi acuan.
         _serverTokenUsed = acc.tokenUsed;
         _serverCreditUsed = acc.creditUsed;
@@ -781,6 +787,13 @@ class SettingsController extends GetxController {
         _pendingGatewayCredits = 0;
         creditUsed.value = _serverCreditUsed;
         creditBalance.value = _serverCreditBalance;
+        if (serverReset) {
+          localTokenUsed.value = 0;
+          tokenLastReset.value = DateTime.now().millisecondsSinceEpoch;
+          _hive.setSetting(AppConstants.keyLocalTokenUsed, 0);
+          _hive.setSetting(
+              AppConstants.keyTokenLastReset, tokenLastReset.value);
+        }
         final total = _serverTokenUsed + localTokenUsed.value;
         if (tokenUsed.value != total) {
           tokenUsed.value = total;
@@ -812,11 +825,15 @@ class SettingsController extends GetxController {
   Future<void> consumeTokens(int amount) async {
     if (amount <= 0) return;
     localTokenUsed.value += amount;
-    tokenUsed.value = _serverTokenUsed + localTokenUsed.value + _pendingGatewayTokens;
-    tokenBalance.value = (tokenBalance.value - amount).clamp(0, maxTokenBalance);
+    final max = maxTokenBalance;
+    final total =
+        _serverTokenUsed + localTokenUsed.value + _pendingGatewayTokens;
+    tokenUsed.value = total;
+    tokenBalance.value = (max - total).clamp(0, max);
     await _hive.setSetting(AppConstants.keyLocalTokenUsed, localTokenUsed.value);
     await _hive.setSetting(AppConstants.keyTokenUsed, tokenUsed.value);
     await _hive.setSetting(AppConstants.keyTokenBalance, tokenBalance.value);
+    unawaited(_checkTokenReset());
   }
 
   /// Terapkan pemakaian gateway yang baru saja terjadi.
@@ -844,18 +861,38 @@ class SettingsController extends GetxController {
             .clamp(0, double.infinity);
     creditBalance.value =
         double.parse(totalCreditsBalance.toStringAsFixed(8));
+    if (tokenQuotaExhausted) unawaited(_checkTokenReset());
   }
 
   Future<void> resetToken() async {
-    tokenBalance.value = maxTokenBalance;
-    tokenUsed.value = 0;
-    localTokenUsed.value = 0;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    tokenLastReset.value = now;
+    await _hive.setSetting(AppConstants.keyTokenLastReset, now);
+
+    final ds = Get.isRegistered<DiscordService>()
+        ? Get.find<DiscordService>()
+        : null;
+    final loggedIn = ds != null && (ds.isLoggedIn || _hasStoredSession);
+
+    // User login: server yang mereset `tokenUsed` (kuota tidak pernah
+    // ditambah). Ambil state terbaru supaya UI ikut angka server.
+    if (loggedIn) {
+      await ds.recomputeAccess();
+      syncTokenQuotaWithAuth();
+      return;
+    }
+
+    // Guest: reset lokal, dibatasi kuota akun agar tidak pernah melebihi.
+    final max = maxTokenBalance;
+    _pendingGatewayTokens = 0;
+    _pendingGatewayCredits = 0;
     _serverTokenUsed = 0;
-    tokenLastReset.value = DateTime.now().millisecondsSinceEpoch;
+    localTokenUsed.value = 0;
+    tokenUsed.value = 0;
+    tokenBalance.value = max;
     await _hive.setSetting(AppConstants.keyTokenBalance, tokenBalance.value);
     await _hive.setSetting(AppConstants.keyTokenUsed, 0);
     await _hive.setSetting(AppConstants.keyLocalTokenUsed, 0);
-    await _hive.setSetting(AppConstants.keyTokenLastReset, tokenLastReset.value);
   }
 
   // ── Token quota helpers ──────────────────────────────────────────────────
@@ -877,28 +914,8 @@ class SettingsController extends GetxController {
   int get tokenRemaining =>
       tokenBalance.value.clamp(0, maxTokenBalance).toInt();
 
-  /// Milliseconds until the daily token quota resets.
-  int get tokenTimeToResetMs {
-    final lastReset = tokenLastReset.value;
-    if (lastReset <= 0) return 0;
-    final resetAtMs =
-        lastReset + tokenResetDays.value * 24 * 60 * 60 * 1000;
-    final ms = resetAtMs - DateTime.now().millisecondsSinceEpoch;
-    return ms > 0 ? ms : 0;
-  }
-
-  /// Countdown until the token quota resets (e.g. "23h 41m").
-  String get tokenResetCountdownLabel {
-    final ms = tokenTimeToResetMs;
-    if (ms <= 0) return 'Resets today';
-    final duration = Duration(milliseconds: ms);
-    final days = duration.inDays;
-    final hours = duration.inHours;
-    final minutes = duration.inMinutes % 60;
-    if (days > 0) return 'Resets in ${days}d ${hours}h';
-    if (hours > 0) return 'Resets in ${hours}h ${minutes}m';
-    return 'Resets in ${duration.inMinutes}m';
-  }
+  /// Kuota token di-reset otomatis saat habis — bukan berdasarkan waktu.
+  String get tokenResetLabel => 'Reset otomatis saat kuota habis';
 
 
   Future<void> setLocalServerUrl(String url) async {
