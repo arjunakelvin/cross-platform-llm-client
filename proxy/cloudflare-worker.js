@@ -133,6 +133,34 @@ const DEFAULT_WALLETS = [
     account: '', note: '', active: true },
 ];
 
+/// Hitung harga paket setelah diskon/terbatas sale event.
+///
+/// `discountPercent`: 0–99 (diskon permanen). `saleEvent`: nama event
+/// terbatas (mis. "Harbolnas 11.11"). `saleUntil`: batas akhir event (epoch
+/// ms); kalau lewat, diskon diabaikan. 0 = diskon selalu berlaku.
+function saleState(plan, nowMs) {
+  const now = Number(nowMs) || Date.now();
+  const priceIdr = Math.max(0, Math.floor(Number((plan && plan.priceIdr) || 0)));
+  const pct = Math.min(99, Math.max(0,
+    Math.floor(Number((plan && plan.discountPercent) || 0))));
+  const until = Number((plan && plan.saleUntil) || 0);
+  const event = String((plan && plan.saleEvent) || '').trim().slice(0, 80);
+  const active = pct > 0 && (!until || now < until);
+  const finalPriceIdr = active
+    ? Math.max(0, Math.floor(priceIdr * (100 - pct) / 100))
+    : priceIdr;
+  return {
+    active,
+    discountPercent: pct,
+    saleEvent: event,
+    saleUntil: until,
+    originalPriceIdr: priceIdr,
+    finalPriceIdr,
+    // Harga final yang dipakai untuk transaksi (dipakai di order).
+    priceIdr: finalPriceIdr,
+  };
+}
+
 function cleanPlan(input, fallbackId) {
   const src = input && typeof input === 'object' ? input : {};
   const tier = String(src.tier || 'none').trim().toLowerCase();
@@ -145,11 +173,18 @@ function cleanPlan(input, fallbackId) {
   const isMembership = PLAN_KINDS.includes(kind) && kind === 'membership';
   const durationDays = Math.max(0,
     Math.floor(Number(src.durationDays) || (isMembership ? PLAN_MEMBERSHIP_DURATION_DAYS : 0)));
+  const discountPercent = Math.min(99, Math.max(0,
+    Math.floor(Number(src.discountPercent) || 0)));
+  const saleEvent = String(src.saleEvent || '').trim().slice(0, 80);
+  const saleUntil = Math.max(0, Math.floor(Number(src.saleUntil) || 0));
   return {
     id,
     kind: PLAN_KINDS.includes(kind) ? kind : 'credit',
     name,
     priceIdr: Math.max(0, Math.floor(Number(src.priceIdr) || 0)),
+    discountPercent,
+    saleEvent,
+    saleUntil,
     credits: Math.max(0, Number(src.credits) || 0),
     tokenBonus: Math.max(0, Math.floor(Number(src.tokenBonus) || 0)),
     tier: PLAN_TIERS.includes(tier) ? tier : 'none',
@@ -3940,11 +3975,17 @@ async function handleGateway(request, env, pathname) {
       data: plans.map((p) => {
         const tierRpm = (p.tier && p.tier !== 'none')
           ? effectiveRpmLimit(String(p.tier), config.rpm || {}) : 0;
+        const sale = saleState(p);
         return {
           id: p.id,
           name: p.name,
           kind: p.kind,
           priceIdr: p.priceIdr,
+          discountPercent: sale.discountPercent,
+          saleEvent: sale.saleEvent,
+          saleUntil: sale.saleUntil,
+          saleActive: sale.active,
+          finalPriceIdr: sale.finalPriceIdr,
           credits: p.credits,
           tokenBonus: p.tokenBonus,
           tier: p.tier,
@@ -3977,12 +4018,38 @@ async function handleGateway(request, env, pathname) {
     if (!plan) {
       return jsonResponse(request, 404, { error: 'Paket tidak ditemukan / nonaktif.' });
     }
+    // Membership: user tidak bisa membeli plan yang sudah dimiliki sampai
+    // masa aktifnya habis (VIP → boleh upgrade ke PRO; PRO → VIP & PRO
+    // terkunci karena sudah punya PRO).
+    if (plan.kind === 'membership') {
+      const planTier = normalizeTier(plan.tier);
+      const need = tierRank(planTier);
+      const have = Math.max(0, tierRank(account.tier));
+      if (need > 0 && have >= need) {
+        const current = account.plan && typeof account.plan === 'object'
+          ? account.plan : null;
+        const expiresAt = Number(current && current.expiresAt) || 0;
+        const until = expiresAt > Date.now()
+          ? ` sampai ${new Date(expiresAt).toISOString().slice(0, 10)}`
+          : '';
+        const ownedName = normalizeTier(account.tier).toUpperCase();
+        return jsonResponse(request, 409, {
+          error: `Kamu sudah punya paket ${ownedName}${until}. ` +
+              'Bisa beli lagi setelah masa aktifnya habis.',
+          plan: ownedName,
+          planTier: normalizeTier(account.tier),
+          expiresAt,
+        });
+      }
+    }
     const wallets = (await getWallets(env)).filter((w) => w.active && w.account);
     if (wallets.length === 0) {
       return jsonResponse(request, 503, {
         error: 'Pembayaran belum dikonfigurasi admin. Kami beri tahu setelah aktif.',
       });
     }
+    // Terapkan diskon / limited sale event saat membuat pesanan.
+    const sale = saleState(plan);
     const orders = await getPlanOrders(env);
     const id = `po_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
     const order = {
@@ -3993,7 +4060,11 @@ async function handleGateway(request, env, pathname) {
       planId: plan.id,
       planName: plan.name,
       kind: plan.kind,
-      priceIdr: plan.priceIdr,
+      // Harga yang benar-benar dibayar (setelah diskon), dan harga aslinya.
+      priceIdr: sale.finalPriceIdr,
+      originalPriceIdr: sale.originalPriceIdr,
+      discountPercent: sale.active ? sale.discountPercent : 0,
+      saleEvent: sale.active ? sale.saleEvent : '',
       method,
       status: 'pending',
       proof: '',

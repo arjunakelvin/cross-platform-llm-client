@@ -133,6 +133,37 @@
   }
   textarea:focus { outline: 1px solid var(--accent); }
 
+  /* Pratinjau fullscreen untuk bukti pembayaran (foto & video). */
+  .media-lightbox {
+    display: none; position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0,0,0,.82); backdrop-filter: blur(2px);
+    align-items: center; justify-content: center;
+  }
+  .media-lightbox.open { display: flex; }
+  .media-lightbox .lb-close {
+    position: absolute; top: 14px; right: 16px;
+    background: rgba(255,255,255,.12); color: #fff; border: 0;
+    width: 40px; height: 40px; border-radius: 8px;
+    font-size: 22px; cursor: pointer;
+  }
+  .media-lightbox .lb-close:hover { background: rgba(255,255,255,.2); }
+  .media-lightbox .lb-body {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 10px; padding: 40px 16px 16px; max-width: 94vw; max-height: 94vh;
+  }
+  .media-lightbox .lb-body img,
+  .media-lightbox .lb-body video {
+    max-width: min(92vw, 960px); max-height: 78vh;
+    border-radius: 10px; background: #000; object-fit: contain;
+  }
+  .media-lightbox .lb-caption { color: #c9d1d9; font-size: 12px; }
+  .media-lightbox .lb-actions { display: flex; gap: 8px; }
+  .proof-btn {
+    background: #0d1117; border: 1px solid var(--line);
+    border-radius: 10px; cursor: zoom-in; padding: 3px;
+  }
+  .proof-btn:hover { border-color: var(--accent); }
+
   /* Layar sempit: sidebar jadi nav horizontal di atas konten. */
   @media (max-width: 840px) {
     #app { flex-direction: column; }
@@ -955,11 +986,12 @@ async with aiohttp.ClientSession() as session:<br>
         <table>
           <thead><tr>
             <th>#</th><th>Nama</th><th>Jenis</th>
-            <th>Harga (Rp)</th><th>Kredit ($)</th><th>Token bonus</th>
+            <th>Harga (Rp)</th><th>Diskon %</th><th>Event sale</th><th>Sale sampai</th>
+            <th>Kredit ($)</th><th>Token bonus</th>
             <th>Tier</th><th>RPM</th><th>Durasi (hari)</th><th>Deskripsi</th><th>Aktif</th><th></th>
           </tr></thead>
           <tbody id="planRows">
-            <tr><td colspan="12" style="color:var(--muted)">Memuat paket…</td></tr>
+            <tr><td colspan="15" style="color:var(--muted)">Memuat paket…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1139,20 +1171,29 @@ function formatRupiah(v) {
   return 'Rp' + Math.floor(n).toLocaleString('id-ID');
 }
 
+// Kumpulan bukti saat render tabel; klik thumbnail membuka lightbox.
+const proofCache = [];
+
 function fmtProofCell(o) {
   if (!o.proof) {
     return '<td style="color:var(--muted)">' +
       (o.proofDeletedAt ? 'dihapus (3 hari)' : '—') + '</td>';
   }
   const src = o.proof;
-  if (/^data:video\//i.test(src)) {
-    return '<td><video controls playsinline preload="metadata" ' +
-      'src="' + src + '" style="max-height:120px; max-width:170px; ' +
-      'border-radius:8px; background:#000"></video></td>';
+  const isVideo = /^data:video\//i.test(src);
+  const idx = proofCache.push({ src, kind: isVideo ? 'video' : 'image' }) - 1;
+  if (isVideo) {
+    return '<td><button class="proof-btn" type="button" data-proof-i="' + idx +
+      '" title="Klik untuk memutar bukti video">' +
+      '<video preload="metadata" muted playsinline src="' + src + '" ' +
+        'style="height:88px; width:150px; object-fit:cover; border-radius:8px; pointer-events:none">' +
+        '</video></button></td>';
   }
-  return '<td><img loading="lazy" alt="bukti" src="' + src + '" ' +
-    'style="max-height:120px; max-width:150px; border-radius:8px; cursor:zoom-in" ' +
-    'onclick="window.open(this.src, \'_blank\')"></td>';
+  return '<td><button class="proof-btn" type="button" data-proof-i="' + idx +
+    '" title="Klik untuk memperbesar bukti gambar">' +
+    '<img loading="lazy" alt="bukti" src="' + src + '" ' +
+      'style="max-height:96px; max-width:120px; border-radius:8px">' +
+      '</button></td>';
 }
 
 function planCell(a) {
@@ -1181,6 +1222,21 @@ function planCell(a) {
   '</div></td>';
 }
 
+function dateInputValue(ms) {
+  const n = Number(ms) || 0;
+  if (n <= 0) return '';
+  const d = new Date(n);
+  const pad = (v) => String(v).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+}
+
+function dateInputToEpoch(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || '').trim());
+  if (!m) return 0;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 23, 59, 59, 999)
+    .getTime();
+}
+
 function planRowHtml(p, i) {
   return (
     '<tr data-id="' + escapeAttr(p.id) + '" data-sort="' + (i + 1) + '">' +
@@ -1195,6 +1251,15 @@ function planRowHtml(p, i) {
       '</select></td>' +
       '<td><input type="number" data-f="priceIdr" min="0" step="1000"' +
         ' style="min-width:96px" value="' + (p.priceIdr ?? 0) + '"></td>' +
+      '<td><input type="number" data-f="discountPercent" min="0" max="99" step="1"' +
+        ' style="min-width:60px" title="Diskon % dari harga asli (kosong/0 = tanpa diskon)"' +
+        ' value="' + (p.discountPercent ?? 0) + '">' +
+        '<div class="sale-final" style="font-size:10px; line-height:1.3; color:var(--orange); margin-top:2px; white-space:nowrap"></div></td>' +
+      '<td><input type="text" data-f="saleEvent" maxlength="80"' +
+        ' placeholder="Harbolnas" style="min-width:110px" value="' + escapeAttr(p.saleEvent || '') + '"></td>' +
+      '<td><input type="date" data-f="saleUntil"' +
+        ' title="Batas akhir sale (kosongkan = diskon berlaku terus)" value="' +
+        dateInputValue(p.saleUntil) + '"></td>' +
       '<td><input type="number" data-f="credits" min="0" step="0.01"' +
         ' style="min-width:72px" value="' + (p.credits ?? 0) + '"></td>' +
       '<td><input type="number" data-f="tokenBonus" min="0" step="1000000"' +
@@ -1217,14 +1282,31 @@ function planRowHtml(p, i) {
   );
 }
 
+function updateSaleHint(tr) {
+  const hint = tr.querySelector('.sale-final');
+  if (!hint) return;
+  const priceEl = tr.querySelector('[data-f="priceIdr"]');
+  const pctEl = tr.querySelector('[data-f="discountPercent"]');
+  const untilEl = tr.querySelector('[data-f="saleUntil"]');
+  const price = priceEl ? Math.max(0, Number(priceEl.value) || 0) : 0;
+  const pct = Math.min(99, Math.max(0, Number(pctEl && pctEl.value) || 0));
+  const until = dateInputToEpoch(untilEl && untilEl.value);
+  const active = pct > 0 && (!until || Date.now() < until);
+  const finalPrice = Math.floor(price * (100 - pct) / 100);
+  hint.textContent = active
+    ? 'user bayar ' + formatRupiah(finalPrice) + ' (' + pct + '% off)'
+    : '';
+}
+
 function renderPlanRows(plans) {
   const rows = $('planRows');
   if (!plans || plans.length === 0) {
-    rows.innerHTML = '<tr><td colspan="12" style="color:var(--muted)">' +
+    rows.innerHTML = '<tr><td colspan="15" style="color:var(--muted)">' +
       'Belum ada plan. Klik "+ Tambah plan".</td></tr>';
     return;
   }
   rows.innerHTML = plans.map((p, i) => planRowHtml(p, i)).join('');
+  rows.querySelectorAll('tr[data-id]').forEach(updateSaleHint);
 }
 
 function collectPlans() {
@@ -1241,6 +1323,10 @@ function collectPlans() {
       name: get('name').trim(),
       kind: get('kind') || 'credit',
       priceIdr: Math.max(0, Math.floor(Number(get('priceIdr')) || 0)),
+      discountPercent: Math.min(99,
+        Math.max(0, Math.floor(Number(get('discountPercent')) || 0))),
+      saleEvent: get('saleEvent').trim().slice(0, 80),
+      saleUntil: dateInputToEpoch(get('saleUntil')),
       credits: Math.max(0, Number(get('credits')) || 0),
       tokenBonus: Math.max(0, Math.floor(Number(get('tokenBonus')) || 0)),
       tier: get('tier') || 'none',
@@ -1293,6 +1379,7 @@ function walletFromInputs() {
 
 function renderPlanOrders(orders) {
   const rows = $('planOrderRows');
+  proofCache.length = 0;
   if (!orders || orders.length === 0) {
     rows.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">' +
       'Belum ada pesanan ' + escapeHtml(ordersFilter) + '.</td></tr>';
@@ -1910,6 +1997,11 @@ $('savePlans').addEventListener('click', async () => {
   }
 });
 
+$('planRows').addEventListener('input', (ev) => {
+  const tr = ev.target.closest('tr[data-id]');
+  if (tr) updateSaleHint(tr);
+});
+
 $('planRows').addEventListener('click', (ev) => {
   const btn = ev.target.closest('.delPlan');
   if (!btn) return;
@@ -1922,6 +2014,12 @@ document.querySelectorAll('.ordersTab').forEach((btn) => {
 });
 
 $('planOrderRows').addEventListener('click', async (ev) => {
+  const proofBtn = ev.target.closest('.proof-btn');
+  if (proofBtn) {
+    const item = proofCache[Number(proofBtn.dataset.proofI)];
+    if (item) openMediaLightbox(item.src, item.kind);
+    return;
+  }
   const approveBtn = ev.target.closest('.approvePlan');
   const rejectBtn = ev.target.closest('.rejectPlan');
   const target = approveBtn || rejectBtn;
@@ -3251,7 +3349,59 @@ async function loadUsageLogs() {
 }
 
 $('refreshUsageLogs').addEventListener('click', loadUsageLogs);
+
+// ── Pratinjau fullscreen bukti (foto & video) ───────────────────────────
+function openMediaLightbox(src, kind) {
+  const box = $('mediaLightbox');
+  if (!box) return;
+  const body = $('mediaLightboxBody');
+  body.innerHTML = '';
+  if (kind === 'video') {
+    const v = document.createElement('video');
+    v.src = src;
+    v.controls = true;
+    v.autoplay = true;
+    v.playsInline = true;
+    v.setAttribute('controlslist', 'nodownload');
+    body.appendChild(v);
+    const cap = document.createElement('div');
+    cap.className = 'lb-caption';
+    cap.textContent = 'Bukti pembayaran (video)';
+    body.appendChild(cap);
+  } else {
+    const img = document.createElement('img');
+    img.src = src;
+    img.alt = 'Bukti pembayaran';
+    body.appendChild(img);
+    const cap = document.createElement('div');
+    cap.className = 'lb-caption';
+    cap.textContent = 'Bukti pembayaran (gambar)';
+    body.appendChild(cap);
+  }
+  box.classList.add('open');
+  box.setAttribute('aria-hidden', 'false');
+}
+function closeMediaLightbox() {
+  const box = $('mediaLightbox');
+  if (!box) return;
+  box.classList.remove('open');
+  box.setAttribute('aria-hidden', 'true');
+  const body = $('mediaLightboxBody');
+  body.innerHTML = '';
+}
+$('mediaLightboxClose').addEventListener('click', closeMediaLightbox);
+$('mediaLightbox').addEventListener('click', (ev) => {
+  if (ev.target === $('mediaLightbox')) closeMediaLightbox();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') closeMediaLightbox();
+});
 $('usageLogSearch').addEventListener('input', () => loadUsageLogs());
 </script>
+<div id="mediaLightbox" class="media-lightbox" role="dialog" aria-hidden="true" aria-label="Pratinjau bukti pembayaran">
+  <button id="mediaLightboxClose" class="lb-close" type="button" aria-label="Tutup">×</button>
+  <div id="mediaLightboxBody" class="lb-body"></div>
+</div>
+
 </body>
 </html>

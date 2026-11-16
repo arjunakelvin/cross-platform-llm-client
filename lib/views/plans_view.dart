@@ -19,6 +19,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../core/ui.dart';
+import '../services/admin_db_service.dart' show AdminAccount;
+import '../services/discord_service.dart';
 import '../services/plans_service.dart';
 
 class PlansView extends StatefulWidget {
@@ -27,6 +29,11 @@ class PlansView extends StatefulWidget {
   @override
   State<PlansView> createState() => _PlansViewState();
 }
+
+/// Warna emas untuk kartu **Limited Sale**.
+const _gold = Color(0xFFFFD166);
+const _goldDeep = Color(0xFF8A6D1F);
+const _goldFill = Color(0x33D4A017); // tint emas transparan
 
 class _PlansViewState extends State<PlansView> {
   late Future<List<PlanInfo>?> _plansFuture;
@@ -55,52 +62,97 @@ class _PlansViewState extends State<PlansView> {
     return Scaffold(
       backgroundColor: t.bg,
       appBar: appScreenBar(context, title: 'Plans'),
-      body: RefreshIndicator(
-        onRefresh: _refresh,
-        child: FutureBuilder<List<PlanInfo>?>(
-          future: _plansFuture,
-          builder: (context, snap) {
-            final plans = snap.data ?? const <PlanInfo>[];
-            final loading = snap.connectionState != ConnectionState.done;
-            final creditPlans = plans.where((p) => p.kind == 'credit').toList();
-            final membershipPlans =
-                plans.where((p) => p.kind == 'membership').toList();
-            final failed = snap.connectionState == ConnectionState.done &&
-                snap.data == null;
+      // Halaman tidak boleh makin panjang ke bawah: daftar paket dan daftar
+      // pesanan masing-masing dibikin area scroll sendiri.
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Beli credit atau membership di sini. Setelah pembayaran '
+                'diverifikasi admin, kredit & tier otomatis masuk ke akun '
+                'Anda.',
+                style: t.caption,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 6,
+            child: RefreshIndicator(
+              onRefresh: _refresh,
+              child: FutureBuilder<List<PlanInfo>?>(
+                future: _plansFuture,
+                builder: (context, snap) {
+                  final plans = snap.data ?? const <PlanInfo>[];
+                  final loading = snap.connectionState != ConnectionState.done;
+                  final creditPlans =
+                      plans.where((p) => p.kind == 'credit').toList();
+                  final membershipPlans =
+                      plans.where((p) => p.kind == 'membership').toList();
+                  final failed = snap.connectionState == ConnectionState.done &&
+                      snap.data == null;
 
-            return ListView(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
+                  return Scrollbar(
+                    thumbVisibility: true,
+                    child: ListView(
+                      primary: true,
+                      padding: const EdgeInsets.fromLTRB(16, 2, 16, 12),
+                      children: [
+                        const SectionHeader('Credit pack',
+                            padding: EdgeInsets.fromLTRB(4, 4, 4, 8)),
+                        if (loading) _loadingTiles(3),
+                        if (failed)
+                          _errorCard(
+                            'Tidak bisa memuat daftar paket. Periksa koneksi '
+                            'lalu tarik ke bawah untuk mencoba lagi.',
+                          ),
+                        for (final p in creditPlans) _planCard(context, p),
+                        const SizedBox(height: 6),
+                        const SectionHeader('Membership',
+                            padding: EdgeInsets.fromLTRB(4, 4, 4, 8)),
+                        if (loading) _loadingTiles(2),
+                        for (final p in membershipPlans) _planCard(context, p),
+                        if (!loading && !failed &&
+                            creditPlans.isEmpty && membershipPlans.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Text('Belum ada paket tersedia.',
+                                style: t.caption),
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+          Divider(height: 1, color: t.hairline),
+          Expanded(
+            flex: 4,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const SizedBox(height: 4),
-                Text(
-                  'Beli credit atau membership di sini. Setelah pembayaran '
-                  'diverifikasi admin, kredit & tier otomatis masuk ke akun '
-                  'Anda.',
-                  style: t.caption,
-                ),
-                const SizedBox(height: 18),
-                const SectionHeader('Credit pack',
-                    padding: EdgeInsets.fromLTRB(4, 0, 4, 8)),
-                if (loading) _loadingTiles(3),
-                if (failed)
-                  _errorCard(
-                    'Tidak bisa memuat daftar paket. Periksa koneksi lalu '
-                    'tarik ke bawah untuk mencoba lagi.',
-                  ),
-                for (final p in creditPlans) _planCard(context, p),
-                const SizedBox(height: 18),
-                const SectionHeader('Membership',
-                    padding: EdgeInsets.fromLTRB(4, 0, 4, 8)),
-                if (loading) _loadingTiles(2),
-                for (final p in membershipPlans) _planCard(context, p),
-                const SizedBox(height: 22),
                 const SectionHeader('Pesanan saya',
-                    padding: EdgeInsets.fromLTRB(4, 0, 4, 8)),
-                _ordersSection(context),
+                    padding: EdgeInsets.fromLTRB(20, 10, 16, 6)),
+                Expanded(
+                  child: RefreshIndicator(
+                    onRefresh: _refresh,
+                    child: Scrollbar(
+                      thumbVisibility: true,
+                      child: ListView(
+                        primary: true,
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                        children: [_ordersSection(context)],
+                      ),
+                    ),
+                  ),
+                ),
               ],
-            );
-          },
-        ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -129,6 +181,20 @@ class _PlansViewState extends State<PlansView> {
 
   Widget _planCard(BuildContext context, PlanInfo plan) {
     final t = AppTokens.of(context);
+    final discordService =
+        Get.isRegistered<DiscordService>() ? Get.find<DiscordService>() : null;
+    final account = discordService?.sessionAccount.value;
+    // Membership yang sudah dimiliki tidak bisa dibeli lagi sampai masa
+    // aktifnya habis (user VIP bisa upgrade ke PRO; user PRO tidak bisa
+    // beli VIP & PRO lagi).
+    final ownedTier =
+        plan.isMembership ? _ownedMembershipTier(account) : null;
+    final planRank = _tierRank(plan.tier);
+    final alreadyOwned = ownedTier != null &&
+        planRank > 0 &&
+        _tierRank(ownedTier) >= planRank;
+    final ownedExpiry =
+        alreadyOwned ? _ownedMembershipExpiry(account) : null;
     final benefits = <String>[
       if (plan.credits > 0) 'Kredit \$${plan.credits.toStringAsFixed(2)}',
       if (plan.tokenBonus > 0) 'Token bonus ${_fmtTokens(plan.tokenBonus)}',
@@ -141,13 +207,20 @@ class _PlansViewState extends State<PlansView> {
       padding: const EdgeInsets.only(bottom: 10),
       child: Container(
         decoration: BoxDecoration(
-          color: t.fill,
+          color: plan.isLimitedSale ? _goldFill : t.fill,
+          border: plan.isLimitedSale
+              ? Border.all(color: _goldDeep.withValues(alpha: 0.65), width: 1.5)
+              : null,
           borderRadius: BorderRadius.circular(16),
         ),
         padding: const EdgeInsets.all(14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (plan.isLimitedSale) ...[
+              _saleHeader(plan),
+              const SizedBox(height: 8),
+            ],
             Row(children: [
               IconBadge(plan.isMembership
                   ? Icons.verified_outlined
@@ -157,11 +230,7 @@ class _PlansViewState extends State<PlansView> {
                 child: Text(plan.name,
                     style: t.body.copyWith(fontWeight: FontWeight.w600)),
               ),
-              Text(_fmtIdr(plan.priceIdr),
-                  style: GoogleFonts.inter(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                      color: t.text)),
+              _priceBlock(plan, t),
             ]),
             if (plan.description.isNotEmpty) ...[
               const SizedBox(height: 8),
@@ -183,19 +252,200 @@ class _PlansViewState extends State<PlansView> {
               ]),
             ],
             const SizedBox(height: 12),
+            if (alreadyOwned) ...[
+              Row(
+                children: [
+                  Icon(Icons.check_circle,
+                      size: 14, color: const Color(0xFF30D158)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      ownedExpiry != null
+                          ? 'Berlaku sampai '
+                              '${_fmtDate(DateTime.fromMillisecondsSinceEpoch(ownedExpiry))}'
+                          : 'Sudah aktif di akun ini',
+                      style: t.caption.copyWith(
+                          color: const Color(0xFF30D158)),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+            ],
             SizedBox(
               height: 42,
-              child: FilledButton.icon(
-                onPressed: () => _buy(context, plan),
-                icon: const Icon(Icons.shopping_cart_outlined, size: 18),
-                label: Text('Beli — ${_fmtIdr(plan.priceIdr)}',
-                    style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
-              ),
+              child: alreadyOwned
+                  ? FilledButton.icon(
+                      onPressed: null,
+                      icon: const Icon(Icons.check_circle_outline, size: 18),
+                      label: const Text('Sudah dimiliki'),
+                    )
+                  : FilledButton.icon(
+                      onPressed: () => _buy(context, plan),
+                      icon: const Icon(Icons.shopping_cart_outlined, size: 18),
+                      label: Text('Beli — ${_fmtIdr(plan.payablePriceIdr)}',
+                          style:
+                              GoogleFonts.inter(fontWeight: FontWeight.w600)),
+                    ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  // ─── Limited Sale & diskon ──────────────────────────────────────
+
+  /// Sisa waktu sale: `sisa 2 hari 5 jam` / `sisa 4 jam 30 menit` / dst.
+  static String _saleCountdown(int saleUntil) {
+    if (saleUntil <= 0) return 'BERLAKU TERUS';
+    final until = DateTime.fromMillisecondsSinceEpoch(saleUntil);
+    final diff = until.difference(DateTime.now());
+    if (diff.isNegative) return 'BERAKHIR';
+    if (diff.inDays > 0) return 'sisa ${diff.inDays} hari ${diff.inHours % 24} jam';
+    if (diff.inHours > 0) return 'sisa ${diff.inHours} jam ${diff.inMinutes % 60} mnt';
+    return 'sisa ${diff.inMinutes} menit';
+  }
+
+  /// Format tanggal pendek, mis. "16 Nov 2026 23:59".
+  String _fmtDateTime(DateTime d) {
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun',
+      'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des',
+    ];
+    final hh = d.hour.toString().padLeft(2, '0');
+    final mm = d.minute.toString().padLeft(2, '0');
+    return '${d.day} ${months[d.month - 1]} ${d.year} $hh:$mm';
+  }
+
+  /// Baris emas di atas kartu: nama event + hitung mundur + batas waktu.
+  Widget _saleHeader(PlanInfo plan) {
+    final label = plan.saleEvent.trim().isEmpty
+        ? 'LIMITED SALE'
+        : 'LIMITED SALE — ${plan.saleEvent.toUpperCase()}';
+    final until = plan.saleUntil > 0
+        ? DateTime.fromMillisecondsSinceEpoch(plan.saleUntil)
+        : null;
+    return Container(
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFFDE73), Color(0xFFE3A92B)],
+        ),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+      child: Row(children: [
+        const Icon(Icons.local_offer_rounded, size: 15, color: Colors.black87),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.inter(
+                fontSize: 11, fontWeight: FontWeight.w800, color: Colors.black87,
+                letterSpacing: 0.5),
+          ),
+        ),
+        Text(
+          _saleCountdown(plan.saleUntil),
+          style: GoogleFonts.inter(
+              fontSize: 10.5, fontWeight: FontWeight.w700, color: Colors.black87),
+        ),
+      ]),
+    );
+  }
+
+  /// Kolom harga: harga asli dicoret merah (kalau ada diskon), harga akhir
+  /// besar, badge persen biru.
+  Widget _priceBlock(PlanInfo plan, AppTokens t) {
+    final discounted = plan.saleActive && plan.discountPercent > 0;
+    final color = plan.isLimitedSale ? _goldDeep : t.text;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (discounted) ...[
+          Text(
+            _fmtIdr(plan.priceIdr),
+            style: GoogleFonts.inter(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: t.muted,
+              decoration: TextDecoration.lineThrough,
+              decorationColor: const Color(0xFFFF3B30),
+              decorationThickness: 2,
+            ),
+          ),
+          if (plan.isLimitedSale && plan.saleUntil > 0)
+            Text(
+              'hingga ${_fmtDateTime(DateTime.fromMillisecondsSinceEpoch(plan.saleUntil))}',
+              style: GoogleFonts.inter(
+                  fontSize: 9.5, color: _goldDeep, fontWeight: FontWeight.w600),
+            ),
+        ],
+        const SizedBox(height: 2),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (discounted) ...[
+              Container(
+                decoration: BoxDecoration(
+                  color: t.accent,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                child: Text(
+                  '-${plan.discountPercent}%',
+                  style: GoogleFonts.inter(
+                      fontSize: 11, fontWeight: FontWeight.w800, color: Colors.white),
+                ),
+              ),
+              const SizedBox(width: 6),
+            ],
+            Text(
+              _fmtIdr(plan.payablePriceIdr),
+              style: GoogleFonts.inter(
+                  fontSize: 17, fontWeight: FontWeight.w800, color: color),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  // ─── Membership yang sudah dimiliki ─────────────────────────────
+
+  /// Rank tier membership (0 = bukan member).
+  static int _tierRank(String tier) => switch (tier.trim().toLowerCase()) {
+        'vip' => 1,
+        'pro' => 2,
+        _ => 0,
+      };
+
+  /// Tier membership milik user yang masih aktif ('vip'/'pro'), atau null.
+  static String? _ownedMembershipTier(AdminAccount? account) {
+    if (account == null) return null;
+    final plan = account.plan;
+    if (plan != null) {
+      if (!plan.active) {
+        // Plan kedaluwarsa tetapi tier akun belum di-flip (lazy expiry) —
+        // anggap tidak memiliki.
+        return null;
+      }
+      final tier = plan.tier.trim().toLowerCase();
+      return tier == 'vip' || tier == 'pro' ? tier : null;
+    }
+    final tier = account.tier.trim().toLowerCase();
+    return tier == 'vip' || tier == 'pro' ? tier : null;
+  }
+
+  /// Waktu berakhir plan membership yang aktif (epoch ms), atau null.
+  static int? _ownedMembershipExpiry(AdminAccount? account) {
+    final plan = account?.plan;
+    if (plan == null || !plan.active) return null;
+    final tier = plan.tier.trim().toLowerCase();
+    return tier == 'vip' || tier == 'pro' ? plan.expiresAt : null;
   }
 
   // ─── Pesanan ───────────────────────────────────────────────────
@@ -288,7 +538,7 @@ class _PlansViewState extends State<PlansView> {
     final method = await showAppSheet<String>(
       context,
       title: 'Metode pembayaran',
-      subtitle: '${plan.name} · ${_fmtIdr(plan.priceIdr)}',
+      subtitle: '${plan.name} · ${_fmtIdr(plan.payablePriceIdr)}',
       builder: (ctx) => AppGroup(dividerIndent: 60, children: [
         AppRow(
           icon: Icons.account_balance_wallet_rounded,
@@ -308,11 +558,16 @@ class _PlansViewState extends State<PlansView> {
     );
     if (method == null || !mounted) return;
 
-    final result = await Get.find<PlansService>().createOrder(plan.id, method);
+    final response =
+        await Get.find<PlansService>().createOrder(plan.id, method);
     if (!context.mounted) return;
+    final result = response.result;
     if (result == null) {
-      showToast('Gagal membuat pesanan', 'Periksa koneksi lalu coba lagi.',
-          tone: ToastTone.error);
+      showToast(
+        'Gagal membuat pesanan',
+        response.error ?? 'Periksa koneksi lalu coba lagi.',
+        tone: ToastTone.error,
+      );
       return;
     }
     await _showPaymentSheet(context, plan, result);
@@ -324,7 +579,7 @@ class _PlansViewState extends State<PlansView> {
     return showAppSheet<void>(
       context,
       title: 'Pembayaran',
-      subtitle: '${plan.name} · ${_fmtIdr(plan.priceIdr)}',
+      subtitle: '${plan.name} · ${_fmtIdr(plan.payablePriceIdr)}',
       builder: (ctx) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
@@ -516,3 +771,5 @@ class _PlansViewState extends State<PlansView> {
         _ => method,
       };
 }
+
+

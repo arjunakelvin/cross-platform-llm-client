@@ -26,12 +26,17 @@ class PlanInfo {
     required this.durationDays,
     required this.description,
     this.rpm = 0,
+    this.discountPercent = 0,
+    this.saleEvent = '',
+    this.saleUntil = 0,
+    this.saleActive = false,
+    this.finalPriceIdr = 0,
   });
 
   final String id;
   final String name;
   final String kind; // 'credit' | 'membership'
-  final int priceIdr; // harga dalam rupiah
+  final int priceIdr; // harga asli dalam rupiah
   final double credits; // kredit ($) yang ditambahkan ke akun
   final int tokenBonus; // token yang ditambahkan ke saldo token
   final String tier; // 'none' | 'vip' | 'pro'
@@ -39,8 +44,22 @@ class PlanInfo {
   final int durationDays; // masa aktif membership (hari); 0 = bukan membership
   final String description;
   final int rpm; // RPM untuk tier membership (dari konfigurasi dashboard); 0 = bukan membership
+  // Diskon / limited sale event (dari gateway):
+  final int discountPercent; // 0–99; 0 = tanpa diskon
+  final String saleEvent; // nama event terbatas, mis. "Harbolnas 11.11"
+  final int saleUntil; // epoch ms batas akhir event; 0 = berlaku terus
+  final bool saleActive; // gateway menghitung aktif/tidaknya
+  final int finalPriceIdr; // harga setelah diskon (0 = belum dihitung)
 
   bool get isMembership => kind == 'membership';
+
+  /// Harga yang benar-benar harus dibayar user.
+  int get payablePriceIdr =>
+      saleActive && finalPriceIdr > 0 ? finalPriceIdr : priceIdr;
+
+  /// Sale terbatas dengan batas waktu / nama event (untuk tampilan emas).
+  bool get isLimitedSale => saleActive && discountPercent > 0 &&
+      (saleEvent.isNotEmpty || saleUntil > 0);
 
   factory PlanInfo.fromMap(Map<String, dynamic> map) => PlanInfo(
         id: (map['id'] ?? '').toString(),
@@ -54,6 +73,11 @@ class PlanInfo {
         durationDays: toInt(map['durationDays']),
         description: (map['description'] ?? '').toString(),
         rpm: toInt(map['rpm']),
+        discountPercent: toInt(map['discountPercent']),
+        saleEvent: (map['saleEvent'] ?? '').toString(),
+        saleUntil: toInt(map['saleUntil']),
+        saleActive: map['saleActive'] == true,
+        finalPriceIdr: toInt(map['finalPriceIdr']),
       );
 
   static int toInt(dynamic v) =>
@@ -121,6 +145,15 @@ class PlanOrder {
       );
 }
 
+/// Respons `POST /api/gateway/plans/order`: hasil sukses, `result`, atau
+/// pesan gagal, `error` (pesan dari server, Bahasa Indonesia).
+class PlanOrderResponse {
+  const PlanOrderResponse({this.result, this.error});
+
+  final PlanOrderResult? result;
+  final String? error;
+}
+
 class PlanOrderResult {
   const PlanOrderResult({
     required this.order,
@@ -149,27 +182,55 @@ class PlansService extends GetxService {
         .toList();
   }
 
-  /// Buat pesanan pembelian paket. Mengembalikan data wallet ACC untuk
-  /// transfer manual. [method] harus `shopeepay` atau `gopay`.
-  Future<PlanOrderResult?> createOrder(String planId, String method) async {
-    final res = await _post('/api/gateway/plans/order', {
-      'planId': planId,
-      'method': method,
-    });
-    if (res == null) return null;
-    final rawOrder = res['order'];
-    final rawWallets = res['wallets'];
-    if (rawOrder is! Map) return null;
-    return PlanOrderResult(
-      order: PlanOrder.fromMap(Map<String, dynamic>.from(rawOrder)),
-      wallets: rawWallets is List
-          ? rawWallets
-              .whereType<Map>()
-              .map((e) => PlanWallet.fromMap(Map<String, dynamic>.from(e)))
-              .toList()
-          : const [],
-      message: (res['message'] ?? '').toString(),
-    );
+  /// Buat pesanan pembelian paket. [method] harus `shopeepay` atau `gopay`.
+  Future<PlanOrderResponse> createOrder(String planId, String method) async {
+    try {
+      final token = _sessionToken;
+      final res = await http
+          .post(
+            Uri.parse('$_origin/api/gateway/plans/order'),
+            headers: {
+              'Content-Type': 'application/json',
+              if (token.isNotEmpty) 'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode({'planId': planId, 'method': method}),
+          )
+          .timeout(const Duration(seconds: 20));
+      final decoded = jsonDecode(res.body);
+      if (res.statusCode == 200 || res.statusCode == 201) {
+        if (decoded is Map) {
+          final rawOrder = decoded['order'];
+          final rawWallets = decoded['wallets'];
+          if (rawOrder is Map) {
+            return PlanOrderResponse(
+              result: PlanOrderResult(
+                order: PlanOrder.fromMap(Map<String, dynamic>.from(rawOrder)),
+                wallets: rawWallets is List
+                    ? rawWallets
+                        .whereType<Map>()
+                        .map((e) =>
+                            PlanWallet.fromMap(Map<String, dynamic>.from(e)))
+                        .toList()
+                    : const [],
+                message: (decoded['message'] ?? '').toString(),
+              ),
+            );
+          }
+        }
+        return const PlanOrderResponse(error: 'Gagal membuat pesanan.');
+      }
+      // Tampilkan alasan dari server (mis. sudah memiliki paket aktif).
+      final error = decoded is Map ? (decoded['error'] ?? '').toString() : '';
+      return PlanOrderResponse(
+        error: error.isNotEmpty
+            ? error
+            : 'Gagal membuat pesanan (kode ${res.statusCode}).',
+      );
+    } catch (_) {
+      return const PlanOrderResponse(
+        error: 'Koneksi gagal. Periksa internet lalu coba lagi.',
+      );
+    }
   }
 
   /// Unggah bukti pembayaran (data URL `data:image/...;base64,...`).

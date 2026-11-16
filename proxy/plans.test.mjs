@@ -298,6 +298,105 @@ test('cron scheduled menghapus bukti pembayaran > 3 hari', async () => {
   }
 });
 
+test('order membership ditolak selama plan aktif (VIP bisa upgrade, PRO terkunci)',
+  async () => {
+    const { store, env } = makeEnv();
+    seedAccount(store);
+    seedWallet(store);
+    store.set('plans', JSON.stringify([
+      { id: 'p-vip-1', kind: 'membership', name: 'VIP Set', priceIdr: 150000,
+        credits: 2, tokenBonus: 5000000, tier: 'vip', dailyReqLimit: 25,
+        active: true, sort: 2 },
+      { id: 'p-pro-1', kind: 'membership', name: 'PRO Set', priceIdr: 300000,
+        credits: 5, tokenBonus: 10000000, tier: 'pro', dailyReqLimit: 45,
+        active: true, sort: 3 },
+    ]));
+
+    // Admin beri plan VIP aktif ke akun.
+    const set = await setPlan(env, {
+      planAction: 'set', planTier: 'vip', planDays: 30,
+    });
+    assert.equal(set.status, 200);
+
+    // Sudah punya VIP → pesan VIP lagi ditolak 409.
+    const vipAgain = await call(env, '/api/gateway/plans/order', {
+      method: 'POST',
+      headers: jsonHeader(),
+      body: JSON.stringify({ planId: 'p-vip-1', method: 'shopeepay' }),
+    });
+    assert.equal(vipAgain.status, 409, 'sudah VIP → beli VIP lagi ditolak');
+    const vipBody = await vipAgain.json();
+    assert.match(String(vipBody.error || ''), /VIP/);
+
+    // VIP → bisa beli PRO (upgrade).
+    const proBuy = await call(env, '/api/gateway/plans/order', {
+      method: 'POST',
+      headers: jsonHeader(),
+      body: JSON.stringify({ planId: 'p-pro-1', method: 'gopay' }),
+    });
+    assert.equal(proBuy.status, 200, 'VIP boleh beli PRO');
+    const proOrder = (await proBuy.json()).order;
+
+    // Admin approve → tier akun jadi PRO.
+    const approve = await call(env, `/api/admin/plan-orders/${proOrder.id}/approve`, {
+      method: 'POST',
+      headers: { 'X-Admin-Key': ADMIN_KEY },
+    });
+    assert.equal(approve.status, 200);
+
+    // PRO → beli VIP lagi ditolak (sudah PRO).
+    const vipUnderPro = await call(env, '/api/gateway/plans/order', {
+      method: 'POST',
+      headers: jsonHeader(),
+      body: JSON.stringify({ planId: 'p-vip-1', method: 'shopeepay' }),
+    });
+    assert.equal(vipUnderPro.status, 409, 'sudah PRO → VIP terkunci');
+
+    // PRO → beli PRO lagi ditolak.
+    const proAgain = await call(env, '/api/gateway/plans/order', {
+      method: 'POST',
+      headers: jsonHeader(),
+      body: JSON.stringify({ planId: 'p-pro-1', method: 'gopay' }),
+    });
+    assert.equal(proAgain.status, 409, 'sudah PRO → PRO terkunci');
+  });
+
+test('harga pesanan memakai harga diskon saat sale aktif, harga asli kalau lewat',
+  async () => {
+    const { store, env } = makeEnv();
+    seedAccount(store);
+    seedWallet(store);
+    const future = Date.now() + 86400000 * 3;
+    store.set('plans', JSON.stringify([
+      { id: 'p-vip-sale', kind: 'membership', name: 'VIP Sale', priceIdr: 100000,
+        credits: 2, tokenBonus: 1000000, tier: 'vip', dailyReqLimit: 30,
+        discountPercent: 20, saleEvent: 'Harbolnas', saleUntil: future,
+        active: true, sort: 1 },
+      { id: 'p-vip-expired', kind: 'membership', name: 'VIP Selesai',
+        priceIdr: 100000, credits: 2, tokenBonus: 1000000, tier: 'vip',
+        dailyReqLimit: 30, discountPercent: 50, saleEvent: 'Harbolnas',
+        saleUntil: Date.now() - 1000, active: true, sort: 2 },
+    ]));
+
+    const sale = await call(env, '/api/gateway/plans/order', {
+      method: 'POST',
+      headers: jsonHeader(),
+      body: JSON.stringify({ planId: 'p-vip-sale', method: 'shopeepay' }),
+    });
+    const saleBody = await sale.json();
+    assert.equal(sale.status, 200);
+    assert.equal(saleBody.order.priceIdr, 80000, 'diskon 20% dibayar 80rb');
+
+    const expired = await call(env, '/api/gateway/plans/order', {
+      method: 'POST',
+      headers: jsonHeader(),
+      body: JSON.stringify({ planId: 'p-vip-expired', method: 'shopeepay' }),
+    });
+    const expiredBody = await expired.json();
+    assert.equal(expired.status, 200);
+    assert.equal(expiredBody.order.priceIdr, 100000, 'sale berakhir → harga asli');
+  });
+
 test('method pembayaran selain shopeepay/gopay ditolak', async () => {
   const { store, env } = makeEnv();
   seedAccount(store);
