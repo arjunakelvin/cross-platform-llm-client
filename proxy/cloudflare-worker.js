@@ -38,18 +38,22 @@ const ALLOWED_ORIGINS = new Set([
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 const CONFIG_KEY = 'config';
 
-// Batas request harian bawaan **per akun**. Admin bisa mengubah angka ini di
-// dashboard (Tier & kuota). Nilai 0 / kosong tetap memakai default ini supaya
-// setiap akun punya jatah yang jelas — bukan tanpa batas.
+// ─────────────────────────────────────────────────────────────
+// Kuota RPM (request per model) per akun.
+//
+// Setiap model punya jatah RPM sendiri (mis. user punya 10 RPM → semua
+// model 10, tapi pakai 1 model → makan jatah model itu saja). Jatah per
+// user sama untuk semua model; tinggal dimakan per model.
+//
+// Reset RPM bisa di-set di dashboard: 1 (harian, UTC) atau 7 hari.
+// ─────────────────────────────────────────────────────────────
+const DEFAULT_RPM_LIMITS = { guest: 5, free: 15, vip: 30, pro: 45 };
+const DEFAULT_RPM_RESET_DAYS = 1; // 1 = harian, 7 = 7 hari
+
+// Batas request harian lama **per akun** (legacy; tidak dipakai menghitung
+// RPM — kuota sekarang dihitung per model dari konfigurasi tier `rpm`).
+// Angka 0 / kosong tetap memakai default ini di config publik.
 const DEFAULT_DAILY_REQUEST_LIMIT = 20;
-
-// Batas request harian otomatis untuk akun tier **free**.
-const FREE_DAILY_REQUEST_LIMIT = 15;
-
-// Batas request harian otomatis untuk akun **guest** (tanpa login Discord).
-// Setelah guest kehabisan 5 request/hari, dia harus login kembali untuk
-// mendapat jatah baru (reset counter UTC tengah malam tetap berlaku).
-const GUEST_DAILY_REQUEST_LIMIT = 5;
 
 // ─────────────────────────────────────────────────────────────
 // Plan berbayar (credit pack + membership VIP/Pro). Diatur admin di
@@ -113,12 +117,12 @@ const DEFAULT_PLANS = [
   { id: 'membership-vip', kind: 'membership', name: 'VIP', priceIdr: 150000,
     credits: 2, tokenBonus: 10000000, tier: 'vip', dailyReqLimit: 30,
     durationDays: PLAN_MEMBERSHIP_DURATION_DAYS,
-    description: 'Membership VIP 30 hari — tier VIP, +30 req/hari, $2 kredit + 10M token',
+    description: 'Membership VIP 30 hari — tier VIP, 30 RPM per model, $2 kredit + 10M token',
     active: true, sort: 4 },
   { id: 'membership-pro', kind: 'membership', name: 'PRO', priceIdr: 300000,
     credits: 5, tokenBonus: 20000000, tier: 'pro', dailyReqLimit: 45,
     durationDays: PLAN_MEMBERSHIP_DURATION_DAYS,
-    description: 'Membership PRO 30 hari — tier PRO, +45 req/hari, $5 kredit + 20M token',
+    description: 'Membership PRO 30 hari — tier PRO, 45 RPM per model, $5 kredit + 20M token',
     active: true, sort: 5 },
 ];
 
@@ -259,9 +263,9 @@ const DEFAULT_CONFIG = {
   guestTokenBalance: 10000000, // 10M tanpa login
   loginTokenBalance: 20000000, // 20M setelah login Discord (10M + bonus 10M)
   tokenResetDays: 1, // durasi reset token (hari), bisa diubah di dashboard
-  // Batas request per akun per hari untuk SEMUA model gateway (default 20).
-  // Bisa dioverride per provider API eksternal lewat limit model.
-  dailyRequestLimit: DEFAULT_DAILY_REQUEST_LIMIT,
+  // Kuota RPM per tier (request per model per akun). Key = tier.
+  rpm: { ...DEFAULT_RPM_LIMITS },
+  rpmResetDays: DEFAULT_RPM_RESET_DAYS,
   botSecretKey: '', // optional secret for Discord bot API verification
   aiServerUrl: '',
   localCloudKey: '',
@@ -330,9 +334,11 @@ async function getJson(kv, key, fallback) {
 
 async function getConfig(env) {
   const stored = await getJson(env.PB_KV, CONFIG_KEY, {});
+  const storedRpm = stored.rpm && typeof stored.rpm === 'object' ? stored.rpm : {};
   return {
     ...DEFAULT_CONFIG,
     ...stored,
+    rpm: { ...DEFAULT_CONFIG.rpm, ...storedRpm },
     discord: { ...DEFAULT_CONFIG.discord, ...(stored.discord || {}) },
   };
 }
@@ -1350,109 +1356,133 @@ function dailyDateKey() {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
 }
 
-/// Batas request harian efektif dari config: angka admin kalau > 0, selain
-/// itu default 20 per akun (bukan tanpa batas).
+/// Batas RPM efektif untuk satu tier: angka dari config admin kalau > 0,
+/// selain itu default tier tersebut. Satu user punya jatah RPM yang sama
+/// untuk semua model (diper-modeli pemakaiannya lewat key `modelId`).
+function effectiveRpmLimit(tier, overrides) {
+  const tierKey = String(tier || '').trim().toLowerCase();
+  const n = Math.floor(Number((overrides && overrides[tierKey]) ||
+    DEFAULT_RPM_LIMITS[tierKey]) || 0);
+  return n > 0 ? n : Math.max(
+    0, Math.floor(Number(DEFAULT_RPM_LIMITS[tierKey]) || 0));
+}
+
+/// Batas RPM efektif dari config (tier free/vip/pro/guest).
 function effectiveDailyRequestLimit(value) {
   const n = Math.floor(Number(value) || 0);
   return n > 0 ? n : DEFAULT_DAILY_REQUEST_LIMIT;
 }
 
-async function saveDailyRequestState(env, accountId, state) {
-  const payload = JSON.stringify(state);
+function saveRpmState(env, accountId, state, ttlSeconds) {
+  const payload = JSON.stringify({
+    period: state.period,
+    models: state.models,
+  });
   try {
-    await env.PB_KV.put(`dailyreq:${accountId}`, payload, {
-      expirationTtl: 2 * 24 * 60 * 60,
+    return env.PB_KV.put(`rpm:${accountId}`, payload, {
+      expirationTtl: Math.max(ttlSeconds, 60),
     });
   } catch {
     // Mock KV lama / KV tanpa opsi tetap harus menyimpan angka.
-    await env.PB_KV.put(`dailyreq:${accountId}`, payload);
+    return env.PB_KV.put(`rpm:${accountId}`, payload);
   }
 }
 
-/// State jatah request per akun.
-///
-/// Seperti kuota token: counter di-reset **langsung saat habis**, bukan
-/// menunggu tengah malam. Tanggal tetap disimpan supaya counter lama yang
-/// belum habis ikut berganti hari.
-async function dailyRequestState(env, accountId) {
-  const today = dailyDateKey();
-  let state = { used: 0, date: today };
-  const raw = await env.PB_KV.get(`dailyreq:${accountId}`);
+/// Periode reset RPM untuk satu akun. Default = harian (1 hari, bucket UTC).
+/// Bisa di-set admin via config `rpmResetDays` = 1 atau 7.
+function rpmPeriodState(config, nowMs) {
+  const days = Math.floor(Number((config && config.rpmResetDays) ||
+    DEFAULT_RPM_RESET_DAYS) || DEFAULT_RPM_RESET_DAYS) === 7 ? 7 : 1;
+  const interval = days * MS_PER_DAY;
+  const bucketStart = Math.floor((Number(nowMs) || Date.now()) / interval) * interval;
+  const resetAt = bucketStart + interval;
+  return {
+    days,
+    interval,
+    period: days === 1 ? new Date(bucketStart).toISOString().slice(0, 10) : `week-${bucketStart}`,
+    resetAt,
+  };
+}
+
+/// State pemakaian RPM per akun **per model**. Key KV: `rpm:<accountId>` berisi
+/// `{ period, models: { <modelId>: used } }`. Model yang belum dipakai → 0.
+async function rpmState(env, accountId, config, nowMs) {
+  const period = rpmPeriodState(config, nowMs);
+  let models = {};
+  const raw = await env.PB_KV.get(`rpm:${accountId}`);
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') {
-        state.used = Math.max(0, Math.floor(Number(parsed.used) || 0));
-        state.date = String(parsed.date || '');
-      } else {
-        state.used = Math.max(0, Math.floor(Number(raw) || 0));
+        const samePeriod = String(parsed.period || '') === period.period;
+        if (samePeriod && parsed.models && typeof parsed.models === 'object') {
+          for (const [key, value] of Object.entries(parsed.models)) {
+            const used = Math.max(0, Math.floor(Number(value) || 0));
+            if (used > 0) models[String(key)] = used;
+          }
+        } else if (!samePeriod) {
+          // Periode baru → mulai dari nol.
+          models = {};
+        }
       }
     } catch {
-      // Format lama: angka mentah.
-      state.used = Math.max(0, Math.floor(Number(raw) || 0));
+      models = {};
     }
   }
-  if (state.date !== today) {
-    state = { used: 0, date: today };
-    await saveDailyRequestState(env, accountId, state);
-  }
-  return state;
+  return { period: period.period, resetAt: period.resetAt, days: period.days, models };
 }
 
-async function dailyRequestUsed(env, accountId) {
-  return (await dailyRequestState(env, accountId)).used;
+/// Batas RPM untuk satu akun berdasarkan tier (dari config dashboard).
+/// Jatah sama untuk semua model; pemakaiannya dihitung per model saat
+/// dipakai. Plan membership VIP/PRO otomatis mewarisi RPM dari tier-nya.
+function accountRpmLimit(config, account) {
+  const tier = String((account && account.tier) ||
+    (config && config.defaultTier) || 'free').trim().toLowerCase();
+  const limits = (config && config.rpm && typeof config.rpm === 'object')
+    ? config.rpm : {};
+  return effectiveRpmLimit(tier, limits);
 }
 
-/// Batas request harian untuk satu akun. Prioritas:
-/// 1. Limit eksplisit admin per akun (akun pro/vip yang di-set manual di
-///    dashboard), disimpan di baris akun.
-/// 2. Akun tier free → default 15 request/hari.
-/// 3. Limit global config (admin) untuk akun dengan tier lain.
-function accountDailyRequestLimit(config, account) {
-  const override = Math.floor(
-    Number((account && account.dailyRequestLimit) || 0) || 0);
-  if (override > 0) return override;
-  const tier = String((account && account.tier) || '').trim().toLowerCase();
-  if (tier === 'guest') return GUEST_DAILY_REQUEST_LIMIT;
-  if (tier === 'free') return FREE_DAILY_REQUEST_LIMIT;
-  return effectiveDailyRequestLimit(config.dailyRequestLimit);
-}
-
-/// Jatah request hari ini untuk satu akun (dipakai Model List aplikasi).
+/// Jatah RPM untuk satu akun **per model** (dipakai Model List aplikasi).
 async function accountRequestQuota(env, account, config) {
-  const limit = accountDailyRequestLimit(config, account);
-  const state = await dailyRequestState(env, account.id);
+  const limit = accountRpmLimit(config, account);
+  const state = await rpmState(env, account.id, config);
+  const period = state.period;
+  // Per-model: `{ modelId: { used, remaining, limit } }`. Model yang belum
+  // dipakai → tidak ada entri (dipandang 0 pemakaian).
+  const models = {};
+  for (const [modelId, used] of Object.entries(state.models)) {
+    models[String(modelId)] = {
+      used,
+      remaining: Math.max(0, limit - used),
+      limit,
+    };
+  }
   return {
-    date: dailyDateKey(),
+    date: period,
     limit,
-    used: state.used,
-    remaining: Math.max(0, limit - state.used),
-    resetAt: dailyResetAt(),
+    resetAt: state.resetAt,
+    resetDays: Number(state.days) || 1,
+    period,
+    models,
     tier: String((account && account.tier) || ''),
   };
 }
 
-async function bumpDailyRequest(env, accountId, limit) {
-  const state = await dailyRequestState(env, accountId);
-  const next = state.used + 1;
-  // Habis → reset langsung (sama seperti kuota token), tanpa memblokir
-  // request berikutnya.
-  if (limit > 0 && next >= limit) {
-    await saveDailyRequestState(env, accountId, {
-      used: 0,
-      date: dailyDateKey(),
-    });
-    return 0;
-  }
-  const nextState = { used: next, date: dailyDateKey() };
-  await saveDailyRequestState(env, accountId, nextState);
-  return next;
+async function bumpRpm(env, accountId, modelId, config) {
+  const state = await rpmState(env, accountId, config);
+  const key = String(modelId || 'default');
+  const nextUsed = (state.models[key] || 0) + 1;
+  state.models[key] = nextUsed;
+  const ttlSeconds = Math.max(
+    60, Math.ceil((Number(state.resetAt) - Date.now()) / 1000) + 3600);
+  await saveRpmState(env, accountId, state, ttlSeconds);
+  return nextUsed;
 }
 
-function dailyResetAt() {
-  const now = new Date();
-  return Date.UTC(
-    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+function rpmResetAt(config, nowMs) {
+  const period = rpmPeriodState(config, nowMs);
+  return period.resetAt;
 }
 
 function providerOpenAiChunk(content, model) {
@@ -1643,8 +1673,11 @@ function publicConfig(request, config) {
     guestTokenBalance: config.guestTokenBalance ?? DEFAULT_CONFIG.guestTokenBalance,
     loginTokenBalance: config.loginTokenBalance ?? DEFAULT_CONFIG.loginTokenBalance,
     tokenResetDays: config.tokenResetDays ?? DEFAULT_CONFIG.tokenResetDays,
-    // Batas request harian per akun (default 20). Provider API eksternal
-    // bisa punya limit sendiri yang lebih ketat.
+    // Kuota RPM per tier (request per model per akun) untuk aplikasi.
+    rpm: config.rpm || DEFAULT_CONFIG.rpm,
+    rpmResetDays: Number((config && config.rpmResetDays) || DEFAULT_CONFIG.rpmResetDays) || DEFAULT_CONFIG.rpmResetDays,
+    // Legacy: batas request per akun (default 20). Tidak dipakai menghitung
+    // RPM lagi — dipertahankan supaya client lama tetap valid.
     dailyRequestLimit: effectiveDailyRequestLimit(config.dailyRequestLimit),
     // Hanya alamat server yang publik. Secret key TIDAK pernah dibuka di
     // endpoint publik — dikirim ke user yang sudah login lewat /api/auth/me.
@@ -1692,6 +1725,7 @@ function applyMembershipPlan(account, tierInput, daysInput, opts = {}) {
   const prevDailyReqLimit = sameTierActive
     ? Math.max(0, Math.floor(Number(current.prevDailyReqLimit) || 0))
     : Math.max(0, Math.floor(Number(account.dailyRequestLimit) || 0));
+  const tierRpm = effectiveRpmLimit(tier, (opts.config && opts.config.rpm) || {});
   account.plan = {
     id: String(opts.id || (current && current.id) ||
       `membership-${tier}-${now.toString(36)}`),
@@ -1704,13 +1738,13 @@ function applyMembershipPlan(account, tierInput, daysInput, opts = {}) {
       ? Number(current.createdAt) : now,
     prevTier,
     prevDailyReqLimit,
+    rpm: tierRpm,
   };
   account.tier = tier;
-  if (Number(opts.dailyReqLimit) > 0) {
-    account.dailyRequestLimit = Math.floor(Number(opts.dailyReqLimit));
-  } else if (!sameTierActive && !(Number(account.dailyRequestLimit) > 0)) {
-    account.dailyRequestLimit = tier === 'pro' ? 45 : 30;
-  }
+  // RPM untuk tier ini (dari config dashboard). Kalau admin kasih nilai manual
+  // via `planDailyReqLimit`, itu masih dipakai sebagai override sementara.
+  account.dailyRequestLimit = Math.max(0, Math.floor(
+    Number(opts.dailyReqLimit) > 0 ? Number(opts.dailyReqLimit) : tierRpm));
   return account;
 }
 
@@ -1930,7 +1964,7 @@ async function handleAuth(request, env, pathname) {
     return jsonResponse(request, 200, await cacheStats(env));
   }
 
-  // GET /api/auth/request-quota — sisa request harian akun (Model List).
+  // GET /api/auth/request-quota — sisa RPM per model akun (Model List).
   // Bisa memakai sesi Discord atau AI API key milik user.
   if (pathname === '/api/auth/request-quota' && request.method === 'GET') {
     const auth = await accountFromBearer(env, request);
@@ -2149,7 +2183,11 @@ async function handleAdmin(request, env, pathname) {
         guestTokenBalance: config.guestTokenBalance ?? DEFAULT_CONFIG.guestTokenBalance,
         loginTokenBalance: config.loginTokenBalance ?? DEFAULT_CONFIG.loginTokenBalance,
         tokenResetDays: config.tokenResetDays ?? DEFAULT_CONFIG.tokenResetDays,
-        // Batas request per akun per hari untuk semua model gateway.
+        // Kuota RPM per tier (request per model per akun).
+        rpm: config.rpm || DEFAULT_CONFIG.rpm,
+        rpmResetDays: Number((config && config.rpmResetDays) || DEFAULT_CONFIG.rpmResetDays) || DEFAULT_CONFIG.rpmResetDays,
+        // Legacy: batas request per akun (default 20). Tidak dipakai menghitung
+        // RPM lagi — dipertahankan supaya client lama tetap valid.
         dailyRequestLimit: config.dailyRequestLimit ?? 0,
         botSecretKey: config.botSecretKey || '',
         hasBotSecret: !!config.botSecretKey,
@@ -2205,6 +2243,13 @@ async function handleAdmin(request, env, pathname) {
       if (typeof body.tokenResetDays === 'number' &&
           body.tokenResetDays > 0) {
         next.tokenResetDays = Math.floor(body.tokenResetDays);
+      }
+      if (body.rpm && typeof body.rpm === 'object') {
+        next.rpm = { ...DEFAULT_CONFIG.rpm, ...body.rpm };
+      }
+      const rpmResetDays = Math.floor(Number(body.rpmResetDays) || 0);
+      if (rpmResetDays === 7 || rpmResetDays === 1) {
+        next.rpmResetDays = rpmResetDays;
       }
       if (typeof body.dailyRequestLimit === 'number' &&
           body.dailyRequestLimit >= 0) {
@@ -2262,6 +2307,7 @@ async function handleAdmin(request, env, pathname) {
       if (!body || typeof body !== 'object') {
         return jsonResponse(request, 400, { error: 'Missing account body.' });
       }
+      const config = await getConfig(env);
       const existing = await getJson(env.PB_KV, `account:${id}`, {});
       const now = Date.now();
       const account = {
@@ -2322,6 +2368,7 @@ async function handleAdmin(request, env, pathname) {
         applyMembershipPlan(account, tier, days, {
           name: tier.toUpperCase(),
           dailyReqLimit: Number(body.planDailyReqLimit) || 0,
+          config,
         });
       } else {
         ensureMembershipPlan(account);
@@ -3890,18 +3937,23 @@ async function handleGateway(request, env, pathname) {
     const plans = (await getPlans(env)).filter((p) => p.active !== false);
     return jsonResponse(request, 200, {
       object: 'list',
-      data: plans.map((p) => ({
-        id: p.id,
-        name: p.name,
-        kind: p.kind,
-        priceIdr: p.priceIdr,
-        credits: p.credits,
-        tokenBonus: p.tokenBonus,
-        tier: p.tier,
-        dailyReqLimit: p.dailyReqLimit,
-        durationDays: p.durationDays || 0,
-        description: p.description,
-      })),
+      data: plans.map((p) => {
+        const tierRpm = (p.tier && p.tier !== 'none')
+          ? effectiveRpmLimit(String(p.tier), config.rpm || {}) : 0;
+        return {
+          id: p.id,
+          name: p.name,
+          kind: p.kind,
+          priceIdr: p.priceIdr,
+          credits: p.credits,
+          tokenBonus: p.tokenBonus,
+          tier: p.tier,
+          rpm: tierRpm,
+          dailyReqLimit: p.dailyReqLimit,
+          durationDays: p.durationDays || 0,
+          description: p.description,
+        };
+      }),
     });
   }
 
@@ -4161,22 +4213,34 @@ async function handleGateway(request, env, pathname) {
       });
     }
 
-    // Batas request harian per akun (seperti RPM, tapi per hari). Limit bersifat
-    // per akun (tier free default 15, override admin per akun untuk pro/vip) —
-    // bukan per model. Hanya dipakai untuk provider eksternal (Provider API):
-    // model Local AI / self-hosted pakai aturan lama (token limit + credit)
-    // tanpa batas request harian.
-    const dailyLimit = providerConfig
-      ? accountDailyRequestLimit(config, account)
-      : 0;
-    if (providerConfig && dailyLimit > 0) {
-      const quota = await dailyRequestState(env, account.id);
-      if (quota.used >= dailyLimit) {
-        // Kuota habis (mis. admin menurunkan limit) → reset langsung,
-        // sama seperti kuota token. Request ini tetap dilanjutkan.
-        await saveDailyRequestState(env, account.id, {
-          used: 0,
-          date: dailyDateKey(),
+    // Batas RPM per model (seperti jatah request per model). Limit sama untuk
+    // semua model user (dari tier: free/vip/pro/guest yang di-set di dashboard
+    // admin) — pemakaiannya dihitung per model (`modelId`), jadi pakai satu
+    // model tidak membatasi model lain. Reset bisa di-set admin: harian (1)
+    // atau 7 hari. Berlaku untuk provider eksternal (Provider API) dan local.
+    const rpmLimit = accountRpmLimit(config, account);
+    const rpmModelId = String((modelConfig && modelConfig.modelId) || wantedModel || '');
+    let rpmExceeded = false;
+    if (rpmLimit > 0) {
+      const rpm = await rpmState(env, account.id, config);
+      const rpmUsed = Math.max(0, Math.floor(Number(rpm.models[rpmModelId]) || 0));
+      if (rpmUsed >= rpmLimit) {
+        rpmExceeded = true;
+        const period = rpmPeriodState(config);
+        const resetDate = new Date(period.resetAt);
+        const resetLabel = period.days === 7
+          ? '7 hari'
+          : 'hari ini';
+        return jsonResponse(request, 429, {
+          error: `RPM ${rpmLimit} untuk model "${rpmModelId}" sudah habis. Coba lagi setelah ${resetLabel} (pada ${resetDate.toISOString()}).`,
+          quota: 'rpm',
+          model: rpmModelId,
+          limit: rpmLimit,
+          used: rpmUsed,
+          remaining: 0,
+          resetAt: period.resetAt,
+          resetDays: period.days,
+          period: period.period,
         });
       }
     }
@@ -4313,9 +4377,9 @@ async function handleGateway(request, env, pathname) {
           };
         }
       }
-      // Hitung request harian per akun tepat sebelum panggilan upstream.
-      if (dailyLimit > 0) {
-        await bumpDailyRequest(env, account.id, dailyLimit);
+      // Hitung pemakaian RPM per model tepat sebelum panggilan upstream.
+      if (rpmLimit > 0 && !rpmExceeded) {
+        await bumpRpm(env, account.id, rpmModelId, config);
       }
       upstream = await fetch(targetUrl, {
         method: 'POST',
@@ -4762,7 +4826,7 @@ export default {
       }
       return textResponse(request, 404, 'Not found.');
     } catch (error) {
-      return jsonResponse(request, 500, { error: `Worker error: ${error}` });
+      return jsonResponse(request, 500, { error: `Worker error: ${error}`, stack: String(error && error.stack) });
     }
   },
   // Cron harian (03:00 UTC): hapus bukti pembayaran yang >3 hari supaya KV

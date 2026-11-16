@@ -6,7 +6,8 @@
 // 3. Gateway memproksi request dengan Authorization Bearer provider.
 // 4. Respons Cloudflare `{result:{response}}` dikonversi ke format OpenAI
 //    (non-stream & stream SSE) supaya aplikasi tidak perlu diubah.
-// 5. Batas request harian per akun (limit provider / limit global).
+// 5. Kuota RPM per model per akun (limit tier free/vip/pro/guest; reset bisa
+//    di-set admin: harian atau 7 hari).
 // 6. Prompt yang melebihi context provider ditolak 413.
 //
 // Jalankan: node --test proxy/api-provider.test.mjs
@@ -421,63 +422,120 @@ test('gambar multimodal (image_url) diteruskan ke provider OpenAI-compatible',
     }
   });
 
-test('batas request harian reset langsung saat habis (tier free 15)',
-  async () => {
-    const { store, env } = makeEnv();
-    seedAccount(store);
-    seedProvider(store);
-    // Admin menyimpan limit 0 → akun free memakai default 15 request/hari.
-    store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
+test('batas RPM tier free (default 15 per model) — reset periode', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+  seedProvider(store);
+  // Admin menyimpan RPM per tier (default free 15 per model).
+  store.set('config', JSON.stringify({ rpm: { free: 15 }, rpmResetDays: 1 }));
 
-    const counter = { calls: 0 };
-    const restore = okProviderFetch(counter);
-    try {
-      for (let i = 0; i < 15; i++) {
-        const res = await chat(env);
-        assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
-      }
-      // Kuota habis → counter reset langsung, request ke-16 tetap lolos.
-      const next = await chat(env);
-      assert.equal(next.status, 200, 'setelah habis langsung reset');
-      assert.equal(counter.calls, 16);
-      const state = JSON.parse(store.get('dailyreq:u1'));
-      assert.equal(state.used, 1, 'counter mulai dari 1 lagi');
-    } finally {
-      restore();
+  const counter = { calls: 0 };
+  const restore = okProviderFetch(counter);
+  try {
+    for (let i = 0; i < 15; i++) {
+      const res = await chat(env);
+      assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
     }
-  });
+    // RPM habis → 429 sampai periode reset (bukan reset langsung).
+    const next = await chat(env);
+    assert.equal(next.status, 429, 'RPM habis → ditolak 429');
+    const body = await next.json();
+    assert.match(String(body.error || ''), /RPM/);
+    assert.equal(counter.calls, 15);
+    const state = JSON.parse(store.get('rpm:u1'));
+    assert.equal(state.models['api:cf-kimi'], 15);
+    assert.equal(state.period, new Date().toISOString().slice(0, 10));
+  } finally {
+    restore();
+  }
+});
 
-test('reset harian /req langsung saat kuota habis, sama seperti token',
-  async () => {
-    const { store, env } = makeEnv();
-    seedAccount(store);
-    const account = JSON.parse(store.get('account:u1'));
-    account.tier = 'vip';
-    account.dailyRequestLimit = 2;
-    store.set('account:u1', JSON.stringify(account));
-    seedProvider(store);
-    store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
+test('batas RPM akun guest = 5 per model — reset periode', async () => {
+  const { store, env } = makeEnv();
+  store.set('session:' + SESSION, 'u1');
+  store.set('account:u1', JSON.stringify({
+    id: 'u1',
+    name: 'guest-user',
+    tier: 'guest',
+    status: 'active',
+    tokenBalance: 10000000,
+    tokenUsed: 0,
+    creditBalance: 1,
+    creditUsed: 0,
+  }));
+  store.set('config', JSON.stringify({ rpm: { guest: 5 } }));
+  seedProvider(store);
 
-    const restore = okProviderFetch();
-    try {
-      for (let i = 0; i < 2; i++) {
-        const res = await chat(env);
-        assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
-      }
-
-      // Habis → counter langsung 0, bukan menunggu 24 jam/tengah malam.
-      const state = JSON.parse(store.get('dailyreq:u1'));
-      assert.equal(state.used, 0);
-      assert.equal(state.resetAt, undefined);
-
-      const allowed = await chat(env);
-      assert.equal(allowed.status, 200, 'request setelah reset harus lolos');
-      const fresh = JSON.parse(store.get('dailyreq:u1'));
-      assert.equal(fresh.used, 1);
-    } finally {
-      restore();
+  const counter = { calls: 0 };
+  const restore = okProviderFetch(counter);
+  try {
+    for (let i = 0; i < 5; i++) {
+      const res = await chat(env, { model: MODEL_ID });
+      assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
     }
-  });
+    const next = await chat(env, { model: MODEL_ID });
+    assert.equal(next.status, 429, 'RPM guest habis → ditolak 429');
+    assert.equal(counter.calls, 5);
+    const state = JSON.parse(store.get('rpm:u1'));
+    assert.equal(state.models['api:cf-kimi'], 5);
+  } finally {
+    restore();
+  }
+});
+
+test('RPM per model: tiap model punya jatah sendiri', async () => {
+  const { store, env } = makeEnv();
+  store.set('session:' + SESSION, 'u1');
+  store.set('account:u1', JSON.stringify({
+    id: 'u1',
+    name: 'user',
+    tier: 'vip',
+    status: 'active',
+    tokenBalance: 100000,
+    tokenUsed: 0,
+    creditBalance: 1,
+    creditUsed: 0,
+  }));
+  store.set('api_providers', JSON.stringify([{
+    id: 'cf-kimi',
+    name: 'Kimi K2.7 (Cloudflare)',
+    baseUrl: CF_URL,
+    apiKey: 'cfut_secret',
+    format: 'auto',
+    contextSize: 262144,
+    maxOutput: 8192,
+    tierAccess: ['free', 'pro', 'vip'],
+    pricing: {},
+    enabled: true,
+    models: [
+      { key: 'm1', modelId: '@cf/moonshotai/kimi-k2.7-code', name: 'Kimi K2.7', pricing: {}, enabled: true },
+      { key: 'm2', modelId: '@cf/moonshotai/kimi-k2.6-code', name: 'Kimi K2.6', pricing: {}, enabled: true },
+    ],
+  }]));
+  store.set('config', JSON.stringify({
+    rpm: { vip: 2, free: 15, pro: 45, guest: 5 },
+    rpmResetDays: 1,
+  }));
+
+  const restore = mockFetch(async () => new Response(JSON.stringify({
+    success: true,
+    result: { response: 'ok' },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+  try {
+    let res = await chat(env, { model: 'api:cf-kimi:m1' });
+    assert.equal(res.status, 200, 'pemakaian RPM model 1 #1 lolos');
+    res = await chat(env, { model: 'api:cf-kimi:m1' });
+    assert.equal(res.status, 200, 'pemakaian RPM model 1 #2 lolos');
+    // Model berbeda → jatah RPM-nya sendiri, tidak ketimpa model 1.
+    res = await chat(env, { model: 'api:cf-kimi:m2' });
+    assert.equal(res.status, 200, 'pemakaian RPM model 2 lolos');
+    // Ketiga pemakaian di model 1 → 429 (model 2 tetap punya jatah sendiri).
+    res = await chat(env, { model: 'api:cf-kimi:m1' });
+    assert.equal(res.status, 429, 'RPM model 1 habis → ditolak');
+  } finally {
+    restore();
+  }
+});
 
 test('reset token hanya saat kuota habis, tanpa menambah batas akun', async () => {
   const { store, env } = makeEnv();
@@ -516,7 +574,7 @@ test('token yang belum habis tidak direset', async () => {
   assert.equal(body.account.tokenBalance, 100000);
 });
 
-test('batas request per akun (override admin untuk pro/vip)', async () => {
+test('RPM akun VIP dari tier (2 per model) — limit tier', async () => {
   const { store, env } = makeEnv();
   store.set('session:' + SESSION, 'u1');
   store.set('account:u1', JSON.stringify({
@@ -524,7 +582,6 @@ test('batas request per akun (override admin untuk pro/vip)', async () => {
     name: 'vip-user',
     tier: 'vip',
     status: 'active',
-    dailyRequestLimit: 3,
     tokenBalance: 100000,
     tokenUsed: 0,
     creditBalance: 1,
@@ -544,21 +601,21 @@ test('batas request per akun (override admin untuk pro/vip)', async () => {
     pricing: {},
     enabled: true,
   }]));
+  store.set('config', JSON.stringify({ rpm: { vip: 2, free: 15, pro: 45, guest: 5 } }));
 
   const restore = mockFetch(async () => new Response(JSON.stringify({
     success: true,
     result: { response: 'ok' },
   }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
   try {
-    for (let i = 0; i < 3; i++) {
-      const ok = await chat(env);
-      assert.equal(ok.status, 200, `request ke-${i + 1} harus lolos`);
-    }
-    // Limit 3 habis → counter reset langsung; request ke-4 tetap lolos.
+    let ok = await chat(env);
+    assert.equal(ok.status, 200, 'RPM #1 vip lolos');
+    ok = await chat(env);
+    assert.equal(ok.status, 200, 'RPM #2 vip lolos');
     const next = await chat(env);
-    assert.equal(next.status, 200, 'reset langsung saat habis');
-    const state = JSON.parse(store.get('dailyreq:u1'));
-    assert.equal(state.used, 1);
+    assert.equal(next.status, 429, 'RPM vip habis → 429');
+    const state = JSON.parse(store.get('rpm:u1'));
+    assert.equal(state.models['api:cf-kimi'], 2);
   } finally {
     restore();
   }
@@ -1020,7 +1077,7 @@ test('stream Cloudflare yang dibungkus result tetap jadi delta OpenAI', async ()
   }
 });
 
-// ── Jatah request harian + grafik cache per model ───────────────────────
+// ── Kuota RPM per model + grafik cache per model ───────────────────────────
 
 function okProviderFetch(counter) {
   return mockFetch(async () => {
@@ -1032,65 +1089,7 @@ function okProviderFetch(counter) {
   });
 }
 
-test('default batas akun free (15 request/hari) reset saat habis', async () => {
-  const { store, env } = makeEnv();
-  seedAccount(store);
-  seedProvider(store);
-  // Admin menyimpan limit 0 → akun free memakai default 15 request/hari.
-  store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
-
-  const counter = { calls: 0 };
-  const restore = okProviderFetch(counter);
-  try {
-    for (let i = 0; i < 15; i++) {
-      const res = await chat(env);
-      assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
-    }
-    const next = await chat(env);
-    assert.equal(next.status, 200, 'kuota habis → reset langsung');
-    assert.equal(counter.calls, 16);
-    const state = JSON.parse(store.get('dailyreq:u1'));
-    assert.equal(state.used, 1);
-  } finally {
-    restore();
-  }
-});
-
-test('batas request untuk akun guest = 5 request/hari reset saat habis',
-  async () => {
-    const { store, env } = makeEnv();
-    store.set('session:' + SESSION, 'u1');
-    store.set('account:u1', JSON.stringify({
-      id: 'u1',
-      name: 'guest-user',
-      tier: 'guest',
-      status: 'active',
-      tokenBalance: 10000000,
-      tokenUsed: 0,
-      creditBalance: 1,
-      creditUsed: 0,
-    }));
-    store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
-    seedProvider(store);
-
-    const counter = { calls: 0 };
-    const restore = okProviderFetch(counter);
-    try {
-      for (let i = 0; i < 5; i++) {
-        const res = await chat(env, { model: MODEL_ID });
-        assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
-      }
-      const next = await chat(env, { model: MODEL_ID });
-      assert.equal(next.status, 200, 'kuota habis → reset langsung');
-      assert.equal(counter.calls, 6);
-      const state = JSON.parse(store.get('dailyreq:u1'));
-      assert.equal(state.used, 1);
-    } finally {
-      restore();
-    }
-  });
-
-test('model Local AI (server) tidak pakai batas request harian', async () => {
+test('model Local AI (server) tetap memakai kuota RPM per model', async () => {
   const { store, env } = makeEnv();
   store.set('session:' + SESSION, 'u1');
   store.set('account:u1', JSON.stringify({
@@ -1115,20 +1114,25 @@ test('model Local AI (server) tidak pakai batas request harian', async () => {
     pricing: { inputPerReq: 0 },
     active: true,
   }]));
-  store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
+  store.set('config', JSON.stringify({ rpm: { pro: 3 }, rpmResetDays: 1 }));
 
   const restore = okProviderFetch();
   try {
-    for (let i = 0; i < 21; i++) {
+    for (let i = 0; i < 3; i++) {
       const res = await chat(env, { model: 'qwen-3b:qwen2.5-coder-3b:pro' });
       assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
     }
+    // Jatah RPM pro (3) habis → 429.
+    const next = await chat(env, { model: 'qwen-3b:qwen2.5-coder-3b:pro' });
+    assert.equal(next.status, 429, 'RPM pro habis → 429');
+    const state = JSON.parse(store.get('rpm:u1'));
+    assert.equal(state.models['qwen-3b:qwen2.5-coder-3b:pro'], 3);
   } finally {
     restore();
   }
 });
 
-test('endpoint request-quota mengembalikan sisa request akun', async () => {
+test('endpoint request-quota mengembalikan sisa RPM per model', async () => {
   const { store, env } = makeEnv();
   seedAccount(store);
   seedProvider(store, { dailyRequestLimit: 5 });
@@ -1146,9 +1150,10 @@ test('endpoint request-quota mengembalikan sisa request akun', async () => {
   });
   const body = await res.json();
   assert.equal(res.status, 200);
-  assert.equal(body.limit, 15, 'akun free default 15 request/hari');
-  assert.equal(body.used, 2);
-  assert.equal(body.remaining, 13);
+  assert.equal(body.limit, 15, 'akun free default 15 RPM per model');
+  assert.equal(body.models['api:cf-kimi'].used, 2);
+  assert.equal(body.models['api:cf-kimi'].remaining, 13);
+  assert.equal(body.resetDays, 1);
   assert.equal(body.date, new Date().toISOString().slice(0, 10));
   assert.ok(body.resetAt > Date.now());
   assert.equal(String(body.tier || '').toLowerCase(), 'free');

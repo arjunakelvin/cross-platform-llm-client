@@ -182,6 +182,7 @@ test('admin menyimpan paket & wallet; user bisa pesan + approve', async () => {
   assert.equal(approve.status, 200);
   assert.equal(approved.account.tier, 'vip');
   assert.equal(approved.account.dailyRequestLimit, 25);
+  assert.equal(approved.account.plan.rpm, 30, 'RPM VIP dari tier (default 30)');
   assert.equal(approved.account.creditBalance, 3); // 1 + 2
   assert.equal(approved.account.tokenBalance, 5100000); // 100k + 5M token bonus
 
@@ -336,6 +337,8 @@ test('admin set plan VIP 30 hari, perpanjang, lalu hapus plan', async () => {
   assert.equal(setBody.account.tier, 'vip');
   assert.equal(setBody.account.plan.tier, 'vip');
   assert.equal(setBody.account.plan.durationDays, 30);
+  assert.equal(setBody.account.plan.rpm, 30, 'RPM tier VIP (default) 30');
+  assert.equal(setBody.account.dailyRequestLimit, 30, 'RPM VIP dari tier disimpan di akun');
   const firstExpiry = setBody.account.plan.expiresAt;
   const days = (firstExpiry - Date.now()) / 86400000;
   assert.ok(days > 29.9 && days <= 30.01, `expiry ~30 hari (${days})`);

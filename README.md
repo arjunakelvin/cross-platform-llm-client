@@ -94,13 +94,13 @@ Isi **Gateway ID Cloudflare** kalau memakai gateway tertentu; untuk model
 | **Context & max output per model** | Admin mengisi sendiri jumlah context dan max output tiap model. Gateway memakai nilai itu untuk membatasi `max_tokens`; prompt yang melebihi context ditolak **413** dengan pesan jelas. |
 | **Harga per model** | Harga input/output bisa `/1M token` atau `/req`, diatur per model supaya tidak rugi. |
 | **On/off per model** | Model bisa disembunyikan tanpa dihapus; request ke id-nya ditolak gateway. |
-| **Batas request/hari per akun** | Diatur per model (menimpa limit provider) atau global di tab **Tier & kuota token**. Counter per akun memakai tanggal UTC dan reset tengah malam; request ke-`N+1` dibalas **429** `{limit, used, resetAt}`. |
+| **RPM per model per akun** | Jatah RPM (request per model) dari konfigurasi tier di tab **Tier & kuota token** (default FREE 15, VIP 30, PRO 45, Guest 5). Jatah per user sama untuk semua model — pemakaian dihitung per model, jadi pakai satu model tidak memotong jatah model lain. Reset periode bisa di-set admin: **Harian** (default) atau **7 hari** sekali. RPM habis dibalas **429** `{limit, used, resetAt, resetDays}`. |
 | **Normalisasi respons** | Respons Cloudflare `{result:{response}}`, REST universal `{result:{choices}}`, dan Anthropic `{content:[{text}],usage:{input_tokens,...}}` diubah Worker ke format OpenAI (non-stream & SSE), jadi aplikasi tidak perlu diubah. |
 
 > **Context penuh tidak bisa di-reset.** Kalau percakapan mencapai batas
 > context model, kolom chat diganti panel **hitung mundur reset** (00:00 UTC)
-> dan user harus memulai **chat baru** untuk melanjutkan. Limit request harian
-> juga memblokir kolom chat dengan hitung mundur sampai reset.
+> dan user harus memulai **chat baru** untuk melanjutkan. RPM juga memblokir
+> kolom chat dengan hitung mundur sampai reset periode.
 
 ---
 
@@ -202,8 +202,8 @@ Klik **Edit** pada model → ubah:
    `openai/...` / `anthropic/...` (REST universal). Model ditempel otomatis
    ke path atau dikirim di body sesuai jenis endpoint.
 4. Di tabel **Model yang tampil di aplikasi**, tambahkan satu baris per model:
-   nama tampilan, model/endpoint ID, context, max output, limit request/hari,
-   dan harga (`/1M` atau `/req`).
+   nama tampilan, model/endpoint ID, context, max output, dan harga
+   (`/1M` atau `/req`). RPM per model dihitung otomatis dari tier.
 5. Toggle **On** menampilkan model; matikan untuk menyembunyikannya sementara.
 6. **Tes koneksi** memanggil model pertama yang aktif (status menampilkan URL
    dan jenis endpoint), lalu **Simpan provider**.

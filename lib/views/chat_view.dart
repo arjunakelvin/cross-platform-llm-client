@@ -1148,7 +1148,7 @@ class ChatView extends GetView<ChatController> {
     );
   }
 
-  /// Panel pengganti kolom chat saat context penuh atau limit request harian
+  /// Panel pengganti kolom chat saat context penuh atau batas RPM
   /// tercapai. Menampilkan hitung mundur reset (00:00 UTC), bukan input biasa.
   Widget _buildBlockedComposer(BuildContext context, bool isDark) {
     final t = AppTokens.of(context);
@@ -1179,7 +1179,7 @@ class ChatView extends GetView<ChatController> {
               child: Text(
                 contextFull
                     ? 'Context chat ini penuh'
-                    : 'Batas request harian tercapai',
+                    : 'Batas RPM tercapai',
                 style: GoogleFonts.inter(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
@@ -1193,7 +1193,7 @@ class ChatView extends GetView<ChatController> {
             contextFull
                 ? 'Context tidak bisa di-reset. Mulai chat baru untuk '
                     'melanjutkan percakapan.'
-                : 'Chat bisa dilanjutkan otomatis setelah reset harian.',
+                : 'Chat bisa dilanjutkan otomatis setelah reset RPM.',
             style: GoogleFonts.inter(fontSize: 12, color: hint),
           ),
           const SizedBox(height: 10),

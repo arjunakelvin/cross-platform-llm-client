@@ -135,7 +135,7 @@ class _PlansViewState extends State<PlansView> {
       if (plan.tier != 'none') 'Tier ${plan.tier.toUpperCase()}',
       if (plan.isMembership)
         'Berlaku ${plan.durationDays > 0 ? plan.durationDays : 30} hari',
-      if (plan.dailyReqLimit > 0) '${plan.dailyReqLimit} req/hari',
+      if (plan.rpm > 0) '${plan.rpm} RPM per model',
     ];
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),

@@ -791,27 +791,21 @@ class ModelView extends GetView<ModelController> {
     });
   }
 
-  /// Teks sisa request harian untuk satu model (counter gateway per akun).
-  static String _quotaLabel(
-    DailyRequestQuota? quota,
-    int limit,
-    int? remaining,
-  ) {
+  /// Teks sisa RPM untuk satu model (counter gateway per akun, per model).
+  static String _quotaLabel(RequestQuota? quota, String modelId) {
     if (quota == null) {
-      if (limit > 0) {
-        return 'Limit ${_fmtThousands(limit)} req/hari · login untuk lihat sisa';
-      }
-      return 'Login Discord untuk melihat sisa request harian';
+      return 'Login Discord untuk melihat sisa RPM';
     }
-    if (remaining == null) return 'Jatah ${_fmtThousands(limit)} req/hari';
+    final limit = quota.limitFor(modelId);
+    final remaining = quota.remainingFor(modelId);
     if (remaining <= 0) {
       final reset = _countdown(quota.untilReset);
+      final when = quota.resetDays == 7 ? '7 hari' : 'harian';
       return reset.isEmpty
-          ? 'Sisa 0/${_fmtThousands(limit)} request hari ini'
-          : 'Sisa 0/${_fmtThousands(limit)} request · reset $reset';
+          ? 'Sisa 0/${_fmtThousands(limit)} RPM (reset $when)'
+          : 'Sisa 0/${_fmtThousands(limit)} RPM · reset $reset';
     }
-    return 'Sisa ${_fmtThousands(remaining)}/${_fmtThousands(limit)} '
-        'request hari ini';
+    return 'Sisa ${_fmtThousands(remaining)}/${_fmtThousands(limit)} RPM';
   }
 
   /// Hitung mundur singkat, contoh `3j 12m` atau `12m 5d`.
@@ -861,12 +855,10 @@ class ModelView extends GetView<ModelController> {
       if (model.maxOutput > 0) 'Max output ${_fmtThousands(model.maxOutput)}',
     ].join(' · ');
 
-    // Sisa request harian akun (kalau sudah login). Limit per model menimpa
-    // limit akun, sama seperti aturan gateway.
+    // Sisa RPM per model (kalau sudah login). Jatah sama untuk semua model;
+    // pemakaiannya dihitung per model (aturan gateway).
     final quota = config.requestQuota.value;
-    final quotaLimit =
-        quota?.limitFor(model.dailyRequestLimit) ?? model.dailyRequestLimit;
-    final quotaRemaining = quota?.remainingFor(model.dailyRequestLimit);
+    final quotaRemaining = quota?.remainingFor(model.modelId);
 
     return InkWell(
       onTap: () => _selectAdminModel(context, model),
@@ -932,7 +924,7 @@ class ModelView extends GetView<ModelController> {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ],
-                  // Sisa request harian akun ini (counter gateway per akun).
+                  // Sisa RPM akun ini untuk model ini.
                   const SizedBox(height: 3),
                   Row(
                     children: [
@@ -944,7 +936,7 @@ class ModelView extends GetView<ModelController> {
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(
-                          _quotaLabel(quota, quotaLimit, quotaRemaining),
+                          _quotaLabel(quota, model.modelId),
                           style: t.small.copyWith(
                             color: quotaRemaining == 0
                                 ? t.orange

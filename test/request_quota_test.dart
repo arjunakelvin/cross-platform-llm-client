@@ -1,7 +1,9 @@
-// Test info sisa request harian + grafik cache per model.
+// Test info sisa RPM per model + grafik cache per model.
 //
 // Data berasal dari gateway:
-//   GET /api/auth/request-quota -> {date, limit, used, remaining, resetAt}
+//   GET /api/auth/request-quota ->
+//     {date, resetAt, resetDays, period, limit,
+//      models: {modelId: {used, remaining, limit}}}
 //   GET /api/auth/cache-stats   -> models[].hours[] (hit/miss per jam)
 //
 // Jalankan: flutter test test/request_quota_test.dart
@@ -10,43 +12,55 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:privatelm/services/dashboard_config_service.dart';
 
 void main() {
-  group('DailyRequestQuota', () {
-    test('parse limit/used/remaining dari gateway', () {
-      final quota = DailyRequestQuota.fromMap({
+  group('RequestQuota', () {
+    test('parse RPM per model dari gateway', () {
+      final quota = RequestQuota.fromMap({
         'date': '2026-11-15',
         'limit': 20,
-        'used': 3,
-        'remaining': 17,
         'resetAt': 1794787200000,
+        'resetDays': 1,
+        'models': {
+          'api:cf:llama': {'used': 3, 'remaining': 17, 'limit': 20},
+          'local:qwen': {'used': 20, 'remaining': 0, 'limit': 20},
+        },
       });
 
       expect(quota.limit, 20);
-      expect(quota.used, 3);
-      expect(quota.remaining, 17);
       expect(quota.exhausted, isFalse);
       expect(quota.resetAt, isNotNull);
-      // Tanpa limit model -> limit akun dipakai.
-      expect(quota.limitFor(0), 20);
-      expect(quota.remainingFor(0), 17);
+      // Model yang belum dipakai → jatah penuh.
+      expect(quota.statFor('lain'), isNull);
+      expect(quota.limitFor('lain'), 20);
+      expect(quota.remainingFor('lain'), 20);
+      // Per model: pemakaian terpisah.
+      expect(quota.statFor('api:cf:llama')?.used, 3);
+      expect(quota.remainingFor('api:cf:llama'), 17);
+      expect(quota.remainingFor('local:qwen'), 0);
     });
 
-    test('limit model menimpa limit akun', () {
-      final quota = DailyRequestQuota.fromMap({
-        'limit': 20,
-        'used': 8,
-        'remaining': 12,
+    test('reset 7 hari terbaca dari gateway', () {
+      final quota = RequestQuota.fromMap({
+        'limit': 45,
+        'resetDays': 7,
+        'period': 'week-1793952000000',
+        'models': {
+          'api:cf:llama': {'used': 10, 'remaining': 35, 'limit': 45},
+        },
       });
 
-      expect(quota.limitFor(10), 10);
-      expect(quota.remainingFor(10), 2);
-      // Used sudah melewati limit model -> sisa tidak boleh negatif.
-      expect(quota.remainingFor(5), 0);
-      expect(quota.remainingFor(30), 22);
+      expect(quota.resetDays, 7);
+      expect(quota.remainingFor('api:cf:llama'), 35);
+      expect(quota.exhausted, isFalse);
     });
 
-    test('remaining dihitung sendiri kalau server tidak mengirim field', () {
-      final quota = DailyRequestQuota.fromMap({'limit': 20, 'used': 25});
-      expect(quota.remaining, 0);
+    test('format lama (models berupa angka) tetap di-parse', () {
+      final quota = RequestQuota.fromMap({
+        'limit': 20,
+        'models': {'api:cf:llama': 25},
+      });
+
+      expect(quota.statFor('api:cf:llama')?.used, 25);
+      expect(quota.remainingFor('api:cf:llama'), 0);
       expect(quota.exhausted, isTrue);
     });
   });

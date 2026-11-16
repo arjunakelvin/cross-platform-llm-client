@@ -70,10 +70,10 @@
   .pill.info { background: rgba(31,111,235,.15); color: var(--blue, #1f6feb); }
   .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
   #login { max-width: 380px; margin: 12vh auto; }
-  #app { display: none; min-height: 100vh; }
+  #app { display: none; min-height: 100vh; flex-direction: row-reverse; }
   .sidebar {
     width: 248px; flex: 0 0 248px; padding: 18px 14px;
-    border-right: 1px solid var(--line); background: #12161d;
+    border-left: 1px solid var(--line); background: #12161d;
     display: flex; flex-direction: column; gap: 20px;
     position: sticky; top: 0; height: 100vh; overflow-y: auto;
   }
@@ -138,7 +138,7 @@
     #app { flex-direction: column; }
     .sidebar {
       width: 100%; flex: 0 0 auto; height: auto; position: static;
-      border-right: 0; border-bottom: 1px solid var(--line);
+      border-left: 0; border-bottom: 1px solid var(--line);
       padding: 12px; gap: 12px;
     }
     .nav { flex-direction: row; overflow-x: auto; padding-bottom: 2px; }
@@ -210,8 +210,8 @@
      sempit supaya field harga tetap terbaca. */
   .ap-models { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
   .ap-model-head, .ap-model-row {
-    display: grid; min-width: 1100px; gap: 6px; align-items: center;
-    grid-template-columns: 1.5fr 1.7fr .7fr .7fr .55fr .7fr .7fr .7fr .7fr .7fr .5fr 34px;
+    display: grid; min-width: 940px; gap: 6px; align-items: center;
+    grid-template-columns: 1.5fr 1.7fr .7fr .7fr .55fr .7fr .7fr .7fr .7fr .5fr 34px;
     padding: 6px 8px;
   }
   .ap-model-head {
@@ -396,13 +396,34 @@
       </div>
       <div class="row" style="margin-top:8px">
         <div>
-          <label for="dailyReqLimit">Batas request/hari per akun (semua model)</label>
-          <input type="number" id="dailyReqLimit" min="0" step="1"
-                 placeholder="0 = default">
-          <div class="hint">Jatah request tiap akun per hari. Default:
-            <b>15 request</b> untuk akun <b>FREE</b>; akun <b>PRO/VIP</b> diisi
-            manual lewat kolom <b>Req/hari</b> per akun di bawah ini. Akun yang
-            sudah punya nomor diisi lewat kolom masing-masing.</div>
+          <label for="rpmGuest">RPM (akun Guest)</label>
+          <input type="number" id="rpmGuest" min="0" step="1" placeholder="5">
+          <div class="hint">Default: <b>5 RPM</b> per model per akun.</div>
+        </div>
+        <div>
+          <label for="rpmFree">RPM (akun FREE)</label>
+          <input type="number" id="rpmFree" min="0" step="1" value="15" placeholder="15">
+          <div class="hint">Default: <b>15 RPM</b> per model per akun.</div>
+        </div>
+        <div>
+          <label for="rpmVip">RPM (akun VIP)</label>
+          <input type="number" id="rpmVip" min="0" step="1" value="30" placeholder="30">
+          <div class="hint">Default: <b>30 RPM</b> per model per akun.</div>
+        </div>
+        <div>
+          <label for="rpmPro">RPM (akun PRO)</label>
+          <input type="number" id="rpmPro" min="0" step="1" value="45" placeholder="45">
+          <div class="hint">Default: <b>45 RPM</b> per model per akun.</div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div style="flex:1 1 260px">
+          <label for="rpmResetDays">Reset RPM</label>
+          <select id="rpmResetDays">
+            <option value="1">Harian</option>
+            <option value="7">7 hari</option>
+          </select>
+          <div class="hint">Jatah RPM dihitung per <b>model</b> per akun. Reset periode ini (Harian = tiap hari UTC, 7 hari = tiap 7 hari).</div>
         </div>
       </div>
       <div style="margin-top:12px">
@@ -575,7 +596,7 @@ async with aiohttp.ClientSession() as session:<br>
         <div class="hint" style="margin-top:6px">
           Bingung? Pilih <b>Auto</b> — sistem memilih endpoint yang benar dari
           base URL + model ID, lalu menampilkan URL akhirnya di bawah.
-          Jatah request akun default <b>20/hari</b>; context model baru
+          Jatah RPM akun default <b>20</b> per model; context model baru
           otomatis <b>1.000.000</b> (tinggal disesuaikan).</div>
       </div>
 
@@ -654,10 +675,10 @@ async with aiohttp.ClientSession() as session:<br>
         <b>Context</b> &amp; <b>Max out</b> diisi <b>otomatis</b> dari metadata
         model provider saat provider disimpan (bisa juga dari katalog model
         populer). Matikan <b>Auto</b> kalau ingin mengisi angkanya manual.
-        <b>Req/hari</b> kosong = ikut batas akun (default <b>20 request/hari</b>).
-        Harga <b>In/Out</b> biarkan <b>0</b> kalau model memakai kuota token —
-        isi harga hanya kalau model itu memotong <b>kredit</b>. Matikan toggle
-        <b>On</b> untuk menyembunyikan model tanpa menghapusnya.</p>
+        RPM dihitung <b>per model per user</b> dari tier — bukan perlu diisi
+        manual di sini. Harga <b>In/Out</b> biarkan <b>0</b> kalau model memakai
+        kuota token — isi harga hanya kalau model itu memotong <b>kredit</b>.
+        Matikan toggle <b>On</b> untuk menyembunyikan model tanpa menghapusnya.</p>
       <div class="ap-models">
         <div class="ap-model-head">
           <span>Nama model (tampil ke user)</span>
@@ -665,7 +686,6 @@ async with aiohttp.ClientSession() as session:<br>
           <span>Context</span>
           <span>Max out</span>
           <span>Auto</span>
-          <span>Req/hari</span>
           <span>In /1M</span>
           <span>Out /1M</span>
           <span>In /req</span>
@@ -851,9 +871,11 @@ async with aiohttp.ClientSession() as session:<br>
     <div class="card">
       <h2>Akun</h2>
       <p class="hint" style="margin:0 0 10px">
-        Batas <b>request/hari</b> per akun: akun <b>FREE</b> otomatis punya
-        15 request/hari, akun <b>PRO/VIP</b> diisi manual lewat kolom
-        <b>Req/hari</b> tiap baris di bawah.</p>
+        Batas <b>RPM</b> per <b>model</b> per akun: akun <b>FREE</b> otomatis
+        punya <b>15 RPM</b> per model, akun <b>PRO/VIP</b> otomatis dari
+        konfigurasi tier di atas. Per-user limit sama untuk semua model; pakai
+        1 model saja yang memotong jatah model itu.
+      </p>
       <div class="row">
         <div>
           <label for="newName">Nama akun baru</label>
@@ -880,7 +902,6 @@ async with aiohttp.ClientSession() as session:<br>
               <th>Token (limit)</th><th>Token terpakai</th>
               <th>Sisa token</th>
               <th>Kredit (sisa)</th><th>Kredit terpakai</th>
-              <th>Req/hari</th>
               <th>Plan</th>
               <th>Status</th><th></th>
             </tr>
@@ -935,7 +956,7 @@ async with aiohttp.ClientSession() as session:<br>
           <thead><tr>
             <th>#</th><th>Nama</th><th>Jenis</th>
             <th>Harga (Rp)</th><th>Kredit ($)</th><th>Token bonus</th>
-            <th>Tier</th><th>Req/hari</th><th>Durasi (hari)</th><th>Deskripsi</th><th>Aktif</th><th></th>
+            <th>Tier</th><th>RPM</th><th>Durasi (hari)</th><th>Deskripsi</th><th>Aktif</th><th></th>
           </tr></thead>
           <tbody id="planRows">
             <tr><td colspan="12" style="color:var(--muted)">Memuat paket…</td></tr>
@@ -1094,6 +1115,15 @@ function tierOptions(selected) {
   ).join('');
 }
 
+// RPM tier yang dipakai membership (dari konfigurasi dashboard).
+function planRpmLabel(tier) {
+  const t = String(tier || 'none').trim().toLowerCase();
+  if (t === 'none') return '—';
+  const rpm = Number((config && config.rpm && config.rpm[t]) || 0) || 0;
+  const name = t.toUpperCase();
+  return rpm > 0 ? name + ': ' + rpm + ' RPM' : name + ': 0 RPM';
+}
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -1174,8 +1204,7 @@ function planRowHtml(p, i) {
         '<option value="vip"' + (p.tier === 'vip' ? ' selected' : '') + '>VIP</option>' +
         '<option value="pro"' + (p.tier === 'pro' ? ' selected' : '') + '>PRO</option>' +
       '</select></td>' +
-      '<td><input type="number" data-f="dailyReqLimit" min="0" step="1"' +
-        ' style="min-width:76px" value="' + (p.dailyReqLimit ?? 0) + '"></td>' +
+      '<td><span class="tag" style="white-space:nowrap">' + planRpmLabel(p.tier) + '</span></td>' +
       '<td><input type="number" data-f="durationDays" min="0" step="1"' +
         ' style="min-width:74px" title="Durasi membership (hari)" value="' +
         (p.durationDays ?? (p.kind === 'membership' ? 30 : 0)) + '"></td>' +
@@ -1215,7 +1244,6 @@ function collectPlans() {
       credits: Math.max(0, Number(get('credits')) || 0),
       tokenBonus: Math.max(0, Math.floor(Number(get('tokenBonus')) || 0)),
       tier: get('tier') || 'none',
-      dailyReqLimit: Math.max(0, Math.floor(Number(get('dailyReqLimit')) || 0)),
       durationDays: Math.max(0, Math.floor(Number(get('durationDays')) || 0)),
       description: get('description').trim(),
       active: activeEl ? activeEl.checked : true,
@@ -1337,7 +1365,12 @@ async function loadConfig() {
     ? 'Server memakai: ' + config.discord.redirectUri
     : 'Server memakai default: ' + DEFAULT_REDIRECT_URI;
   $('tiers').value = (config.tiers || []).join(', ');
-  $('dailyReqLimit').value = config.dailyRequestLimit ?? 0;
+  const rpmCfg = config.rpm || {};
+  $('rpmFree').value = rpmCfg.free ?? 15;
+  $('rpmVip').value = rpmCfg.vip ?? 30;
+  $('rpmPro').value = rpmCfg.pro ?? 45;
+  $('rpmGuest').value = rpmCfg.guest ?? 5;
+  $('rpmResetDays').value = String(config.rpmResetDays ?? 1);
   $('guestTokens').value = config.guestTokenBalance ?? 10000000;
   $('loginTokens').value = config.loginTokenBalance ?? 20000000;
   $('botSecretKey').value = '';
@@ -1598,7 +1631,6 @@ function rowAccount(tr) {
     tier: get('tier').value,
     tokenBalance: Number(get('tokenBalance').value) || 0,
     creditBalance: Number(get('creditBalance').value) || 0,
-    dailyRequestLimit: Number(get('dailyRequestLimit').value) || 0,
   };
 }
 
@@ -1630,7 +1662,6 @@ function renderAccounts() {
       '<td><input type="number" data-f="creditBalance" min="0" step="0.01" value="' +
         (Number(a.creditBalance ?? 0)).toFixed(2) + '"></td>' +
       '<td class="mono">' + fmtMoney(a.creditUsed ?? 0) + '</td>' +
-      '<td><input type="number" data-f="dailyRequestLimit" min="0" step="1" title="Req/hari (kosong=auto dari tier)" value="' + (a.dailyRequestLimit ?? 0) + '"></td>' +
       planCell(a) +
       '<td><span class="pill ' + (a.status === 'banned' ? 'banned' : 'active') + '">' +
         (a.status === 'banned' ? 'banned' : 'active') + '</span></td>' +
@@ -1775,20 +1806,25 @@ $('saveTiers').addEventListener('click', async () => {
     setStatus($('tierStatus'), 'Minimal satu tier.', false);
     return;
   }
-  const dailyReqLimit = Math.max(0, Number($('dailyReqLimit').value) || 0);
   const guestTokens = Math.max(0, Number($('guestTokens').value) || 10000000);
   const loginTokens = Math.max(0, Number($('loginTokens').value) || 20000000);
   try {
     await api('PATCH', '/api/admin/config', {
       tiers,
       defaultTier: $('defaultTier').value,
-      dailyRequestLimit: dailyReqLimit,
+      rpm: {
+        free: Math.max(0, Number($('rpmFree').value) || 0),
+        vip: Math.max(0, Number($('rpmVip').value) || 0),
+        pro: Math.max(0, Number($('rpmPro').value) || 0),
+        guest: Math.max(0, Number($('rpmGuest').value) || 0),
+      },
+      rpmResetDays: Number($('rpmResetDays').value) || 1,
       guestTokenBalance: guestTokens,
       loginTokenBalance: loginTokens,
       defaultTokenBalance: loginTokens,
     });
     await loadConfig();
-    setStatus($('tierStatus'), 'Kuota token & tier berhasil disimpan.', true);
+    setStatus($('tierStatus'), 'Kuota RPM & tier berhasil disimpan.', true);
   } catch (e) {
     setStatus($('tierStatus'), String(e.message || e), false);
   }
@@ -2697,8 +2733,6 @@ function providerModelRowHtml(model) {
     '<label class="ap-on" title="Isi otomatis dari metadata model provider">' +
     '<input type="checkbox" data-f="limitsAuto"' +
     (autoLimits ? ' checked' : '') + '> Auto</label>' +
-    input('dailyRequestLimit', 'number', m.dailyRequestLimit || 0,
-      ' min="0" step="1" placeholder="20"') +
     input('inputPer1M', 'number', pricing.inputPer1M || 0, ' min="0" step="0.01" placeholder="0"') +
     input('outputPer1M', 'number', pricing.outputPer1M || 0, ' min="0" step="0.01" placeholder="0"') +
     input('inputPerReq', 'number', pricing.inputPerReq || 0, ' min="0" step="0.0001" placeholder="0"') +
@@ -2725,7 +2759,6 @@ function collectProviderModels() {
       contextSize: Math.max(0, Number(get('contextSize').value) || 0),
       maxOutput: Math.max(0, Number(get('maxOutput').value) || 0),
       limitsAuto: get('limitsAuto').checked,
-      dailyRequestLimit: Math.max(0, Number(get('dailyRequestLimit').value) || 0),
       pricing: {
         inputPer1M: Number(get('inputPer1M').value) || 0,
         outputPer1M: Number(get('outputPer1M').value) || 0,
@@ -2913,9 +2946,6 @@ function renderApiProviders() {
     const models = providerModelsOf(p);
     const modelRows = models.map((m, index) => {
       const on = m.enabled !== false;
-      const limit = Number(m.dailyRequestLimit) > 0
-        ? ' · limit ' + m.dailyRequestLimit + ' req/hari'
-        : '';
       const price = pricingLabel({ pricing: m.pricing || {} });
       return '<div class="ap-model-line">' +
         '<div><b>' + escapeHtml(m.name || m.modelId) + '</b> ' +
@@ -2923,7 +2953,7 @@ function renderApiProviders() {
         (on ? 'tampil' : 'disembunyikan') + '</span>' +
         '<div class="meta mono">' + escapeHtml(m.modelId || '-') + '</div>' +
         '<div class="meta">ctx ' + (m.contextSize || 0) +
-        ' · max ' + (m.maxOutput || 0) + limit +
+        ' · max ' + (m.maxOutput || 0) +
         ' · tier ' + escapeHtml(tiers) + '</div>' +
         '<div class="price">' + escapeHtml(price) + '</div></div>' +
         '<div class="actions">' +

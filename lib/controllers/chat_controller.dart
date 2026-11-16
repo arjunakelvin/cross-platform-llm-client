@@ -89,8 +89,8 @@ class ChatController extends GetxController {
   // context TIDAK bisa di-reset — user harus mulai chat baru untuk lanjut.
   final contextExhausted = false.obs;
 
-  // Batas request harian (limit provider/global) tercapai. Kolom chat
-  // diblokir dan diganti hitung mundur sampai reset harian (UTC).
+  // Batas RPM (request per model) tercapai. Kolom chat diblokir dan
+  // diganti hitung mundur sampai reset periode (Harian / 7 hari).
   final dailyLimitReached = false.obs;
   final resetCountdown = ''.obs;
   Timer? _resetTimer;
@@ -617,8 +617,8 @@ class ChatController extends GetxController {
         'Chat diblokir',
         contextExhausted.value
             ? 'Context chat ini penuh. Mulai chat baru untuk melanjutkan.'
-            : 'Batas request harian tercapai. Chat bisa dilanjutkan setelah '
-                'hitung mundur selesai.',
+            : 'Batas RPM untuk model ini tercapai. Chat bisa dilanjutkan '
+                'setelah hitung mundur reset RPM selesai.',
         tone: ToastTone.warning,
       );
       return;
@@ -1009,8 +1009,8 @@ class ChatController extends GetxController {
           _scrollToBottom(force: true);
           return;
         }
-        // Batas request harian dari gateway (kalau server masih mengirim 429).
-        if (lower.contains('request/hari')) {
+        // Batas RPM dari gateway untuk model ini (kalau server mengirim 429).
+        if (lower.contains('rpm') || lower.contains('request/hari')) {
           dailyLimitReached.value = true;
           // Ambil `resetAt` terbaru dari gateway.
           if (Get.isRegistered<DashboardConfigService>()) {
@@ -1021,9 +1021,9 @@ class ChatController extends GetxController {
           isLoading.value = false;
           imageGenStartTime.value = null;
           showToast(
-            'Batas harian',
-            'Batas request harian tercapai. Chat bisa dilanjutkan setelah '
-                'hitung mundur reset selesai.',
+            'Batas RPM',
+            'Batas RPM untuk model ini tercapai. Chat bisa dilanjutkan '
+                'setelah hitung mundur reset RPM selesai.',
             tone: ToastTone.warning,
           );
           _scrollToBottom(force: true);
@@ -1285,9 +1285,8 @@ class ChatController extends GetxController {
     return chars <= 0 ? 0 : (chars / 4).ceil() + 8;
   }
 
-  /// Hitung mundur sampai reset berikutnya. Kalau gateway sudah memberi
-  /// `resetAt` (kuota habis → 24 jam sejak habis), pakai itu; kalau belum,
-  /// fallback ke 00:00 UTC.
+  /// Hitung mundur sampai reset RPM berikutnya. Kalau gateway sudah memberi
+  /// `resetAt`, pakai itu; kalau belum, fallback ke UTC tengah malam.
   void _startResetCountdown() {
     _resetTimer?.cancel();
     void tick() {

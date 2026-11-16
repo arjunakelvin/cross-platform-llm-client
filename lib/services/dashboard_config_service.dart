@@ -210,38 +210,71 @@ class CacheHourStat {
   }
 }
 
-/// Jatah request harian satu akun (dihitung gateway).
-///
-/// Counter disimpan per akun per tanggal UTC, jadi `used` berlaku untuk semua
-/// model. Limit per model (kalau admin mengisinya) menimpa limit akun.
-class DailyRequestQuota {
-  const DailyRequestQuota({
-    required this.date,
-    required this.limit,
+/// Statistik pemakaian RPM (request per model) satu model.
+class RpmModelStat {
+  const RpmModelStat({
     required this.used,
     required this.remaining,
+    required this.limit,
+  });
+
+  final int used;
+  final int remaining;
+  final int limit;
+
+  factory RpmModelStat.fromMap(Map<String, dynamic> map) {
+    final limit = (map['limit'] as num?)?.toInt() ?? 0;
+    final used = (map['used'] as num?)?.toInt() ?? 0;
+    final remaining = (map['remaining'] as num?)?.toInt() ??
+        (limit - used < 0 ? 0 : limit - used);
+    return RpmModelStat(used: used, remaining: remaining, limit: limit);
+  }
+}
+
+/// Kuota RPM (request per model) akun dari gateway.
+///
+/// Jatah sama untuk semua model (dari tier); pemakaiannya dihitung per
+/// model, jadi pakai satu model hanya memotong jatah model itu. Reset bisa
+/// diatur admin: Harian (1 hari) atau 7 hari sekali.
+class RequestQuota {
+  const RequestQuota({
+    required this.date,
+    required this.limit,
     required this.resetAt,
+    required this.resetDays,
+    required this.period,
+    required this.models,
+    required this.tier,
   });
 
   final String date;
   final int limit;
-  final int used;
-  final int remaining;
   final DateTime? resetAt;
+  final int resetDays;
+  final String period;
+  final String tier;
 
-  bool get exhausted => remaining <= 0;
+  /// Per model: `{modelId: {used, remaining, limit}}`. Model yang belum
+  /// dipakai tidak ada entrinya — dipandang 0 pemakaian.
+  final Map<String, RpmModelStat> models;
 
-  /// Limit yang berlaku untuk satu model.
-  int limitFor(int modelLimit) => modelLimit > 0 ? modelLimit : limit;
+  bool get exhausted =>
+      models.isNotEmpty && models.values.every((m) => m.remaining <= 0);
 
-  /// Sisa request untuk satu model.
-  int remainingFor(int modelLimit) {
-    final max = limitFor(modelLimit);
-    final left = max - used;
-    return left < 0 ? 0 : left;
+  /// Statistik satu model; `null` kalau model belum pernah dipakai.
+  RpmModelStat? statFor(String? modelId) {
+    final key = (modelId ?? '').trim();
+    if (key.isEmpty) return null;
+    return models[key];
   }
 
-  /// Hitung mundur ke reset berikutnya (UTC tengah malam).
+  /// Sisa RPM satu model (belum terpakai = jatah penuh).
+  int remainingFor(String? modelId) => statFor(modelId)?.remaining ?? limit;
+
+  /// Limit RPM satu model (sama untuk semua model).
+  int limitFor(String? modelId) => statFor(modelId)?.limit ?? limit;
+
+  /// Hitung mundur ke reset berikutnya.
   Duration? get untilReset {
     final at = resetAt;
     if (at == null) return null;
@@ -249,19 +282,42 @@ class DailyRequestQuota {
     return diff.isNegative ? Duration.zero : diff;
   }
 
-  factory DailyRequestQuota.fromMap(Map<String, dynamic> map) {
+  factory RequestQuota.fromMap(Map<String, dynamic> map) {
     final limit = (map['limit'] as num?)?.toInt() ?? 0;
-    final used = (map['used'] as num?)?.toInt() ?? 0;
-    final remaining = (map['remaining'] as num?)?.toInt() ??
-        (limit - used < 0 ? 0 : limit - used);
     final resetAtMs = (map['resetAt'] as num?)?.toInt() ?? 0;
-    return DailyRequestQuota(
+    final resetDays = (map['resetDays'] as num?)?.toInt() ?? 1;
+    final models = <String, RpmModelStat>{};
+    final raw = map['models'];
+    if (raw is Map) {
+      for (final entry in raw.entries) {
+        final key = entry.key.toString();
+        // Format lama (server masih mengirim angka): tetap di-parse.
+        var value = entry.value;
+        if (value is num) {
+          final used = value.toInt();
+          models[key] = RpmModelStat(
+            used: used,
+            remaining: limit - used < 0 ? 0 : limit - used,
+            limit: limit,
+          );
+          continue;
+        }
+        if (value is Map) {
+          models[key] =
+              RpmModelStat.fromMap(Map<String, dynamic>.from(value));
+        }
+      }
+    }
+    return RequestQuota(
       date: (map['date'] ?? '').toString(),
       limit: limit,
-      used: used,
-      remaining: remaining,
-      resetAt:
-          resetAtMs > 0 ? DateTime.fromMillisecondsSinceEpoch(resetAtMs) : null,
+      resetAt: resetAtMs > 0
+          ? DateTime.fromMillisecondsSinceEpoch(resetAtMs)
+          : null,
+      resetDays: resetDays == 7 ? 7 : 1,
+      period: (map['period'] ?? map['date'] ?? '').toString(),
+      models: models,
+      tier: (map['tier'] ?? '').toString().toLowerCase(),
     );
   }
 }
@@ -353,16 +409,16 @@ class DashboardConfigService extends GetxService {
   /// Statistik pemakaian + prompt cache per model (kunci = modelId).
   final modelStats = <String, ModelUsageStat>{}.obs;
 
-  /// Sisa request harian akun yang sedang login (dari gateway). `null` =
+  /// Sisa RPM (per model) akun yang sedang login (dari gateway). `null` =
   /// belum login / belum termuat — aplikasi hanya menampilkan limit model.
-  final requestQuota = Rxn<DailyRequestQuota>();
+  final requestQuota = Rxn<RequestQuota>();
 
   /// Refresh otomatis statistik cache/pemakaian tiap 20 dtk (tanpa perlu
   /// refresh manual) supaya grafik cache di Model List tetap "real-time".
   Timer? _cacheRefreshTimer;
   static const Duration cacheRefreshInterval = Duration(seconds: 20);
 
-  /// Sisa request harian cukup diperbarui tiap menit (counter berubah hanya
+  /// Sisa RPM cukup diperbarui tiap menit (counter berubah hanya
   /// saat user mengirim chat).
   Timer? _quotaRefreshTimer;
   static const Duration quotaRefreshInterval = Duration(seconds: 60);
@@ -504,9 +560,9 @@ class DashboardConfigService extends GetxService {
     }
   }
 
-  /// Sisa request harian akun (dari gateway). Butuh sesi login atau API key
-  /// user; kalau belum login, kuota dibiarkan kosong dan UI hanya menampilkan
-  /// limit per model.
+  /// Sisa RPM (per model) akun (dari gateway). Butuh sesi login atau API key
+  /// user; kalau belum login, kuota dibiarkan kosong dan UI tidak menampilkan
+  /// sisa RPM.
   Future<void> refreshRequestQuota() async {
     final token =
         (_hive.getSetting<String>(AppConstants.keyDiscordSessionToken) ?? '')
@@ -528,7 +584,7 @@ class DashboardConfigService extends GetxService {
       final data = jsonDecode(res.body);
       if (data is! Map) return;
       requestQuota.value =
-          DailyRequestQuota.fromMap(Map<String, dynamic>.from(data));
+          RequestQuota.fromMap(Map<String, dynamic>.from(data));
     } catch (_) {
       // Info sisa request bersifat tambahan; gagal muat tidak mengganggu app.
     }
