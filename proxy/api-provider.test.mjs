@@ -376,39 +376,33 @@ test('provider OpenAI-compatible: URL dan respons diteruskan', async () => {
   }
 });
 
-test('batas request harian per akun (tier free default 15)', async () => {
-  const { store, env } = makeEnv();
-  seedAccount(store);
-  seedProvider(store);
-  // Admin menyimpan limit 0 → akun free memakai default 15 request/hari.
-  store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
+test('batas request harian reset langsung saat habis (tier free 15)',
+  async () => {
+    const { store, env } = makeEnv();
+    seedAccount(store);
+    seedProvider(store);
+    // Admin menyimpan limit 0 → akun free memakai default 15 request/hari.
+    store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
 
-  const counter = { calls: 0 };
-  const restore = mockFetch(async () => {
-    counter.calls++;
-    return new Response(JSON.stringify({
-      success: true,
-      result: { response: 'ok' },
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-  });
-  try {
-    for (let i = 0; i < 15; i++) {
-      const res = await chat(env);
-      assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
+    const counter = { calls: 0 };
+    const restore = okProviderFetch(counter);
+    try {
+      for (let i = 0; i < 15; i++) {
+        const res = await chat(env);
+        assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
+      }
+      // Kuota habis → counter reset langsung, request ke-16 tetap lolos.
+      const next = await chat(env);
+      assert.equal(next.status, 200, 'setelah habis langsung reset');
+      assert.equal(counter.calls, 16);
+      const state = JSON.parse(store.get('dailyreq:u1'));
+      assert.equal(state.used, 1, 'counter mulai dari 1 lagi');
+    } finally {
+      restore();
     }
-    const blocked = await chat(env);
-    const body = await blocked.json();
-    assert.equal(blocked.status, 429);
-    assert.equal(body.limit, 15);
-    assert.equal(body.used, 15);
-    assert.match(body.error, /request\/hari/i);
-    assert.equal(counter.calls, 15, 'request ke-16 tidak boleh ke provider');
-  } finally {
-    restore();
-  }
-});
+  });
 
-test('reset harian /req dimulai saat kuota habis dan berlangsung 24 jam',
+test('reset harian /req langsung saat kuota habis, sama seperti token',
   async () => {
     const { store, env } = makeEnv();
     seedAccount(store);
@@ -426,27 +420,15 @@ test('reset harian /req dimulai saat kuota habis dan berlangsung 24 jam',
         assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
       }
 
+      // Habis → counter langsung 0, bukan menunggu 24 jam/tengah malam.
       const state = JSON.parse(store.get('dailyreq:u1'));
-      assert.equal(state.used, 2);
-      const resetAt = state.resetAt;
-      assert.ok(resetAt > Date.now() + 23 * 60 * 60 * 1000,
-        'reset harus 24 jam sejak kuota habis');
-      assert.ok(resetAt < Date.now() + 25 * 60 * 60 * 1000);
+      assert.equal(state.used, 0);
+      assert.equal(state.resetAt, undefined);
 
-      const blocked = await chat(env);
-      const body = await blocked.json();
-      assert.equal(blocked.status, 429);
-      assert.equal(body.resetAt, resetAt);
-
-      // Lewati masa tunggu → kuota baru dimulai dari 0.
-      store.set('dailyreq:u1', JSON.stringify({
-        used: 2, resetAt: Date.now() - 1000, date: '2000-01-01',
-      }));
       const allowed = await chat(env);
-      assert.equal(allowed.status, 200, 'setelah 24 jam kuota reset');
+      assert.equal(allowed.status, 200, 'request setelah reset harus lolos');
       const fresh = JSON.parse(store.get('dailyreq:u1'));
       assert.equal(fresh.used, 1);
-      assert.equal(fresh.resetAt, 0);
     } finally {
       restore();
     }
@@ -523,16 +505,15 @@ test('batas request per akun (override admin untuk pro/vip)', async () => {
     result: { response: 'ok' },
   }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
   try {
-    const ok1 = await chat(env);    assert.equal(ok1.status, 200);
-    const ok2 = await chat(env);
-    assert.equal(ok2.status, 200);
-    const ok3 = await chat(env);
-    assert.equal(ok3.status, 200);
-    const blocked = await chat(env);
-    const body = await blocked.json();
-    assert.equal(blocked.status, 429);
-    assert.equal(body.limit, 3);
-    assert.equal(body.used, 3);
+    for (let i = 0; i < 3; i++) {
+      const ok = await chat(env);
+      assert.equal(ok.status, 200, `request ke-${i + 1} harus lolos`);
+    }
+    // Limit 3 habis → counter reset langsung; request ke-4 tetap lolos.
+    const next = await chat(env);
+    assert.equal(next.status, 200, 'reset langsung saat habis');
+    const state = JSON.parse(store.get('dailyreq:u1'));
+    assert.equal(state.used, 1);
   } finally {
     restore();
   }
@@ -1006,7 +987,7 @@ function okProviderFetch(counter) {
   });
 }
 
-test('default batas akun free (15 request/hari) saat config 0', async () => {
+test('default batas akun free (15 request/hari) reset saat habis', async () => {
   const { store, env } = makeEnv();
   seedAccount(store);
   seedProvider(store);
@@ -1020,51 +1001,49 @@ test('default batas akun free (15 request/hari) saat config 0', async () => {
       const res = await chat(env);
       assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
     }
-    const blocked = await chat(env);
-    const body = await blocked.json();
-    assert.equal(blocked.status, 429);
-    assert.equal(body.limit, 15);
-    assert.equal(body.used, 15);
-    assert.match(body.error, /request\/hari/i);
-    assert.equal(counter.calls, 15, 'request ke-16 tidak boleh ke provider');
+    const next = await chat(env);
+    assert.equal(next.status, 200, 'kuota habis → reset langsung');
+    assert.equal(counter.calls, 16);
+    const state = JSON.parse(store.get('dailyreq:u1'));
+    assert.equal(state.used, 1);
   } finally {
     restore();
   }
 });
 
-test('batas request untuk akun guest = 5 request/hari', async () => {
-  const { store, env } = makeEnv();
-  store.set('session:' + SESSION, 'u1');
-  store.set('account:u1', JSON.stringify({
-    id: 'u1',
-    name: 'guest-user',
-    tier: 'guest',
-    status: 'active',
-    tokenBalance: 10000000,
-    tokenUsed: 0,
-    creditBalance: 1,
-    creditUsed: 0,
-  }));
-  store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
-  seedProvider(store);
+test('batas request untuk akun guest = 5 request/hari reset saat habis',
+  async () => {
+    const { store, env } = makeEnv();
+    store.set('session:' + SESSION, 'u1');
+    store.set('account:u1', JSON.stringify({
+      id: 'u1',
+      name: 'guest-user',
+      tier: 'guest',
+      status: 'active',
+      tokenBalance: 10000000,
+      tokenUsed: 0,
+      creditBalance: 1,
+      creditUsed: 0,
+    }));
+    store.set('config', JSON.stringify({ dailyRequestLimit: 0 }));
+    seedProvider(store);
 
-  const counter = { calls: 0 };
-  const restore = okProviderFetch(counter);
-  try {
-    for (let i = 0; i < 5; i++) {
-      const res = await chat(env, { model: MODEL_ID });
-      assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
+    const counter = { calls: 0 };
+    const restore = okProviderFetch(counter);
+    try {
+      for (let i = 0; i < 5; i++) {
+        const res = await chat(env, { model: MODEL_ID });
+        assert.equal(res.status, 200, `request ke-${i + 1} harus lolos`);
+      }
+      const next = await chat(env, { model: MODEL_ID });
+      assert.equal(next.status, 200, 'kuota habis → reset langsung');
+      assert.equal(counter.calls, 6);
+      const state = JSON.parse(store.get('dailyreq:u1'));
+      assert.equal(state.used, 1);
+    } finally {
+      restore();
     }
-    const blocked = await chat(env, { model: MODEL_ID });
-    const body = await blocked.json();
-    assert.equal(blocked.status, 429);
-    assert.equal(body.limit, 5);
-    assert.equal(body.used, 5);
-    assert.equal(counter.calls, 5, 'request ke-6 tidak boleh ke provider');
-  } finally {
-    restore();
-  }
-});
+  });
 
 test('model Local AI (server) tidak pakai batas request harian', async () => {
   const { store, env } = makeEnv();

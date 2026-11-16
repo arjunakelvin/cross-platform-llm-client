@@ -173,7 +173,7 @@ class MembershipPlanCard extends StatelessWidget {
           ),
           const SizedBox(height: 16),
 
-          // Limit token per tier + sisa hari. Tanpa bar progres.
+          // Limit token per tier + sisa hari.
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -197,7 +197,24 @@ class MembershipPlanCard extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
+
+          // Bar sisa kuota token: memendek saat token terpakai.
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: SizedBox(
+              height: 8,
+              child: LinearProgressIndicator(
+                value: limit <= 0
+                    ? 0
+                    : (remaining / limit).clamp(0.0, 1.0),
+                backgroundColor: Colors.white.withValues(alpha: 0.25),
+                valueColor: AlwaysStoppedAnimation<Color>(
+                    Colors.white.withValues(alpha: 0.95)),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
           Row(
             children: [
               Icon(Icons.token_rounded,

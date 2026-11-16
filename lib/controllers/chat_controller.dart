@@ -980,10 +980,10 @@ class ChatController extends GetxController {
           _scrollToBottom(force: true);
           return;
         }
-        // Batas request harian dari gateway (429).
+        // Batas request harian dari gateway (kalau server masih mengirim 429).
         if (lower.contains('request/hari')) {
           dailyLimitReached.value = true;
-          // Ambil `resetAt` terbaru dari gateway (24 jam sejak kuota habis).
+          // Ambil `resetAt` terbaru dari gateway.
           if (Get.isRegistered<DashboardConfigService>()) {
             unawaited(Get.find<DashboardConfigService>()
                 .refreshRequestQuota());

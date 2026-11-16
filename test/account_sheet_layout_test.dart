@@ -39,7 +39,9 @@ void main() {
     expect(find.text('12'), findsOneWidget);
     expect(find.textContaining('Aktif sampai'), findsOneWidget);
     expect(find.textContaining('Sisa 12.6M token'), findsOneWidget);
-    expect(find.byType(LinearProgressIndicator), findsNothing);
+    final bar = tester.widget<LinearProgressIndicator>(
+        find.byType(LinearProgressIndicator));
+    expect(bar.value, closeTo(0.63, 0.001));
   });
 
   testWidgets('kartu plan free guest: 10M limit, tanpa kedaluwarsa',
@@ -58,7 +60,9 @@ void main() {
     expect(find.text('10M'), findsOneWidget);
     expect(find.textContaining('Kuota habis'), findsOneWidget);
     expect(find.textContaining('Berlaku tanpa batas waktu'), findsOneWidget);
-    expect(find.byType(LinearProgressIndicator), findsNothing);
+    final bar = tester.widget<LinearProgressIndicator>(
+        find.byType(LinearProgressIndicator));
+    expect(bar.value, 0);
   });
 
   testWidgets('kartu kredit: sisa + persen + format ribuan (tanpa overflow)',

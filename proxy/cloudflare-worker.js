@@ -1357,8 +1357,6 @@ function effectiveDailyRequestLimit(value) {
   return n > 0 ? n : DEFAULT_DAILY_REQUEST_LIMIT;
 }
 
-const DAILY_REQ_WINDOW_MS = 24 * 60 * 60 * 1000;
-
 async function saveDailyRequestState(env, accountId, state) {
   const payload = JSON.stringify(state);
   try {
@@ -1373,19 +1371,18 @@ async function saveDailyRequestState(env, accountId, state) {
 
 /// State jatah request per akun.
 ///
-/// Sebelum kuota habis, counter mengikuti tanggal UTC (reset tengah malam).
-/// Begitu kuota habis, `resetAt` = waktu habis + 24 jam dan counter tidak ikut
-/// reset tengah malam — hitung mundur baru dimulai tepat saat kuota habis.
+/// Seperti kuota token: counter di-reset **langsung saat habis**, bukan
+/// menunggu tengah malam. Tanggal tetap disimpan supaya counter lama yang
+/// belum habis ikut berganti hari.
 async function dailyRequestState(env, accountId) {
   const today = dailyDateKey();
-  let state = { used: 0, resetAt: 0, date: today };
+  let state = { used: 0, date: today };
   const raw = await env.PB_KV.get(`dailyreq:${accountId}`);
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') {
         state.used = Math.max(0, Math.floor(Number(parsed.used) || 0));
-        state.resetAt = Math.max(0, Number(parsed.resetAt) || 0);
         state.date = String(parsed.date || '');
       } else {
         state.used = Math.max(0, Math.floor(Number(raw) || 0));
@@ -1395,21 +1392,10 @@ async function dailyRequestState(env, accountId) {
       state.used = Math.max(0, Math.floor(Number(raw) || 0));
     }
   }
-
-  const now = Date.now();
-  let changed = false;
-  if (state.resetAt > 0) {
-    if (now >= state.resetAt) {
-      // Masa tunggu 24 jam selesai → kuota baru dimulai.
-      state = { used: 0, resetAt: 0, date: today };
-      changed = true;
-    }
-  } else if (state.date && state.date !== today) {
-    // Belum pernah habis → reset harian normal (UTC).
-    state = { used: 0, resetAt: 0, date: today };
-    changed = true;
+  if (state.date !== today) {
+    state = { used: 0, date: today };
+    await saveDailyRequestState(env, accountId, state);
   }
-  if (changed) await saveDailyRequestState(env, accountId, state);
   return state;
 }
 
@@ -1436,13 +1422,12 @@ function accountDailyRequestLimit(config, account) {
 async function accountRequestQuota(env, account, config) {
   const limit = accountDailyRequestLimit(config, account);
   const state = await dailyRequestState(env, account.id);
-  const exhausted = limit > 0 && state.used >= limit;
   return {
     date: dailyDateKey(),
     limit,
     used: state.used,
     remaining: Math.max(0, limit - state.used),
-    resetAt: exhausted && state.resetAt > 0 ? state.resetAt : dailyResetAt(),
+    resetAt: dailyResetAt(),
     tier: String((account && account.tier) || ''),
   };
 }
@@ -1450,10 +1435,16 @@ async function accountRequestQuota(env, account, config) {
 async function bumpDailyRequest(env, accountId, limit) {
   const state = await dailyRequestState(env, accountId);
   const next = state.used + 1;
-  const resetAt = limit > 0 && next >= limit
-    ? Date.now() + DAILY_REQ_WINDOW_MS
-    : state.resetAt;
-  const nextState = { used: next, resetAt, date: dailyDateKey() };
+  // Habis → reset langsung (sama seperti kuota token), tanpa memblokir
+  // request berikutnya.
+  if (limit > 0 && next >= limit) {
+    await saveDailyRequestState(env, accountId, {
+      used: 0,
+      date: dailyDateKey(),
+    });
+    return 0;
+  }
+  const nextState = { used: next, date: dailyDateKey() };
   await saveDailyRequestState(env, accountId, nextState);
   return next;
 }
@@ -4181,22 +4172,11 @@ async function handleGateway(request, env, pathname) {
     if (providerConfig && dailyLimit > 0) {
       const quota = await dailyRequestState(env, account.id);
       if (quota.used >= dailyLimit) {
-        // Kuota habis: hitung mundur 24 jam dimulai dari saat habis. Kalau
-        // limit admin baru diturunkan sampai kuota sudah lewat, set sekarang.
-        let resetAt = quota.resetAt;
-        if (!resetAt) {
-          resetAt = Date.now() + DAILY_REQ_WINDOW_MS;
-          await saveDailyRequestState(env, account.id, {
-            ...quota,
-            resetAt,
-          });
-        }
-        return jsonResponse(request, 429, {
-          error: `Batas ${dailyLimit} request/hari untuk akun ini sudah ` +
-            'tercapai. Coba lagi setelah hitung mundur reset selesai.',
-          limit: dailyLimit,
-          used: quota.used,
-          resetAt,
+        // Kuota habis (mis. admin menurunkan limit) → reset langsung,
+        // sama seperti kuota token. Request ini tetap dilanjutkan.
+        await saveDailyRequestState(env, account.id, {
+          used: 0,
+          date: dailyDateKey(),
         });
       }
     }
