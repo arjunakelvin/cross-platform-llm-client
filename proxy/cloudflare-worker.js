@@ -57,6 +57,10 @@ const GUEST_DAILY_REQUEST_LIMIT = 5;
 // admin lalu mengunggah bukti; admin approve di dashboard → kredit /
 // token / tier otomatis masuk ke akun.
 // ─────────────────────────────────────────────────────────────
+// Durasi membership VIP/Pro (hari). Diatur admin per akun di dashboard.
+const PLAN_MEMBERSHIP_DURATION_DAYS = 30;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
 const PLAN_KINDS = ['credit', 'membership'];
 const PLAN_TIERS = ['none', 'vip', 'pro'];
 const WALLET_TYPES = ['shopeepay', 'gopay'];
@@ -73,11 +77,13 @@ const DEFAULT_PLANS = [
     description: '$30 kredit + 50M token bonus', active: true, sort: 3 },
   { id: 'membership-vip', kind: 'membership', name: 'VIP', priceIdr: 150000,
     credits: 2, tokenBonus: 10000000, tier: 'vip', dailyReqLimit: 30,
-    description: 'Membership VIP — tier VIP, +30 req/hari, $2 kredit + 10M token',
+    durationDays: PLAN_MEMBERSHIP_DURATION_DAYS,
+    description: 'Membership VIP 30 hari — tier VIP, +30 req/hari, $2 kredit + 10M token',
     active: true, sort: 4 },
   { id: 'membership-pro', kind: 'membership', name: 'PRO', priceIdr: 300000,
     credits: 5, tokenBonus: 20000000, tier: 'pro', dailyReqLimit: 45,
-    description: 'Membership PRO — tier PRO, +45 req/hari, $5 kredit + 20M token',
+    durationDays: PLAN_MEMBERSHIP_DURATION_DAYS,
+    description: 'Membership PRO 30 hari — tier PRO, +45 req/hari, $5 kredit + 20M token',
     active: true, sort: 5 },
 ];
 
@@ -97,6 +103,9 @@ function cleanPlan(input, fallbackId) {
   if (!name) return null;
   const id = String(src.id || fallbackId || '').trim().slice(0, 64);
   if (!id) return null;
+  const isMembership = PLAN_KINDS.includes(kind) && kind === 'membership';
+  const durationDays = Math.max(0,
+    Math.floor(Number(src.durationDays) || (isMembership ? PLAN_MEMBERSHIP_DURATION_DAYS : 0)));
   return {
     id,
     kind: PLAN_KINDS.includes(kind) ? kind : 'credit',
@@ -106,6 +115,7 @@ function cleanPlan(input, fallbackId) {
     tokenBonus: Math.max(0, Math.floor(Number(src.tokenBonus) || 0)),
     tier: PLAN_TIERS.includes(tier) ? tier : 'none',
     dailyReqLimit: Math.max(0, Math.floor(Number(src.dailyReqLimit) || 0)),
+    durationDays,
     description,
     active: src.active !== false,
     sort: Math.floor(Number(src.sort) || 0),
@@ -1321,6 +1331,26 @@ function bearerToken(request) {
   return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
 }
 
+/// Lazy expiry membership: kalau paket VIP/Pro akun sudah habis masanya
+/// (plan.expiresAt <= sekarang), akun otomatis kembali ke tier gratis
+/// dengan limit request admin (plan.prevDailyReqLimit / kalau 0 = aturan
+/// tier free). Dipanggil setiap kali akun dibaca dari KV supaya tidak perlu
+/// cron job terpisah.
+async function applyPlanExpiry(env, account) {
+  if (!account) return account;
+  const plan = account.plan;
+  if (!plan || typeof plan !== 'object') return account;
+  const expiresAt = Number(plan.expiresAt) || 0;
+  if (expiresAt <= 0) return account;
+  if (Date.now() < expiresAt) return account;
+  const next = { ...account };
+  next.tier = (typeof plan.prevTier === 'string' && plan.prevTier) || 'free';
+  next.dailyRequestLimit = Math.max(0, Math.floor(Number(plan.prevDailyReqLimit) || 0));
+  delete next.plan;
+  await env.PB_KV.put(`account:${account.id}`, JSON.stringify(next));
+  return next;
+}
+
 async function sessionAccount(env, request) {
   const token = bearerToken(request);
   if (!token) return null;
@@ -1328,7 +1358,7 @@ async function sessionAccount(env, request) {
   if (!accountId) return null;
   const account = await getJson(env.PB_KV, `account:${accountId}`, null);
   if (!account) return null;
-  return { token, account };
+  return { token, account: await applyPlanExpiry(env, account) };
 }
 
 /// Akun dari `Authorization: Bearer <sesi Discord | API key user>`.
@@ -1359,7 +1389,7 @@ async function accountFromBearer(env, request) {
     const account = await getJson(
       env.PB_KV, `account:${keyData.accountId}`, null);
     return account
-      ? { account }
+      ? { account: await applyPlanExpiry(env, account) }
       : { status: 401, error: 'Invalid API key.' };
   }
   // Bukan API key → coba session token login. Nilai session di KV adalah
@@ -1369,7 +1399,7 @@ async function accountFromBearer(env, request) {
     ? await getJson(env.PB_KV, `account:${sessionAccountId}`, null)
     : null;
   return account
-    ? { account }
+    ? { account: await applyPlanExpiry(env, account) }
     : { status: 401, error: 'Invalid API key.' };
 }
 
@@ -1773,7 +1803,7 @@ async function handleAdmin(request, env, pathname) {
     const accounts = [];
     for (const key of list.keys) {
       const account = await getJson(env.PB_KV, key.name, null);
-      if (account) accounts.push(account);
+      if (account) accounts.push(await applyPlanExpiry(env, account));
     }
     accounts.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     return jsonResponse(request, 200, { accounts });
@@ -1795,9 +1825,11 @@ async function handleAdmin(request, env, pathname) {
       const existing = await getJson(env.PB_KV, `account:${id}`, {});
       const now = Date.now();
       const account = {
+        ...existing,
         id,
         name: String(body.name ?? existing.name ?? ''),
-        role: body.role === 'admin' ? 'admin' : 'user',
+        role: body.role === 'admin' ? 'admin'
+          : (existing.role === 'admin' ? 'admin' : 'user'),
         tier: String(body.tier ?? existing.tier ?? 'free'),
         tokenBalance: Number.isFinite(+body.tokenBalance)
           ? Math.max(0, Math.floor(+body.tokenBalance))
@@ -1824,6 +1856,46 @@ async function handleAdmin(request, env, pathname) {
         discordId: String(body.discordId ?? existing.discordId ?? '').trim(),
         createdAt: existing.createdAt ?? now,
       };
+      // Konsistensi: tier di-set manual beda dengan plan aktif → plan dihapus.
+      if (!body.planAction && !body.planTier && account.plan) {
+        if (String(account.plan.tier || '') !== String(account.tier || '')) {
+          delete account.plan;
+        }
+      }
+      // Plan membersihkan/mengubah tier secara manual di dashboard.
+      //   body.planAction = 'clear'          → hapus plan, tier kembali free
+      //   body.planTier = 'vip' | 'pro'      → beri/perpanjang plan 30 hari
+      //   body.planDays = N (opsional)       → perpanjang N hari (default 30)
+      if (body.planAction === 'clear') {
+        delete account.plan;
+        account.tier = 'free';
+        account.dailyRequestLimit = 0;
+      } else if (typeof body.planTier === 'string' &&
+                 PLAN_TIERS.includes(String(body.planTier).toLowerCase()) &&
+                 String(body.planTier).toLowerCase() !== 'none') {
+        const tier = String(body.planTier).toLowerCase();
+        const days = Number.isFinite(+body.planDays)
+          ? Math.max(1, Math.floor(+body.planDays))
+          : PLAN_MEMBERSHIP_DURATION_DAYS;
+        const prevTier = String(account.tier || 'free')
+          .replace(/^(vip|pro)$/, 'free');
+        account.plan = {
+          id: `admin-${tier}-${now.toString(36)}`,
+          name: tier.toUpperCase(),
+          tier,
+          expiresAt: now + days * MS_PER_DAY,
+          durationDays: days,
+          createdAt: now,
+          prevTier,
+          prevDailyReqLimit: Math.max(0,
+            Math.floor(Number(existing.dailyRequestLimit) || 0)),
+        };
+        account.tier = tier;
+        // dailyReqLimit admin-set atau membership-default kalau kosong.
+        if (!(Number(account.dailyRequestLimit) > 0)) {
+          account.dailyRequestLimit = tier === 'pro' ? 45 : 30;
+        }
+      }
       await env.PB_KV.put(`account:${id}`, JSON.stringify(account));
       if (account.discordId) {
         await env.PB_KV.put(`link:${account.discordId}`, id);
@@ -1954,12 +2026,30 @@ async function handleAdmin(request, env, pathname) {
       const tokenBonus = Math.max(0, Math.floor(Number(grants.tokenBonus) || 0));
       const tier = PLAN_TIERS.includes(String(grants.tier)) ? grants.tier : 'none';
       const dailyReqLimit = Math.max(0, Math.floor(Number(grants.dailyReqLimit) || 0));
+      const durationDays = Math.max(0, Math.floor(Number(grants.durationDays) ||
+        (PLAN_MEMBERSHIP_DURATION_DAYS)));
       existing.creditBalance =
         Math.round((Number(existing.creditBalance || 0) + credits) * 1e8) / 1e8;
       existing.tokenBalance =
         Math.floor(Number(existing.tokenBalance || 0) + tokenBonus);
-      if (tier !== 'none') existing.tier = tier;
-      if (dailyReqLimit > 0) existing.dailyRequestLimit = dailyReqLimit;
+      if (tier !== 'none') {
+        const prevTier = String(existing.tier || 'free').toLowerCase() || 'free';
+        const prevLimit = Math.max(0, Math.floor(Number(existing.dailyRequestLimit) || 0));
+        existing.tier = tier;
+        if (dailyReqLimit > 0) existing.dailyRequestLimit = dailyReqLimit;
+        // Membership 30 hari: simpan plan + tanggal kedaluwarsa.
+        // Saat habis, applyPlanExpiry() mengembalikan tier & limit ke semula.
+        existing.plan = {
+          id: String(grants.planId || ''),
+          name: String(grants.planName || grants.tier),
+          tier,
+          expiresAt: Date.now() + durationDays * MS_PER_DAY,
+          durationDays,
+          createdAt: Date.now(),
+          prevTier,
+          prevDailyReqLimit: prevLimit,
+        };
+      }
       existing.planLastPurchaseAt = Date.now();
       await env.PB_KV.put(key, JSON.stringify(existing));
       orders[idx].status = 'paid';
@@ -2825,6 +2915,7 @@ async function handleBotApi(request, env, pathname) {
         message: 'Akun Discord belum terdaftar atau belum login di web.',
       });
     }
+    account = await applyPlanExpiry(env, account);
 
     const tokenBalance = account.tokenBalance ?? config.loginTokenBalance ?? 20000000;
     const tokenUsed = account.tokenUsed ?? 0;
@@ -2870,6 +2961,7 @@ async function handleBotApi(request, env, pathname) {
     if (!account) {
       return jsonResponse(request, 404, { error: 'Account not found for this discord_id.' });
     }
+    account = await applyPlanExpiry(env, account);
     account.tier = tier;
     await env.PB_KV.put(`account:${account.id}`, JSON.stringify(account));
     return jsonResponse(request, 200, { ok: true, account });
@@ -2893,6 +2985,7 @@ async function handleBotApi(request, env, pathname) {
     if (!account) {
       return jsonResponse(request, 404, { error: 'Account not found for this discord_id.' });
     }
+    account = await applyPlanExpiry(env, account);
     account.tokenBalance = (account.tokenBalance ?? 0) + tokens;
     await env.PB_KV.put(`account:${account.id}`, JSON.stringify(account));
     return jsonResponse(request, 200, { ok: true, account });
@@ -3335,6 +3428,7 @@ async function handleGateway(request, env, pathname) {
         tokenBonus: p.tokenBonus,
         tier: p.tier,
         dailyReqLimit: p.dailyReqLimit,
+        durationDays: p.durationDays || 0,
         description: p.description,
       })),
     });
@@ -3387,6 +3481,10 @@ async function handleGateway(request, env, pathname) {
         tokenBonus: plan.tokenBonus,
         tier: plan.tier,
         dailyReqLimit: plan.dailyReqLimit,
+        planId: plan.id,
+        planName: plan.name,
+        kind: plan.kind,
+        durationDays: plan.durationDays || 0,
       },
     };
     orders.unshift(order);

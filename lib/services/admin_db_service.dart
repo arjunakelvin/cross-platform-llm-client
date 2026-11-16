@@ -7,6 +7,49 @@ import '../core/constants.dart';
 import 'hive_service.dart';
 
 /// One account row managed from the admin dashboard's database section.
+class PlanInfo {
+  final String id;
+  final String name;
+  final String tier; // 'vip' | 'pro'
+  final int expiresAt; // epoch ms
+  final int durationDays;
+  final int createdAt;
+
+  PlanInfo({
+    required this.id,
+    required this.name,
+    required this.tier,
+    required this.expiresAt,
+    this.durationDays = 30,
+    this.createdAt = 0,
+  });
+
+  bool get active => expiresAt > DateTime.now().millisecondsSinceEpoch;
+
+  int get daysLeft =>
+      ((expiresAt - DateTime.now().millisecondsSinceEpoch) / 86400000).ceil();
+
+  String get tierLabel => tier.toUpperCase();
+
+  Map<String, dynamic> toMap() => {
+        'id': id,
+        'name': name,
+        'tier': tier,
+        'expiresAt': expiresAt,
+        'durationDays': durationDays,
+        'createdAt': createdAt,
+      };
+
+  factory PlanInfo.fromMap(Map<dynamic, dynamic> m) => PlanInfo(
+        id: (m['id'] ?? m['planId'] ?? '').toString(),
+        name: (m['name'] ?? m['planName'] ?? '').toString(),
+        tier: (m['tier'] ?? 'vip').toString().toLowerCase(),
+        expiresAt: (m['expiresAt'] as num?)?.toInt() ?? 0,
+        durationDays: (m['durationDays'] as num?)?.toInt() ?? 30,
+        createdAt: (m['createdAt'] as num?)?.toInt() ?? 0,
+      );
+}
+
 class AdminAccount {
   final String id;
   final String name;
@@ -21,6 +64,7 @@ class AdminAccount {
   final String status; // 'active' | 'banned'
   final String discordId; // Discord (DS) account id, '' when unlinked
   final int createdAt; // epoch ms
+  final PlanInfo? plan; // membership plan aktif (VIP/Pro)
 
   AdminAccount({
     required this.id,
@@ -36,6 +80,7 @@ class AdminAccount {
     this.status = 'active',
     this.discordId = '',
     required this.createdAt,
+    this.plan,
   });
 
   Map<String, dynamic> toMap() => {
@@ -52,6 +97,7 @@ class AdminAccount {
         'status': status,
         'discordId': discordId,
         'createdAt': createdAt,
+        if (plan != null) 'plan': plan!.toMap(),
       };
 
   factory AdminAccount.fromMap(Map<dynamic, dynamic> m) => AdminAccount(
@@ -68,6 +114,9 @@ class AdminAccount {
         status: (m['status'] ?? 'active').toString(),
         discordId: (m['discordId'] ?? '').toString(),
         createdAt: (m['createdAt'] as num?)?.toInt() ?? 0,
+        plan: m['plan'] is Map
+            ? PlanInfo.fromMap(Map<dynamic, dynamic>.from(m['plan'] as Map))
+            : null,
       );
 
   AdminAccount copyWith({
@@ -81,6 +130,7 @@ class AdminAccount {
     int? lastReset,
     String? status,
     String? discordId,
+    PlanInfo? plan,
   }) =>
       AdminAccount(
         id: id,
@@ -96,6 +146,7 @@ class AdminAccount {
         status: status ?? this.status,
         discordId: discordId ?? this.discordId,
         createdAt: createdAt,
+        plan: plan ?? this.plan,
       );
 }
 
@@ -119,9 +170,8 @@ class AdminDbConfig {
 
   factory AdminDbConfig.fromMap(Map<dynamic, dynamic> m) => AdminDbConfig(
         resetDays: (m['resetDays'] as num?)?.toInt() ?? 1,
-        defaultTokenBalance:
-            (m['defaultTokenBalance'] as num?)?.toInt() ??
-                AppConstants.defaultTokenBalance,
+        defaultTokenBalance: (m['defaultTokenBalance'] as num?)?.toInt() ??
+            AppConstants.defaultTokenBalance,
         defaultCreditBalance:
             (m['defaultCreditBalance'] as num?)?.toDouble() ?? 0.0,
       );
@@ -159,10 +209,7 @@ class AdminDbService {
     final raw = _hive.getSetting<List>(AppConstants.keyAdminDbAccounts,
             defaultValue: const []) ??
         const [];
-    return raw
-        .whereType<Map>()
-        .map((m) => AdminAccount.fromMap(m))
-        .toList();
+    return raw.whereType<Map>().map((m) => AdminAccount.fromMap(m)).toList();
   }
 
   Future<void> saveLocalAccounts(List<AdminAccount> accounts) async {
@@ -178,8 +225,7 @@ class AdminDbService {
   }
 
   Future<void> saveLocalConfig(AdminDbConfig config) async {
-    await _hive.setSetting(
-        AppConstants.keyAdminDbConfig, config.toMap());
+    await _hive.setSetting(AppConstants.keyAdminDbConfig, config.toMap());
   }
 
   // ── Remote DB (REST) ──────────────────────────────────────────────────
@@ -202,7 +248,8 @@ class AdminDbService {
   String _normUrl(String raw) => raw.replaceAll(RegExp(r'/+$'), '');
 
   Future<List<AdminAccount>> fetchRemoteAccounts() async {
-    final res = await http.get(Uri.parse('${_normUrl(dbUrl)}/admin/accounts'),
+    final res = await http
+        .get(Uri.parse('${_normUrl(dbUrl)}/admin/accounts'),
             headers: _remoteHeaders)
         .timeout(const Duration(seconds: 20));
     if (res.statusCode != 200) {
@@ -210,14 +257,12 @@ class AdminDbService {
     }
     final data = jsonDecode(res.body);
     final list = data is List ? data : (data['accounts'] as List? ?? const []);
-    return list
-        .whereType<Map>()
-        .map((m) => AdminAccount.fromMap(m))
-        .toList();
+    return list.whereType<Map>().map((m) => AdminAccount.fromMap(m)).toList();
   }
 
   Future<AdminDbConfig> fetchRemoteConfig() async {
-    final res = await http.get(Uri.parse('${_normUrl(dbUrl)}/admin/config'),
+    final res = await http
+        .get(Uri.parse('${_normUrl(dbUrl)}/admin/config'),
             headers: _remoteHeaders)
         .timeout(const Duration(seconds: 20));
     if (res.statusCode != 200) {
@@ -227,32 +272,38 @@ class AdminDbService {
   }
 
   Future<void> upsertRemoteAccount(AdminAccount account) async {
-    final res = await http.post(
-      Uri.parse('${_normUrl(dbUrl)}/admin/accounts/${account.id}'),
-      headers: _remoteHeaders,
-      body: jsonEncode(account.toMap()),
-    ).timeout(const Duration(seconds: 20));
+    final res = await http
+        .post(
+          Uri.parse('${_normUrl(dbUrl)}/admin/accounts/${account.id}'),
+          headers: _remoteHeaders,
+          body: jsonEncode(account.toMap()),
+        )
+        .timeout(const Duration(seconds: 20));
     if (res.statusCode >= 400) {
       throw Exception('HTTP ${res.statusCode}: ${res.body}');
     }
   }
 
   Future<void> deleteRemoteAccount(String id) async {
-    final res = await http.delete(
-      Uri.parse('${_normUrl(dbUrl)}/admin/accounts/$id'),
-      headers: _remoteHeaders,
-    ).timeout(const Duration(seconds: 20));
+    final res = await http
+        .delete(
+          Uri.parse('${_normUrl(dbUrl)}/admin/accounts/$id'),
+          headers: _remoteHeaders,
+        )
+        .timeout(const Duration(seconds: 20));
     if (res.statusCode >= 400) {
       throw Exception('HTTP ${res.statusCode}: ${res.body}');
     }
   }
 
   Future<void> patchRemoteConfig(AdminDbConfig config) async {
-    final res = await http.patch(
-      Uri.parse('${_normUrl(dbUrl)}/admin/config'),
-      headers: _remoteHeaders,
-      body: jsonEncode(config.toMap()),
-    ).timeout(const Duration(seconds: 20));
+    final res = await http
+        .patch(
+          Uri.parse('${_normUrl(dbUrl)}/admin/config'),
+          headers: _remoteHeaders,
+          body: jsonEncode(config.toMap()),
+        )
+        .timeout(const Duration(seconds: 20));
     if (res.statusCode >= 400) {
       throw Exception('HTTP ${res.statusCode}: ${res.body}');
     }
@@ -261,7 +312,8 @@ class AdminDbService {
   /// Quick connectivity check for the remote DB.
   Future<String> testRemote() async {
     final res = await http
-        .get(Uri.parse('${_normUrl(dbUrl)}/admin/health'), headers: _remoteHeaders)
+        .get(Uri.parse('${_normUrl(dbUrl)}/admin/health'),
+            headers: _remoteHeaders)
         .timeout(const Duration(seconds: 15));
     if (res.statusCode != 200) {
       return 'Gagal: HTTP ${res.statusCode}';

@@ -876,6 +876,7 @@ async with aiohttp.ClientSession() as session:<br>
               <th>Sisa token</th>
               <th>Kredit (sisa)</th><th>Kredit terpakai</th>
               <th>Req/hari</th>
+              <th>Plan</th>
               <th>Status</th><th></th>
             </tr>
           </thead>
@@ -1109,6 +1110,26 @@ function fmtProofCell(o) {
   return '<td><img loading="lazy" alt="bukti" src="' + src + '" ' +
     'style="max-height:120px; max-width:150px; border-radius:8px; cursor:zoom-in" ' +
     'onclick="window.open(this.src, \'_blank\')"></td>';
+}
+
+function planCell(a) {
+  const plan = a && a.plan;
+  const exp = plan && Number(plan.expiresAt) || 0;
+  const remaining = Math.max(0, Math.ceil((exp - Date.now()) / 86400000));
+  if (plan && exp > Date.now()) {
+    const name = escapeHtml(plan.name || ('Tier ' + String(plan.tier || '').toUpperCase()));
+    return '<td>' +
+      '<span class="pill ' + (plan.tier === 'pro' ? 'info' : 'active') + '">' + name + '</span><br>' +
+      '<span style="font-size:11px; color:var(--muted)">' + remaining + ' hari lagi</span><br>' +
+      '<div class="actions" style="margin-top:6px">' +
+        '<button data-act="plan-clear">Hapus plan</button>' +
+      '</div>' +
+    '</td>';
+  }
+  return '<td><div class="actions">' +
+    '<button data-act="plan-vip">VIP 30h</button>' +
+    '<button data-act="plan-pro">PRO 30h</button>' +
+  '</div></td>';
 }
 
 function planRowHtml(p, i) {
@@ -1588,6 +1609,7 @@ function renderAccounts() {
         (Number(a.creditBalance ?? 0)).toFixed(2) + '"></td>' +
       '<td class="mono">' + fmtMoney(a.creditUsed ?? 0) + '</td>' +
       '<td><input type="number" data-f="dailyRequestLimit" min="0" step="1" title="Req/hari (kosong=auto dari tier)" value="' + (a.dailyRequestLimit ?? 0) + '"></td>' +
+      planCell(a) +
       '<td><span class="pill ' + (a.status === 'banned' ? 'banned' : 'active') + '">' +
         (a.status === 'banned' ? 'banned' : 'active') + '</span></td>' +
       '<td><div class="actions">' +
@@ -1598,7 +1620,7 @@ function renderAccounts() {
     '</tr>';
   });
   $('accountRows').innerHTML = rows.join('') ||
-    '<tr><td colspan="11" style="color:var(--muted)">Belum ada akun. Akun otomatis dibuat saat user login Discord.</td></tr>';
+    '<tr><td colspan="13" style="color:var(--muted)">Belum ada akun. Akun otomatis dibuat saat user login Discord.</td></tr>';
   setStatus($('accountsInfo'), currentAccounts.length + ' akun', null);
 }
 
@@ -1935,6 +1957,15 @@ $('accountRows').addEventListener('click', async (ev) => {
     if (act === 'delete') {
       if (!confirm('Hapus akun ini?')) return;
       await api('DELETE', '/api/admin/accounts/' + encodeURIComponent(id));
+    } else if (act === 'plan-vip' || act === 'plan-pro' || act === 'plan-clear') {
+      const tier = act === 'plan-vip' ? 'vip' : act === 'plan-pro' ? 'pro' : 'none';
+      if (act === 'plan-clear' && !confirm('Hapus plan dari akun ini?')) return;
+      await api('POST', '/api/admin/accounts/' + encodeURIComponent(id), {
+        id,
+        planAction: act === 'plan-clear' ? 'clear' : 'set',
+        planTier: tier,
+        planDays: 30,
+      });
     } else {
       const account = rowAccount(tr);
       if (act === 'ban') {

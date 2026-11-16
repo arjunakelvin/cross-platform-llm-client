@@ -7,6 +7,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../controllers/settings_controller.dart';
 import '../core/format.dart';
 import '../core/ui.dart';
+import '../services/admin_db_service.dart';
 import '../services/discord_service.dart';
 
 /// Angka dengan pemisah ribuan (mis. 12,000).
@@ -106,9 +107,7 @@ class TokenQuotaCard extends StatelessWidget {
           const SizedBox(height: 12),
           QuotaProgressBar(
             remaining: (1 - ratio).clamp(0.0, 1.0),
-            color: ratio >= 0.8
-                ? t.red
-                : (ratio >= 0.5 ? t.orange : t.green),
+            color: ratio >= 0.8 ? t.red : (ratio >= 0.5 ? t.orange : t.green),
           ),
           const SizedBox(height: 8),
           Row(
@@ -164,6 +163,207 @@ class TokenQuotaCard extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// Kartu Membership Plan (VIP/Pro) — tampilkan paket aktif beserta hitung
+/// mundur kedaluwarsa. Saat expired, akun otomatis kembali ke tier Free.
+class MembershipPlanCard extends StatelessWidget {
+  final String tier;
+  final PlanInfo? plan;
+
+  const MembershipPlanCard({super.key, required this.tier, this.plan});
+
+  static const _vipGradient = [
+    Color(0xFF8B5CF6),
+    Color(0xFFC026D3),
+  ];
+  static const _proGradient = [
+    Color(0xFF0A84FF),
+    Color(0xFF2563EB),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final effectiveTier = tier.toLowerCase();
+    if (effectiveTier != 'vip' && effectiveTier != 'pro') {
+      return const SizedBox.shrink();
+    }
+
+    final isVip = effectiveTier == 'vip';
+    final gradient = isVip ? _vipGradient : _proGradient;
+    final tagLabel = isVip ? 'VIP MEMBERSHIP' : 'PRO MEMBERSHIP';
+    final planName = plan == null || plan!.name.trim().isEmpty
+        ? '${effectiveTier.toUpperCase()} Membership'
+        : plan!.name;
+
+    // Hitung mundur kedaluwarsa (30 hari default). Kalau plan tidak
+    // punya expiry (mis. di-set manual dari dashboard), tampilkan "Tanpa batas".
+    final hasExpiry = plan != null && (plan!.expiresAt) > 0;
+    final daysLeft = hasExpiry ? plan!.daysLeft : 0;
+    final totalDays = plan?.durationDays ?? 30;
+    final remainingRatio = hasExpiry && totalDays > 0
+        ? (daysLeft / totalDays).clamp(0.0, 1.0)
+        : 1.0;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        gradient: LinearGradient(
+          colors: gradient,
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.25),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: gradient.first.withValues(alpha: 0.45),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  isVip
+                      ? Icons.workspace_premium_rounded
+                      : Icons.rocket_launch_rounded,
+                  color: Colors.white,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(tagLabel,
+                        style: GoogleFonts.inter(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1.2,
+                            color: Colors.white.withValues(alpha: 0.85))),
+                    const SizedBox(height: 2),
+                    Text(planName,
+                        style: GoogleFonts.inter(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -0.3,
+                            color: Colors.white)),
+                  ],
+                ),
+              ),
+              Icon(isVip ? Icons.auto_awesome : Icons.bolt_rounded,
+                  color: Colors.white.withValues(alpha: 0.9), size: 26),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              if (hasExpiry) ...[
+                Text('$daysLeft',
+                    style: GoogleFonts.inter(
+                        fontSize: 34,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -1,
+                        color: Colors.white)),
+                const SizedBox(width: 8),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(daysLeft == 1 ? 'hari tersisa' : 'hari tersisa',
+                      style: GoogleFonts.inter(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white.withValues(alpha: 0.85))),
+                ),
+              ] else ...[
+                Text('∞',
+                    style: GoogleFonts.inter(
+                        fontSize: 38,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -1,
+                        color: Colors.white)),
+                const SizedBox(width: 8),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text('Tanpa batas waktu',
+                      style: GoogleFonts.inter(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white.withValues(alpha: 0.85))),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: SizedBox(
+              height: 8,
+              child: LinearProgressIndicator(
+                value: remainingRatio,
+                backgroundColor: Colors.white.withValues(alpha: 0.25),
+                valueColor: AlwaysStoppedAnimation<Color>(
+                    Colors.white.withValues(alpha: 0.95)),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Icon(Icons.schedule_rounded,
+                  size: 12, color: Colors.white.withValues(alpha: 0.8)),
+              const SizedBox(width: 4),
+              Text(
+                hasExpiry
+                    ? (daysLeft <= 3
+                        ? 'Segera berakhir — perpanjang sekarang!'
+                        : 'Aktif sampai ${_fmtPlanDate(plan!.expiresAt)}')
+                    : 'Membership permanen (tanpa kedaluwarsa)',
+                style: GoogleFonts.inter(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white.withValues(alpha: 0.85)),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _fmtPlanDate(int epochMs) {
+    final dt = DateTime.fromMillisecondsSinceEpoch(epochMs);
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'Mei',
+      'Jun',
+      'Jul',
+      'Agu',
+      'Sep',
+      'Okt',
+      'Nov',
+      'Des',
+    ];
+    return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
   }
 }
 
@@ -273,8 +473,7 @@ class CreditQuotaCard extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
                   color: accent.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(999),
@@ -308,17 +507,14 @@ class CreditQuotaCard extends StatelessWidget {
               const SizedBox(width: 6),
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
-                child: Text('tersisa',
-                    style: t.small.copyWith(color: t.muted)),
+                child: Text('tersisa', style: t.small.copyWith(color: t.muted)),
               ),
             ],
           ),
           const SizedBox(height: 10),
           QuotaProgressBar(
             remaining: left,
-            color: ratio >= 0.8
-                ? t.red
-                : (ratio >= 0.5 ? t.orange : t.green),
+            color: ratio >= 0.8 ? t.red : (ratio >= 0.5 ? t.orange : t.green),
           ),
           const SizedBox(height: 8),
           Row(
@@ -397,9 +593,8 @@ class AccountInfoSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = AppTokens.of(context);
-    final discordService = Get.isRegistered<DiscordService>()
-        ? Get.find<DiscordService>()
-        : null;
+    final discordService =
+        Get.isRegistered<DiscordService>() ? Get.find<DiscordService>() : null;
     final settings = Get.find<SettingsController>();
 
     return SafeArea(
@@ -413,9 +608,10 @@ class AccountInfoSheet extends StatelessWidget {
             final user = discordService?.sessionUser.value;
             final account = discordService?.sessionAccount.value;
             final isLoggedIn = discordService?.isLoggedIn == true;
-            final tier = discordService?.sessionTier.value.trim().isNotEmpty == true
-                ? discordService!.sessionTier.value
-                : 'Free';
+            final tier =
+                discordService?.sessionTier.value.trim().isNotEmpty == true
+                    ? discordService!.sessionTier.value
+                    : 'Free';
             final accountTier = account?.tier ?? tier;
             final isAdmin = discordService?.isDsAdmin.value == true;
 
@@ -458,8 +654,10 @@ class AccountInfoSheet extends StatelessWidget {
                       ),
                       child: Center(
                         child: isLoggedIn
-                            ? const Icon(Icons.discord_rounded, color: Colors.white, size: 28)
-                            : Icon(Icons.person_outline_rounded, color: t.muted, size: 28),
+                            ? const Icon(Icons.discord_rounded,
+                                color: Colors.white, size: 28)
+                            : Icon(Icons.person_outline_rounded,
+                                color: t.muted, size: 28),
                       ),
                     ),
                     const SizedBox(width: 14),
@@ -471,7 +669,9 @@ class AccountInfoSheet extends StatelessWidget {
                             children: [
                               Flexible(
                                 child: Text(
-                                  isLoggedIn ? '@${user!.username}' : 'Tamu (Guest)',
+                                  isLoggedIn
+                                      ? '@${user!.username}'
+                                      : 'Tamu (Guest)',
                                   style: GoogleFonts.inter(
                                     fontSize: 18,
                                     fontWeight: FontWeight.w700,
@@ -498,7 +698,9 @@ class AccountInfoSheet extends StatelessWidget {
                                 tier.toUpperCase(),
                                 color: tier.toLowerCase() == 'vip'
                                     ? t.orange
-                                    : (tier.toLowerCase() == 'pro' ? t.accent : t.muted),
+                                    : (tier.toLowerCase() == 'pro'
+                                        ? t.accent
+                                        : t.muted),
                               ),
                               if (isAdmin) AppTag('ADMIN', color: t.red),
                               AppTag('Aktif', color: t.green),
@@ -513,6 +715,13 @@ class AccountInfoSheet extends StatelessWidget {
                 const SizedBox(height: 18),
                 Divider(height: 1, color: t.hairline),
                 const SizedBox(height: 16),
+
+                // Kartu Membership Plan (VIP/Pro) + hitung mundur kedaluwarsa.
+                MembershipPlanCard(
+                  tier: accountTier,
+                  plan: account?.plan,
+                ),
+                const SizedBox(height: 14),
 
                 // Card Kuota Token
                 TokenQuotaCard(
@@ -550,7 +759,6 @@ class AccountInfoSheet extends StatelessWidget {
                     children: [
                       Text('Detail Akun & Bot Verifikasi', style: t.label),
                       const SizedBox(height: 10),
-
                       if (isLoggedIn) ...[
                         _infoItem(
                           context,
@@ -567,13 +775,16 @@ class AccountInfoSheet extends StatelessWidget {
                               );
                             },
                             child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Icon(Icons.copy_rounded, size: 13, color: t.accent),
+                                  Icon(Icons.copy_rounded,
+                                      size: 13, color: t.accent),
                                   const SizedBox(width: 4),
-                                  Text('Salin ID', style: t.small.copyWith(color: t.accent)),
+                                  Text('Salin ID',
+                                      style: t.small.copyWith(color: t.accent)),
                                 ],
                               ),
                             ),
@@ -581,26 +792,36 @@ class AccountInfoSheet extends StatelessWidget {
                         ),
                         if (user.email.isNotEmpty)
                           _infoItem(context, label: 'Email', value: user.email),
-                        _infoItem(context, label: 'Tipe Akun', value: 'Discord Member (${accountTier.toUpperCase()})'),
+                        _infoItem(context,
+                            label: 'Tipe Akun',
+                            value:
+                                'Discord Member (${accountTier.toUpperCase()})'),
                       ] else ...[
-                        _infoItem(context, label: 'Status Login', value: 'Belum terhubung ke Discord'),
-                        _infoItem(context, label: 'Kuota Saat Ini', value: '${_fmtComma(maxTokens)} Token (Guest)'),
+                        _infoItem(context,
+                            label: 'Status Login',
+                            value: 'Belum terhubung ke Discord'),
+                        _infoItem(context,
+                            label: 'Kuota Saat Ini',
+                            value: '${_fmtComma(maxTokens)} Token (Guest)'),
                         const SizedBox(height: 6),
                         Container(
                           padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(
                             color: discordPurple.withValues(alpha: 0.10),
                             borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: discordPurple.withValues(alpha: 0.25)),
+                            border: Border.all(
+                                color: discordPurple.withValues(alpha: 0.25)),
                           ),
                           child: Row(
                             children: [
-                              const Icon(Icons.card_giftcard_rounded, color: discordPurple, size: 20),
+                              const Icon(Icons.card_giftcard_rounded,
+                                  color: discordPurple, size: 20),
                               const SizedBox(width: 8),
                               Expanded(
                                 child: Text(
                                   'Login dengan Discord memberikan tambahan +10M token gratis (total 20M) dan akses verifikasi Bot Discord!',
-                                  style: t.small.copyWith(color: t.text, height: 1.3),
+                                  style: t.small
+                                      .copyWith(color: t.text, height: 1.3),
                                 ),
                               ),
                             ],
@@ -622,7 +843,8 @@ class AccountInfoSheet extends StatelessWidget {
                         backgroundColor: discordPurple,
                         foregroundColor: Colors.white,
                         elevation: 0,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
                       ),
                       onPressed: () async {
                         Navigator.of(context).pop();
@@ -640,7 +862,8 @@ class AccountInfoSheet extends StatelessWidget {
                       icon: const Icon(Icons.discord_rounded, size: 20),
                       label: Text(
                         'Hubungkan Akun Discord (+10M Token)',
-                        style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 14),
+                        style: GoogleFonts.inter(
+                            fontWeight: FontWeight.w600, fontSize: 14),
                       ),
                     ),
                   )
@@ -652,7 +875,8 @@ class AccountInfoSheet extends StatelessWidget {
                           style: OutlinedButton.styleFrom(
                             foregroundColor: t.text,
                             side: BorderSide(color: t.hairline),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
                             padding: const EdgeInsets.symmetric(vertical: 12),
                           ),
                           onPressed: () {
@@ -672,14 +896,17 @@ class AccountInfoSheet extends StatelessWidget {
                         child: OutlinedButton.icon(
                           style: OutlinedButton.styleFrom(
                             foregroundColor: t.red,
-                            side: BorderSide(color: t.red.withValues(alpha: 0.3)),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            side:
+                                BorderSide(color: t.red.withValues(alpha: 0.3)),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
                             padding: const EdgeInsets.symmetric(vertical: 12),
                           ),
                           onPressed: () async {
                             Navigator.of(context).pop();
                             await discordService?.logoutDiscord();
-                            showToast('Logout', 'Akun Discord telah keluar.', tone: ToastTone.info);
+                            showToast('Logout', 'Akun Discord telah keluar.',
+                                tone: ToastTone.info);
                           },
                           icon: const Icon(Icons.logout_rounded, size: 16),
                           label: const Text('Logout'),
@@ -717,7 +944,8 @@ class AccountInfoSheet extends StatelessWidget {
                 Flexible(
                   child: Text(
                     value,
-                    style: t.small.copyWith(fontWeight: FontWeight.w500, color: t.text),
+                    style: t.small
+                        .copyWith(fontWeight: FontWeight.w500, color: t.text),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
