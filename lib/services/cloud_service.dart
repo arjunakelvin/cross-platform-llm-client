@@ -552,7 +552,8 @@ class CloudService extends GetxService {
     }
 
     final data = jsonDecode(response.body);
-    return data['choices'][0]['message']['content'] ?? '';
+    return _openAiContentToResponse(
+        data['choices'][0]['message']['content'], 'provider');
   }
 
   // ─── Anthropic ──────────────────────────────────
@@ -622,7 +623,31 @@ class CloudService extends GetxService {
 
     final data = jsonDecode(response.body);
     final content = data['content'] as List;
-    return content.isNotEmpty ? content[0]['text'] ?? '' : '';
+    if (content.isEmpty) return '';
+    // Anthropic mengembalikan content sebagai list blok; image block bisa
+    // ikut (mis. model yang menghasilkan gambar). Deteksi gambar dulu.
+    String? generatedImage;
+    final textParts = <String>[];
+    for (final part in content) {
+      if (part is! Map) continue;
+      if (part['type'] == 'image') {
+        final source = part['source'];
+        if (source is Map) {
+          final bytes = source['data'] ?? source['bytes'];
+          if (bytes is String && bytes.isNotEmpty) {
+            generatedImage = bytes;
+          }
+        }
+      } else if (part['type'] == 'text' && part['text'] is String) {
+        textParts.add(part['text'] as String);
+      }
+    }
+    if (generatedImage != null) {
+      return '[IMAGE_BASE64]$generatedImage';
+    }
+    return textParts.isNotEmpty
+        ? textParts.join()
+        : (content[0]['text']?.toString() ?? '');
   }
 
   // ─── Google Gemini ──────────────────────────────
@@ -679,7 +704,30 @@ class CloudService extends GetxService {
     final candidates = data['candidates'] as List?;
     if (candidates != null && candidates.isNotEmpty) {
       final contentParts = candidates[0]['content']['parts'] as List;
-      return contentParts.map((p) => p['text'] ?? '').join('');
+      // Ekstrak gambar (inlineData) dari respons model yang mendukung image
+      // generation (mis. gemini-2.5-flash-image).
+      final images = <String>[];
+      final textParts = <String>[];
+      for (final part in contentParts) {
+        if (part is! Map) continue;
+        final inline = part['inlineData'] ?? part['inline_data'];
+        if (inline is Map) {
+          final data = inline['data'];
+          final mime =
+              (inline['mimeType'] ?? inline['mime_type'] ?? '').toString();
+          if (data is String && mime.startsWith('image/')) {
+            images.add(data);
+            continue;
+          }
+        }
+        final text = part['text'];
+        if (text is String) textParts.add(text);
+      }
+      // Gambar menang — chat hanya mengenali [IMAGE_BASE64]<base64> murni.
+      if (images.isNotEmpty) {
+        return '[IMAGE_BASE64]${images.first}';
+      }
+      return textParts.join();
     }
     return '';
   }
@@ -717,7 +765,8 @@ class CloudService extends GetxService {
     }
 
     final data = jsonDecode(response.body);
-    return data['choices'][0]['message']['content'] ?? '';
+    return _openAiContentToResponse(
+        data['choices'][0]['message']['content'], 'provider');
   }
 
   Future<String> _sendNvidia(
@@ -767,7 +816,8 @@ class CloudService extends GetxService {
     }
 
     final data = jsonDecode(response.body);
-    return data['choices'][0]['message']['content'] ?? '';
+    return _openAiContentToResponse(
+        data['choices'][0]['message']['content'], 'provider');
   }
 
   Future<String> _sendOpenRouter(
@@ -1232,8 +1282,9 @@ class CloudService extends GetxService {
         return _friendlyApiError(providerLabel, 200, response.body);
       }
       final message = data['choices'][0]['message'];
-      final content =
-          message is Map ? message['content']?.toString() ?? '' : '';
+      final content = message is Map
+          ? _openAiContentToResponse(message['content'], providerLabel)
+          : '';
       if (content.isNotEmpty) return content;
       // Reasoning models can spend the whole reply thinking; show the
       // thought instead of an empty message.
@@ -1309,6 +1360,8 @@ class CloudService extends GetxService {
       // Gateways sometimes answer a stream request with a plain JSON error
       // (no `data:` lines). Keep it so we can explain the failure.
       final nonSseBody = StringBuffer();
+      // Gambar yang dihasilkan model (dalam delta parts) → tampil di chat.
+      final generatedImages = <String>[];
       final lines = response.stream
           .timeout(streamIdleTimeout)
           .transform(utf8.decoder)
@@ -1407,7 +1460,47 @@ class CloudService extends GetxService {
           onToken(reasoningToken);
         }
 
-        final token = delta['content']?.toString();
+        // delta.content bisa string ATAU list of parts (menurut provider).
+        final deltaContentRaw = delta['content'];
+        if (deltaContentRaw is List) {
+          // Multimodal stream (mis. model generate gambar): kumpulkan teks
+          // dan gambar terpisah.
+          for (final part in deltaContentRaw) {
+            if (part is! Map) continue;
+            if (part['type'] == 'text' && part['text'] is String &&
+                (part['text'] as String).isNotEmpty) {
+              if (inReasoning) {
+                inReasoning = false;
+                buffer.write('$_thinkClose\n\n');
+                onToken('$_thinkClose\n\n');
+              }
+              hasContent = true;
+              buffer.write(part['text'] as String);
+              onToken(part['text'] as String);
+              continue;
+            }
+            if (part['type'] == 'image_url') {
+              final imageUrl = part['image_url'];
+              final url = (imageUrl is Map ? imageUrl['url'] : imageUrl)?.toString();
+              if (url != null && url.startsWith('data:')) {
+                final comma = url.indexOf(',');
+                final base64 = comma > 0 ? url.substring(comma + 1) : '';
+                if (base64.isNotEmpty) generatedImages.add(base64);
+              }
+              continue;
+            }
+            if (part['type'] == 'image' && part['source'] is Map) {
+              final src = part['source'] as Map;
+              final srcData = src['data'];
+              if (src['type']?.toString() == 'base64' && srcData is String &&
+                  srcData.isNotEmpty) {
+                generatedImages.add(srcData);
+              }
+            }
+          }
+        } else {
+          final token = deltaContentRaw?.toString();
+
         if (token != null && token.isNotEmpty) {
           if (inReasoning) {
             inReasoning = false;
@@ -1418,6 +1511,13 @@ class CloudService extends GetxService {
           buffer.write(token);
           onToken(token);
         }
+          }
+        }
+
+      // Gambar dari provider (dalam SSE parts) ditampilkan sebagai pesan
+      // "image" di chat, memakai penanda [IMAGE_BASE64] yang dibaca UI.
+      if (generatedImages.isNotEmpty) {
+        return '[IMAGE_BASE64]${generatedImages.first}';
       }
 
       if (inReasoning) buffer.write('$_thinkClose\n\n');
@@ -1483,6 +1583,48 @@ class CloudService extends GetxService {
     }
 
     return apiMessages;
+  }
+
+  /// Ekstrak teks + gambar (bila ada) dari field `content` gaya OpenAI.
+  /// `content` bisa berupa string atau array part:
+  /// `[{type:'text',...},{type:'image_url',image_url:{url:'data:image/...'}}]`.
+  /// Mengembalikan teks murni + [IMAGE_BASE64]<base64> kalau ada gambar.
+  String _openAiContentToResponse(dynamic content, String providerLabel) {
+    if (content is String) return content;
+    if (content is! List) return '';
+    final textParts = <String>[];
+    final images = <String>[];
+    for (final part in content) {
+      if (part is! Map) continue;
+      final type = part['type']?.toString() ?? '';
+      if (type == 'text' || type == 'input_text') {
+        final text = part['text'];
+        if (text is String) textParts.add(text);
+        continue;
+      }
+      if (type == 'image_url') {
+        final imageUrl = part['image_url'];
+        final url = (imageUrl is Map ? imageUrl['url'] : imageUrl)?.toString();
+        if (url == null || url.isEmpty) continue;
+        if (url.startsWith('data:')) {
+          final comma = url.indexOf(',');
+          final base64 = comma > 0 ? url.substring(comma + 1) : url;
+          if (base64.isNotEmpty) images.add(base64);
+        }
+        continue;
+      }
+      if (type == 'image' && part['source'] is Map) {
+        final source = part['source'] as Map;
+        final data = source['data'];
+        if (source['type']?.toString() == 'base64' && data is String) {
+          images.add(data);
+        }
+      }
+    }
+    if (images.isNotEmpty) {
+      return '[IMAGE_BASE64]${images.first}';
+    }
+    return textParts.join();
   }
 
   // ─── Stability AI (Image Generation) ────────────

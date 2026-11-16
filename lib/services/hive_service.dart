@@ -30,6 +30,12 @@ class HiveService extends GetxService {
         key.startsWith('server_') &&
         !currentServerKeys.contains(key));
     await _settingsBox.deleteAll(obsoleteServerKeys);
+    // Auto-hapus media chat lama (3 hari) setiap kali app dibuka.
+    try {
+      await purgeExpiredMedia(maxAgeDays: 3);
+    } catch (_) {
+      // Jangan ganggu startup kalau purge error.
+    }
     return this;
   }
 
@@ -53,6 +59,46 @@ class HiveService extends GetxService {
 
   Future<void> saveSession(String id, Map<String, dynamic> data) async {
     await _sessionsBox.put(id, data);
+  }
+
+  /// Purge media (foto/video) di history chat yang lebih lama dari [maxAgeDays].
+  /// Pesan tetap ada; teks-nya diberi catatan bahwa media sudah dihapus.
+  /// Mengembalikan jumlah pesan yang di-update.
+  Future<int> purgeExpiredMedia({int maxAgeDays = 3}) async {
+    const mediaKeys = [
+      'imageBase64',
+      'videoPath',
+      'videoBase64',
+      'imagePath',
+      'videoUrl'
+    ];
+    final cutoff = DateTime.now().subtract(Duration(days: maxAgeDays));
+    var purged = 0;
+    for (final key in _messagesBox.keys.toList()) {
+      final raw = _messagesBox.get(key);
+      if (raw is! Map) continue;
+      final msg = Map<String, dynamic>.from(raw);
+      final hasMedia =
+          mediaKeys.any((k) => (msg[k] ?? '').toString().isNotEmpty);
+      if (!hasMedia) continue;
+      final ts = DateTime.tryParse((msg['timestamp'] ?? '').toString());
+      if (ts != null && ts.isAfter(cutoff)) continue;
+      // Bersihkan payload media.
+      for (final k in mediaKeys) {
+        msg.remove(k);
+      }
+      final note = 'Media ini sudah dihapus karena kadaluarsa.';
+      final content = (msg['content'] ?? '').toString().trimRight();
+      msg['content'] = content.isEmpty ? note : '$content\n\n$note';
+      msg['mediaPurgedAt'] = DateTime.now().millisecondsSinceEpoch;
+      try {
+        await _messagesBox.put(key, msg);
+        purged++;
+      } catch (_) {
+        // Tidak boleh menggagalkan start aplikasi.
+      }
+    }
+    return purged;
   }
 
   Future<void> deleteSession(String id) async {
