@@ -174,6 +174,24 @@ async function getWallets(env) {
 
 async function getPlanOrders(env) {
   const stored = await getJson(env.PB_KV, 'plan_orders', []);
+  // Lazy purge setiap kali dibaca: bukti >3 hari dihapus otomatis walaupun
+  // cron Cloudflare tidak tersedia di akun (butuh workers.dev subdomain).
+  const cutoff = Date.now() - 3 * MS_PER_DAY;
+  let changed = false;
+  for (const order of stored) {
+    if (order && order.proof && (Number(order.createdAt) || 0) < cutoff) {
+      order.proof = '';
+      order.proofDeletedAt = Date.now();
+      changed = true;
+    }
+  }
+  if (changed) {
+    try {
+      await env.PB_KV.put('plan_orders', JSON.stringify(stored));
+    } catch (_) {
+      // KV write gagal — jangan gagalkan read.
+    }
+  }
   return Array.isArray(stored) ? stored : [];
 }
 

@@ -46,4 +46,5 @@ routes = [
   { pattern = "piercingblow.ai.id/api/", zone_name = "piercingblow.ai.id" }
 ]
 
-triggers = { crons = ["0 3 * * *"] }
+# Cron hapus bukti >3 hari tidak dipakai — akun tidak punya workers.dev
+# subdomain, jadi cleanup dilakukan lazy di getPlanOrders.
