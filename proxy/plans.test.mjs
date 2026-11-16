@@ -361,6 +361,64 @@ test('order membership ditolak selama plan aktif (VIP bisa upgrade, PRO terkunci
     assert.equal(proAgain.status, 409, 'sudah PRO → PRO terkunci');
   });
 
+test('Limited Sale: maks 2 pembelian per user', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+  seedWallet(store);
+  store.set('plans', JSON.stringify([
+    { id: 'p-sale-u2', kind: 'credit', name: 'Sale 2x', priceIdr: 50000,
+      credits: 1, tokenBonus: 0, tier: 'none', dailyReqLimit: 0,
+      discountPercent: 10, saleEvent: 'Harbolnas', saleUntil: Date.now() + 86400000 * 7,
+      saleStock: 100, active: true, sort: 1 },
+  ]));
+  const buy = () => call(env, '/api/gateway/plans/order', {
+    method: 'POST', headers: jsonHeader(),
+    body: JSON.stringify({ planId: 'p-sale-u2', method: 'shopeepay' }),
+  });
+  assert.equal((await buy()).status, 200, 'beli #1 lolos');
+  assert.equal((await buy()).status, 200, 'beli #2 lolos');
+  const third = await buy();
+  assert.equal(third.status, 409, 'beli #3 ditolak');
+  const body = await third.json();
+  assert.match(String(body.error || ''), /maks 2x per user/);
+});
+
+test('Limited Sale: stok terbatas — habis = ditolak, reject mengembalikan stok',
+  async () => {
+    const { store, env } = makeEnv();
+    seedAccount(store);
+    seedWallet(store);
+    store.set('plans', JSON.stringify([
+      { id: 'p-sale-s1', kind: 'credit', name: 'Sale 1 Pcs', priceIdr: 50000,
+        credits: 1, tokenBonus: 0, tier: 'none', dailyReqLimit: 0,
+        discountPercent: 10, saleEvent: 'Harbolnas', saleUntil: Date.now() + 86400000 * 7,
+        saleStock: 1, active: true, sort: 1 },
+    ]));
+    const buy = () => call(env, '/api/gateway/plans/order', {
+      method: 'POST', headers: jsonHeader(),
+      body: JSON.stringify({ planId: 'p-sale-s1', method: 'gopay' }),
+    });
+    const first = await buy();
+    assert.equal(first.status, 200, 'beli #1 lolos (stok 1 → 0)');
+    const orderId = (await first.json()).order.id;
+
+    const blocked = await buy();
+    assert.equal(blocked.status, 409, 'stok habis → ditolak');
+    const blockedBody = await blocked.json();
+    assert.match(String(blockedBody.error || ''), /stok/i);
+
+    // Admin tolak pesanan #1 → stok kembali 1.
+    const reject = await call(env, `/api/admin/plan-orders/${orderId}/reject`, {
+      method: 'POST',
+      headers: { 'X-Admin-Key': ADMIN_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Bukti tidak valid.' }),
+    });
+    assert.equal(reject.status, 200);
+
+    const again = await buy();
+    assert.equal(again.status, 200, 'stok kembali setelah reject');
+  });
+
 test('harga pesanan memakai harga diskon saat sale aktif, harga asli kalau lewat',
   async () => {
     const { store, env } = makeEnv();

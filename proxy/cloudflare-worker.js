@@ -177,6 +177,8 @@ function cleanPlan(input, fallbackId) {
     Math.floor(Number(src.discountPercent) || 0)));
   const saleEvent = String(src.saleEvent || '').trim().slice(0, 80);
   const saleUntil = Math.max(0, Math.floor(Number(src.saleUntil) || 0));
+  // Stok Limited Sale (0 = tak terbatas). Berlaku hanya saat sale aktif.
+  const saleStock = Math.max(0, Math.floor(Number(src.saleStock) || 0));
   return {
     id,
     kind: PLAN_KINDS.includes(kind) ? kind : 'credit',
@@ -185,6 +187,7 @@ function cleanPlan(input, fallbackId) {
     discountPercent,
     saleEvent,
     saleUntil,
+    saleStock,
     credits: Math.max(0, Number(src.credits) || 0),
     tokenBonus: Math.max(0, Math.floor(Number(src.tokenBonus) || 0)),
     tier: PLAN_TIERS.includes(tier) ? tier : 'none',
@@ -244,6 +247,84 @@ async function getWallets(env) {
     if (wallet) cleaned.push(wallet);
   }
   return cleaned;
+}
+
+// Stok Limited Sale per plan: key `plan:<planId>@<saleKey>` → jumlah terjual.
+// `saleKey` = `saleUntil` (epoch ms) dari sale aktif, atau `always`. Kalau
+// admin membuat sale baru dengan tanggal berakhir yang berbeda, stok
+// otomatis mulai dari nol (key berubah).
+const PLAN_STOCK_KEY = 'plan_stock';
+
+// Batas pembelian per user per plan **selama sale aktif** (2x). Disimpan
+// per `planId@saleKey` → `{ accountId: jumlah }`. Bucket baru otomatis saat
+// sale berganti (saleUntil berubah) jika admin mengubah tanggal berakhir.
+const PLAN_USER_LIMIT_KEY = 'plan_user_sale_limit';
+const LIMITED_SALE_USER_LIMIT = 2;
+
+/// Key stok untuk sale aktif sebuah plan.
+function saleStockKeyOf(plan) {
+  const until = Math.max(0, Math.floor(Number((plan && plan.saleUntil) || 0)));
+  return `${plan.id}@${until > 0 ? until : 'always'}`;
+}
+
+async function getPlanUserLimitMap(env) {
+  const stored = await getJson(env.PB_KV, PLAN_USER_LIMIT_KEY, {});
+  return stored && typeof stored === 'object' && !Array.isArray(stored)
+    ? stored : {};
+}
+
+async function savePlanUserLimitMap(env, map) {
+  await env.PB_KV.put(PLAN_USER_LIMIT_KEY, JSON.stringify(map || {}));
+}
+
+/// Cek & naikkan counter pembelian user (kalikan hanya saat sale aktif).
+/// Mengembalikan { limit, count } sebelum/sesudah — null kalau tidak dibatasi.
+async function consumePlanUserLimit(env, plan, accountId) {
+  const map = await getPlanUserLimitMap(env);
+  const key = saleStockKeyOf(plan);
+  const bucket = map[key] && typeof map[key] === 'object' ? map[key] : {};
+  const id = String(accountId || '');
+  const count = Math.max(0, Math.floor(Number(bucket[id]) || 0));
+  if (count >= LIMITED_SALE_USER_LIMIT) {
+    return { limit: LIMITED_SALE_USER_LIMIT, count, exceeded: true };
+  }
+  bucket[id] = count + 1;
+  map[key] = bucket;
+  await savePlanUserLimitMap(env, map);
+  return { limit: LIMITED_SALE_USER_LIMIT, count: bucket[id], exceeded: false };
+}
+
+/// Kembalikan counter user (dipakai kalau pesanan REJECT).
+async function restorePlanUserLimit(env, stockKey, accountId) {
+  if (!stockKey) return;
+  const map = await getPlanUserLimitMap(env);
+  const bucket = map[stockKey] && typeof map[stockKey] === 'object' ? map[stockKey] : {};
+  const id = String(accountId || '');
+  const count = Math.max(0, Math.floor(Number(bucket[id]) || 0));
+  if (count <= 1) delete bucket[id];
+  else bucket[id] = count - 1;
+  map[stockKey] = bucket;
+  await savePlanUserLimitMap(env, map);
+}
+
+async function getPlanStockMap(env) {
+  const stored = await getJson(env.PB_KV, PLAN_STOCK_KEY, {});
+  return stored && typeof stored === 'object' && !Array.isArray(stored)
+    ? stored : {};
+}
+
+async function savePlanStockMap(env, map) {
+  await env.PB_KV.put(PLAN_STOCK_KEY, JSON.stringify(map || {}));
+}
+
+/// Info stok plan: `{ total, sold, left }` atau null kalau tidak terbatas.
+function saleStockInfo(plan, stockMap, saleActive) {
+  const total = Math.max(0, Math.floor(Number((plan && plan.saleStock) || 0)));
+  if (total <= 0) return null;
+  if (!saleActive) return null; // stok hanya berlaku saat sale aktif
+  const map = stockMap || {};
+  const sold = Math.max(0, Math.floor(Number(map[saleStockKeyOf(plan)]) || 0));
+  return { total, sold, left: Math.max(0, total - sold) };
 }
 
 async function getPlanOrders(env) {
@@ -2427,8 +2508,20 @@ async function handleAdmin(request, env, pathname) {
   // ─── Plans: paket berbayar (credit pack + membership) ────────────────
   if (pathname === '/api/admin/plans') {
     if (request.method === 'GET') {
+      const plans = await getPlans(env);
+      const stockMap = await getPlanStockMap(env);
+      const plansWithStock = plans.map((plan) => {
+        const sale = saleState(plan);
+        const stock = saleStockInfo(plan, stockMap, sale.active);
+        return {
+          ...plan,
+          saleActive: sale.active,
+          saleStockSold: stock ? stock.sold : 0,
+          saleStockLeft: stock ? stock.left : null,
+        };
+      });
       return jsonResponse(request, 200, {
-        plans: await getPlans(env),
+        plans: plansWithStock,
         wallets: await getWallets(env),
       });
     }
@@ -2583,6 +2676,23 @@ async function handleAdmin(request, env, pathname) {
       orders[idx].reason = reason;
       orders[idx].updatedAt = Date.now();
       await savePlanOrders(env, orders);
+      // Kembalikan stok & batas pembeli user untuk Limited Sale.
+      const saleKey = orders[idx].saleStockKey;
+      if (saleKey) {
+        try {
+          const stockMap = await getPlanStockMap(env);
+          const sold = Math.max(0, Math.floor(Number(stockMap[saleKey]) || 0));
+          stockMap[saleKey] = Math.max(0, sold - 1);
+          await savePlanStockMap(env, stockMap);
+        } catch {
+          // Jangan gagalkan reject hanya karena gagal mengembalikan stok.
+        }
+        try {
+          await restorePlanUserLimit(env, saleKey, orders[idx].accountId);
+        } catch {
+          // Jangan gagalkan reject hanya karena gagal mengembalikan counter.
+        }
+      }
       return jsonResponse(request, 200, {
         ok: true,
         order: { id: orders[idx].id, status: orders[idx].status },
@@ -3970,12 +4080,15 @@ async function handleGateway(request, env, pathname) {
   // GET /api/gateway/plans — daftar paket aktif (tanpa secret).
   if (pathname === '/api/gateway/plans' && request.method === 'GET') {
     const plans = (await getPlans(env)).filter((p) => p.active !== false);
+    const stockMap = await getPlanStockMap(env);
     return jsonResponse(request, 200, {
       object: 'list',
       data: plans.map((p) => {
         const tierRpm = (p.tier && p.tier !== 'none')
           ? effectiveRpmLimit(String(p.tier), config.rpm || {}) : 0;
         const sale = saleState(p);
+        // Sisa stok Limited Sale (hanya saat sale aktif & stok terbatas).
+        const stock = saleStockInfo(p, stockMap, sale.active);
         return {
           id: p.id,
           name: p.name,
@@ -3985,6 +4098,9 @@ async function handleGateway(request, env, pathname) {
           saleEvent: sale.saleEvent,
           saleUntil: sale.saleUntil,
           saleActive: sale.active,
+          saleStock: stock ? stock.total : 0,
+          saleStockSold: stock ? stock.sold : 0,
+          saleStockLeft: stock ? stock.left : null,
           finalPriceIdr: sale.finalPriceIdr,
           credits: p.credits,
           tokenBonus: p.tokenBonus,
@@ -4050,6 +4166,39 @@ async function handleGateway(request, env, pathname) {
     }
     // Terapkan diskon / limited sale event saat membuat pesanan.
     const sale = saleState(plan);
+    // Limited Sale: tiap user maks 2x pembelian selama sale aktif +
+    // stok global terbatas. Bucket dihitung per (planId|saleKey) jadi sale
+    // baru dengan `saleUntil` baru → counter mulai dari nol.
+    let userSaleChecked = null;
+    if (sale.active) {
+      userSaleChecked = await consumePlanUserLimit(env, plan, account.id);
+      if (userSaleChecked.exceeded) {
+        return jsonResponse(request, 409, {
+          error: `Pembelian Limited Sale "${plan.name}" maks ${userSaleChecked.limit}x per user.`,
+          plan: plan.id,
+          userLimit: userSaleChecked.limit,
+        });
+      }
+      const total = Math.max(0, Math.floor(Number(plan.saleStock) || 0));
+      if (total > 0) {
+        const stockMap = await getPlanStockMap(env);
+        const key = saleStockKeyOf(plan);
+        const sold = Math.max(0, Math.floor(Number(stockMap[key]) || 0));
+        if (sold >= total) {
+          // Kembalikan counter user karena pesanan dibatalkan.
+          await restorePlanUserLimit(env, key, account.id);
+          return jsonResponse(request, 409, {
+            error: `Stok Limited Sale "${plan.name}" sudah habis (SOLD OUT).`,
+            plan: plan.id,
+            saleStock: total,
+            saleStockSold: sold,
+            saleStockLeft: 0,
+          });
+        }
+        stockMap[key] = sold + 1;
+        await savePlanStockMap(env, stockMap);
+      }
+    }
     const orders = await getPlanOrders(env);
     const id = `po_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
     const order = {
@@ -4060,6 +4209,7 @@ async function handleGateway(request, env, pathname) {
       planId: plan.id,
       planName: plan.name,
       kind: plan.kind,
+      saleStockKey: sale.active ? saleStockKeyOf(plan) : '',
       // Harga yang benar-benar dibayar (setelah diskon), dan harga aslinya.
       priceIdr: sale.finalPriceIdr,
       originalPriceIdr: sale.originalPriceIdr,

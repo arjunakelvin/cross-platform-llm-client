@@ -31,6 +31,9 @@ class PlanInfo {
     this.saleUntil = 0,
     this.saleActive = false,
     this.finalPriceIdr = 0,
+    this.saleStock = 0,
+    this.saleStockSold = 0,
+    this.saleStockLeft,
   });
 
   final String id;
@@ -50,6 +53,10 @@ class PlanInfo {
   final int saleUntil; // epoch ms batas akhir event; 0 = berlaku terus
   final bool saleActive; // gateway menghitung aktif/tidaknya
   final int finalPriceIdr; // harga setelah diskon (0 = belum dihitung)
+  // Stok Limited Sale (dari gateway):
+  final int saleStock; // 0 = tak terbatas
+  final int saleStockSold; // terjual pada sale aktif
+  final int? saleStockLeft; // sisa stok; null = tak terbatas / sale tidak aktif
 
   bool get isMembership => kind == 'membership';
 
@@ -60,6 +67,14 @@ class PlanInfo {
   /// Sale terbatas dengan batas waktu / nama event (untuk tampilan emas).
   bool get isLimitedSale => saleActive && discountPercent > 0 &&
       (saleEvent.isNotEmpty || saleUntil > 0);
+
+  /// Sisa stok limited sale — hanya saat sale aktif & stok terbatas.
+  int? get limitedStockLeft =>
+      (saleActive && saleStock > 0) ? (saleStockLeft ?? 0) : null;
+
+  /// `true` kalau stok limited sale sudah habis.
+  bool get isLimitedStockSoldOut =>
+      saleActive && saleStock > 0 && (saleStockLeft ?? 0) <= 0;
 
   factory PlanInfo.fromMap(Map<String, dynamic> map) => PlanInfo(
         id: (map['id'] ?? '').toString(),
@@ -78,6 +93,10 @@ class PlanInfo {
         saleUntil: toInt(map['saleUntil']),
         saleActive: map['saleActive'] == true,
         finalPriceIdr: toInt(map['finalPriceIdr']),
+        saleStock: toInt(map['saleStock']),
+        saleStockSold: toInt(map['saleStockSold']),
+        saleStockLeft:
+            map['saleStockLeft'] is num ? toInt(map['saleStockLeft']) : null,
       );
 
   static int toInt(dynamic v) =>

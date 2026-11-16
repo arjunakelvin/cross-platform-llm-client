@@ -195,6 +195,9 @@ class _PlansViewState extends State<PlansView> {
         _tierRank(ownedTier) >= planRank;
     final ownedExpiry =
         alreadyOwned ? _ownedMembershipExpiry(account) : null;
+    final stockLeft = plan.limitedStockLeft;
+    final soldOut = plan.isLimitedStockSoldOut;
+
     final benefits = <String>[
       if (plan.credits > 0) 'Kredit \$${plan.credits.toStringAsFixed(2)}',
       if (plan.tokenBonus > 0) 'Token bonus ${_fmtTokens(plan.tokenBonus)}',
@@ -202,21 +205,25 @@ class _PlansViewState extends State<PlansView> {
       if (plan.isMembership)
         'Berlaku ${plan.durationDays > 0 ? plan.durationDays : 30} hari',
       if (plan.rpm > 0) '${plan.rpm} RPM per model',
+      if (plan.isLimitedSale) 'Maks 2x per user',
+      if (stockLeft != null) 'Stok terbatas $stockLeft',
     ];
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
-      child: Container(
-        decoration: BoxDecoration(
-          color: plan.isLimitedSale ? _goldFill : t.fill,
-          border: plan.isLimitedSale
-              ? Border.all(color: _goldDeep.withValues(alpha: 0.65), width: 1.5)
-              : null,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
+      child: Stack(
+        children: [
+          Container(
+            decoration: BoxDecoration(
+              color: plan.isLimitedSale ? _goldFill : t.fill,
+              border: plan.isLimitedSale
+                  ? Border.all(color: _goldDeep.withValues(alpha: 0.65), width: 1.5)
+                  : null,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
             if (plan.isLimitedSale) ...[
               _saleHeader(plan),
               const SizedBox(height: 8),
@@ -251,6 +258,26 @@ class _PlansViewState extends State<PlansView> {
                   ),
               ]),
             ],
+            if (stockLeft != null) ...[
+              _stockRow(context, plan, stockLeft),
+              const SizedBox(height: 10),
+            ],
+            if (soldOut) ...[
+              Row(
+                children: [
+                  const Icon(Icons.info_outline_rounded,
+                      size: 13, color: Color(0xFFE5484D)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Stok habis — tersedia lagi saat Limited Sale berakhir.',
+                      style: t.caption.copyWith(color: const Color(0xFFE5484D)),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+            ],
             const SizedBox(height: 12),
             if (alreadyOwned) ...[
               Row(
@@ -280,21 +307,89 @@ class _PlansViewState extends State<PlansView> {
                       icon: const Icon(Icons.check_circle_outline, size: 18),
                       label: const Text('Sudah dimiliki'),
                     )
-                  : FilledButton.icon(
-                      onPressed: () => _buy(context, plan),
-                      icon: const Icon(Icons.shopping_cart_outlined, size: 18),
-                      label: Text('Beli — ${_fmtIdr(plan.payablePriceIdr)}',
-                          style:
-                              GoogleFonts.inter(fontWeight: FontWeight.w600)),
-                    ),
+                  : soldOut
+                      ? FilledButton.icon(
+                          onPressed: null,
+                          icon: const Icon(Icons.block, size: 18),
+                          label: const Text('Stock habis'),
+                        )
+                      : FilledButton.icon(
+                          onPressed: () => _buy(context, plan),
+                          icon: const Icon(Icons.shopping_cart_outlined, size: 18),
+                          label: Text('Beli — ${_fmtIdr(plan.payablePriceIdr)}',
+                              style:
+                                  GoogleFonts.inter(fontWeight: FontWeight.w600)),
+                        ),
             ),
           ],
         ),
+          ),
+          if (soldOut)
+            Positioned.fill(
+              child: AbsorbPointer(
+                child: Align(
+                  alignment: Alignment.center,
+                  child: _soldOutStamp(),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
 
   // ─── Limited Sale & diskon ──────────────────────────────────────
+
+  // ─── Stok / stamp SOLD OUT ───────────────────────────────────────
+
+  Widget _stockRow(BuildContext context, PlanInfo plan, int left) {
+    final soldOut = left <= 0;
+    const red = Color(0xFFE5484D);
+    return Row(
+      children: [
+        Icon(Icons.inventory_2_outlined,
+            size: 15, color: soldOut ? red : _goldDeep),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            soldOut
+                ? 'Sisa stok: 0 dari ${plan.saleStock} (SOLD OUT)'
+                : 'Sisa stok: $left dari ${plan.saleStock}',
+            style: GoogleFonts.inter(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: soldOut ? red : _goldDeep,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Cap / stamp merah miring "SOLD OUT" di atas kartu.
+  Widget _soldOutStamp() {
+    const red = Color(0xFFE5484D);
+    return Transform.rotate(
+      angle: -0.24,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+        decoration: BoxDecoration(
+          border: Border.all(color: red, width: 3),
+          color: const Color(0x2BE5484D),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Text(
+          'SOLD OUT',
+          style: TextStyle(
+            fontSize: 30,
+            fontWeight: FontWeight.w900,
+            color: red,
+            letterSpacing: 6,
+          ),
+        ),
+      ),
+    );
+  }
 
   /// Sisa waktu sale: `sisa 2 hari 5 jam` / `sisa 4 jam 30 menit` / dst.
   static String _saleCountdown(int saleUntil) {

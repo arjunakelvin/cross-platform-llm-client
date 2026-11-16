@@ -986,12 +986,12 @@ async with aiohttp.ClientSession() as session:<br>
         <table>
           <thead><tr>
             <th>#</th><th>Nama</th><th>Jenis</th>
-            <th>Harga (Rp)</th><th>Diskon %</th><th>Event sale</th><th>Sale sampai</th>
+            <th>Harga (Rp)</th><th>Diskon %</th><th>Event sale</th><th>Sale sampai</th><th>Stok</th>
             <th>Kredit ($)</th><th>Token bonus</th>
             <th>Tier</th><th>RPM</th><th>Durasi (hari)</th><th>Deskripsi</th><th>Aktif</th><th></th>
           </tr></thead>
           <tbody id="planRows">
-            <tr><td colspan="15" style="color:var(--muted)">Memuat paket…</td></tr>
+            <tr><td colspan="16" style="color:var(--muted)">Memuat paket…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1000,6 +1000,15 @@ async with aiohttp.ClientSession() as session:<br>
         <button class="primary" id="savePlans">Simpan semua plan</button>
         <span class="status" id="plansStatus"></span>
       </div>
+      <p class="hint" style="margin:8px 0 0">
+        <b>Limited Sale:</b> isi <b>Diskon %</b> (0 = harga normal). Isi
+        <b>Event sale</b> + <b>Sale sampai</b> untuk event terbatas; kosongkan
+        "Sale sampai" kalau diskon berlaku terus. <b>Stok</b> = jumlah paket
+        sale yang boleh dibeli saat sale aktif (0 = tak terbatas); saat stok
+        habis paket tampil <b>SOLD OUT</b> dan tidak bisa dibeli sampai sale
+        tetap aktif tapi stok diisi ulang / sale berakhir. Tiap user maksimal
+        <b>2x beli</b> per plan per periode sale. Menolak pesanan mengembalikan
+        stok &amp; kuota pembeli user.</p>
     </div>
 
     <div class="card" style="margin-top:14px">
@@ -1008,7 +1017,7 @@ async with aiohttp.ClientSession() as session:<br>
         <button class="ordersTab primary" data-orders="pending">Pending</button>
         <button class="ordersTab" data-orders="paid">Paid</button>
         <button class="ordersTab" data-orders="rejected">Rejected</button>
-        <span style="color:var(--muted); font-size:12px">Klik bukti untuk memperbesar.</span>
+        <span style="color:var(--muted); font-size:12px">Klik bukti untuk pratinjau fullscreen (foto &amp; video).</span>
       </div>
       <div class="table-scroll">
         <table>
@@ -1260,6 +1269,10 @@ function planRowHtml(p, i) {
       '<td><input type="date" data-f="saleUntil"' +
         ' title="Batas akhir sale (kosongkan = diskon berlaku terus)" value="' +
         dateInputValue(p.saleUntil) + '"></td>' +
+      '<td><input type="number" data-f="saleStock" min="0" step="1"' +
+        ' style="min-width:60px" title="Stok Limited Sale (0 = tak terbatas)"' +
+        ' value="' + (p.saleStock ?? 0) + '">' +
+        '<div class="sale-stock" style="font-size:10px; line-height:1.3; color:var(--muted); margin-top:2px; white-space:nowrap"></div></td>' +
       '<td><input type="number" data-f="credits" min="0" step="0.01"' +
         ' style="min-width:72px" value="' + (p.credits ?? 0) + '"></td>' +
       '<td><input type="number" data-f="tokenBonus" min="0" step="1000000"' +
@@ -1301,12 +1314,27 @@ function updateSaleHint(tr) {
 function renderPlanRows(plans) {
   const rows = $('planRows');
   if (!plans || plans.length === 0) {
-    rows.innerHTML = '<tr><td colspan="15" style="color:var(--muted)">' +
+    rows.innerHTML = '<tr><td colspan="16" style="color:var(--muted)">' +
       'Belum ada plan. Klik "+ Tambah plan".</td></tr>';
     return;
   }
   rows.innerHTML = plans.map((p, i) => planRowHtml(p, i)).join('');
-  rows.querySelectorAll('tr[data-id]').forEach(updateSaleHint);
+  rows.querySelectorAll('tr[data-id]').forEach((tr) => {
+    updateSaleHint(tr);
+    const p = plans.find((plan) => String(plan.id) === tr.dataset.id);
+    const hint = tr.querySelector('.sale-stock');
+    if (hint && p) {
+      const saleActive = !!p.saleActive;
+      const unlimited = Number(p.saleStock || 0) <= 0;
+      const left = p.saleStockLeft == null ? 0 : Number(p.saleStockLeft);
+      const sold = Number(p.saleStockSold) || 0;
+      hint.textContent = saleActive
+        ? (unlimited ? 'tak terbatas' : `sisa ${left} (terjual ${sold})`)
+        : 'sale nonaktif';
+      hint.style.color =
+        saleActive && !unlimited && left <= 0 ? 'var(--red)' : 'var(--muted)';
+    }
+  });
 }
 
 function collectPlans() {
@@ -1327,6 +1355,7 @@ function collectPlans() {
         Math.max(0, Math.floor(Number(get('discountPercent')) || 0))),
       saleEvent: get('saleEvent').trim().slice(0, 80),
       saleUntil: dateInputToEpoch(get('saleUntil')),
+      saleStock: Math.max(0, Math.floor(Number(get('saleStock')) || 0)),
       credits: Math.max(0, Number(get('credits')) || 0),
       tokenBonus: Math.max(0, Math.floor(Number(get('tokenBonus')) || 0)),
       tier: get('tier') || 'none',
@@ -1975,6 +2004,7 @@ $('addPlanRow').addEventListener('click', () => {
     id: 'plan-' + Date.now().toString(36),
     name: '', kind: 'credit', priceIdr: 0, credits: 1, tokenBonus: 0,
     tier: 'none', dailyReqLimit: 0, durationDays: 0, description: '', active: true,
+    discountPercent: 0, saleEvent: '', saleUntil: 0, saleStock: 0,
   };
   const tr = document.createElement('tr');
   tr.dataset.id = blank.id;
