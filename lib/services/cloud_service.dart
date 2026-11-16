@@ -11,6 +11,25 @@ import 'hive_service.dart';
 import 'app_log_service.dart';
 import 'secure_key_store.dart';
 
+/// Data URL gambar untuk payload multimodal.
+///
+/// MIME dideteksi dari magic bytes base64 supaya PNG/WEBP/JPEG dari browser
+/// tidak salah dilabeli `image/jpeg` (Gemini menolak label yang tidak cocok
+/// dengan isi berkas).
+String imageDataUrl(String base64) {
+  final mime = imageMimeType(base64);
+  return 'data:$mime;base64,$base64';
+}
+
+String imageMimeType(String base64) {
+  if (base64.startsWith('/9j/')) return 'image/jpeg';
+  if (base64.startsWith('iVBOR')) return 'image/png';
+  if (base64.startsWith('R0lGOD')) return 'image/gif';
+  if (base64.startsWith('UklGR')) return 'image/webp';
+  if (base64.startsWith('Qk')) return 'image/bmp';
+  return 'image/jpeg';
+}
+
 /// Posisi permintaan di antrean server AI.
 ///
 /// Dikirim proxy sebagai event SSE `piercingblow_queue` selama request masih
@@ -217,7 +236,7 @@ class CloudService extends GetxService {
   /// [messages] is a list of {role, content} maps forming the conversation.
   /// [imageBase64] is optional for multimodal requests.
   Future<String> sendMessage({
-    required List<Map<String, String>> messages,
+    required List<Map<String, dynamic>> messages,
     String? imageBase64,
     double? temperature,
     int? maxTokens,
@@ -507,31 +526,12 @@ class CloudService extends GetxService {
   // ─── OpenAI ─────────────────────────────────────
 
   Future<String> _sendOpenAI(
-    List<Map<String, String>> messages,
+    List<Map<String, dynamic>> messages,
     String? imageBase64,
     double? temperature,
     int? maxTokens,
   ) async {
-    final apiMessages = <Map<String, dynamic>>[];
-
-    for (final msg in messages) {
-      if (msg['role'] == 'user' &&
-          imageBase64 != null &&
-          msg == messages.last) {
-        apiMessages.add({
-          'role': 'user',
-          'content': [
-            {'type': 'text', 'text': msg['content']},
-            {
-              'type': 'image_url',
-              'image_url': {'url': 'data:image/jpeg;base64,$imageBase64'}
-            },
-          ],
-        });
-      } else {
-        apiMessages.add({'role': msg['role'], 'content': msg['content']});
-      }
-    }
+    final apiMessages = _buildOpenAICompatibleMessages(messages, imageBase64);
 
     final response = await _post(
       Uri.parse(AppConstants.openaiEndpoint),
@@ -558,8 +558,49 @@ class CloudService extends GetxService {
 
   // ─── Anthropic ──────────────────────────────────
 
+  /// Ubah `content` gaya OpenAI (string / list part) ke blok Anthropic.
+  dynamic _openAiContentToAnthropicContent(dynamic content) {
+    if (content is String) return content;
+    if (content is! List) return '';
+    final blocks = <Map<String, dynamic>>[];
+    for (final part in content) {
+      if (part is! Map) continue;
+      final type = part['type']?.toString() ?? '';
+      if (type == 'text') {
+        blocks.add({'type': 'text', 'text': part['text']?.toString() ?? ''});
+        continue;
+      }
+      if (type == 'image_url') {
+        final imageUrl = part['image_url'];
+        final url = (imageUrl is Map ? imageUrl['url'] : imageUrl)?.toString();
+        if (url == null || url.isEmpty) continue;
+        final dataUrl = RegExp(r'^data:([^;]+);base64,(.+)$').firstMatch(url);
+        if (dataUrl != null) {
+          blocks.add({
+            'type': 'image',
+            'source': {
+              'type': 'base64',
+              'media_type': dataUrl.group(1),
+              'data': dataUrl.group(2),
+            },
+          });
+        } else if (url.startsWith('http')) {
+          blocks.add({
+            'type': 'image',
+            'source': {'type': 'url', 'url': url},
+          });
+        }
+      }
+    }
+    if (blocks.isEmpty) return '';
+    if (blocks.length == 1 && blocks.first['type'] == 'text') {
+      return blocks.first['text'];
+    }
+    return blocks;
+  }
+
   Future<String> _sendAnthropic(
-    List<Map<String, String>> messages,
+    List<Map<String, dynamic>> messages,
     String? imageBase64,
     double? temperature,
     int? maxTokens,
@@ -567,36 +608,33 @@ class CloudService extends GetxService {
     // Extract system message
     String? systemMsg;
     final apiMessages = <Map<String, dynamic>>[];
+    final hasInlineImage = messages.any((msg) => msg['content'] is List);
 
     for (final msg in messages) {
-      if (msg['role'] == 'system') {
-        systemMsg = msg['content'];
+      final role = msg['role'];
+      var content = msg['content'];
+      if (role == 'system') {
+        systemMsg = content?.toString();
         continue;
       }
-
-      if (msg['role'] == 'user' &&
+      final isLast = identical(msg, messages.last);
+      if (role == 'user' &&
+          isLast &&
+          !hasInlineImage &&
           imageBase64 != null &&
-          msg == messages.last) {
-        apiMessages.add({
-          'role': 'user',
-          'content': [
-            {
-              'type': 'image',
-              'source': {
-                'type': 'base64',
-                'media_type': 'image/jpeg',
-                'data': imageBase64,
-              }
-            },
-            {'type': 'text', 'text': msg['content']},
-          ],
-        });
-      } else {
-        apiMessages.add({
-          'role': msg['role'],
-          'content': msg['content'],
-        });
+          imageBase64.isNotEmpty) {
+        content = [
+          {
+            'type': 'image_url',
+            'image_url': {'url': imageDataUrl(imageBase64)}
+          },
+          {'type': 'text', 'text': content?.toString() ?? ''},
+        ];
       }
+      final blocks = _openAiContentToAnthropicContent(content);
+      final empty = blocks is String ? blocks.isEmpty : (blocks as List).isEmpty;
+      if (empty) continue;
+      apiMessages.add({'role': role, 'content': blocks});
     }
 
     final body = <String, dynamic>{
@@ -653,25 +691,66 @@ class CloudService extends GetxService {
   // ─── Google Gemini ──────────────────────────────
 
   Future<String> _sendGoogle(
-    List<Map<String, String>> messages,
+    List<Map<String, dynamic>> messages,
     String? imageBase64,
     double? temperature,
     int? maxTokens,
   ) async {
-    final parts = <Map<String, dynamic>>[];
+    final contents = <Map<String, dynamic>>[];
+    final hasInlineImage =
+        messages.any((msg) => msg['content'] is List);
 
-    // Combine all messages into parts
     for (final msg in messages) {
-      parts.add({'text': '${msg['role']}: ${msg['content']}'});
+      final role = msg['role'] == 'assistant' ? 'model' : 'user';
+      final content = msg['content'];
+      final parts = <Map<String, dynamic>>[];
+      if (content is String) {
+        parts.add({'text': '${msg['role']}: $content'});
+      } else if (content is List) {
+        for (final part in content) {
+          if (part is! Map) continue;
+          final type = part['type']?.toString() ?? '';
+          if (type == 'text') {
+            parts.add({'text': part['text']?.toString() ?? ''});
+            continue;
+          }
+          if (type == 'image_url') {
+            final imageUrl = part['image_url'];
+            final url =
+                (imageUrl is Map ? imageUrl['url'] : imageUrl)?.toString();
+            if (url == null || url.isEmpty) continue;
+            final dataUrl =
+                RegExp(r'^data:([^;]+);base64,(.+)$').firstMatch(url);
+            if (dataUrl != null) {
+              parts.add({
+                'inline_data': {
+                  'mime_type': dataUrl.group(1),
+                  'data': dataUrl.group(2),
+                }
+              });
+            }
+          }
+        }
+      }
+      if (parts.isNotEmpty) contents.add({'role': role, 'parts': parts});
     }
 
-    // Add image if present
-    if (imageBase64 != null) {
-      parts.add({
+    // Tambahkan gambar pesan terbaru kalau riwayat belum memuatnya.
+    if (imageBase64 != null && imageBase64.isNotEmpty && !hasInlineImage) {
+      if (contents.isEmpty) contents.add({'role': 'user', 'parts': []});
+      (contents.last['parts'] as List).add({
         'inline_data': {
-          'mime_type': 'image/jpeg',
+          'mime_type': imageMimeType(imageBase64),
           'data': imageBase64,
         }
+      });
+    }
+    if (contents.isEmpty) {
+      contents.add({
+        'role': 'user',
+        'parts': [
+          {'text': 'Halo'}
+        ]
       });
     }
 
@@ -686,9 +765,7 @@ class CloudService extends GetxService {
         'x-goog-api-key': _apiKey,
       },
       body: jsonEncode({
-        'contents': [
-          {'parts': parts}
-        ],
+        'contents': contents,
         'generationConfig': {
           'temperature': temperature ?? AppConstants.defaultTemperature,
           'maxOutputTokens': maxTokens ?? AppConstants.defaultMaxTokens,
@@ -735,16 +812,12 @@ class CloudService extends GetxService {
   // ─── Kimi (Moonshot AI — OpenAI-compatible) ─────
 
   Future<String> _sendKimi(
-    List<Map<String, String>> messages,
+    List<Map<String, dynamic>> messages,
     String? imageBase64,
     double? temperature,
     int? maxTokens,
   ) async {
-    final apiMessages = <Map<String, dynamic>>[];
-
-    for (final msg in messages) {
-      apiMessages.add({'role': msg['role'], 'content': msg['content']});
-    }
+    final apiMessages = _buildOpenAICompatibleMessages(messages, imageBase64);
 
     final response = await _post(
       Uri.parse(AppConstants.kimiEndpoint),
@@ -770,31 +843,12 @@ class CloudService extends GetxService {
   }
 
   Future<String> _sendNvidia(
-    List<Map<String, String>> messages,
+    List<Map<String, dynamic>> messages,
     String? imageBase64,
     double? temperature,
     int? maxTokens,
   ) async {
-    final apiMessages = <Map<String, dynamic>>[];
-
-    for (final msg in messages) {
-      if (msg['role'] == 'user' &&
-          imageBase64 != null &&
-          msg == messages.last) {
-        apiMessages.add({
-          'role': 'user',
-          'content': [
-            {'type': 'text', 'text': msg['content']},
-            {
-              'type': 'image_url',
-              'image_url': {'url': 'data:image/jpeg;base64,$imageBase64'}
-            },
-          ],
-        });
-      } else {
-        apiMessages.add({'role': msg['role'], 'content': msg['content']});
-      }
-    }
+    final apiMessages = _buildOpenAICompatibleMessages(messages, imageBase64);
 
     final response = await _post(
       Uri.parse('${AppConstants.nvidiaEndpoint}/chat/completions'),
@@ -821,7 +875,7 @@ class CloudService extends GetxService {
   }
 
   Future<String> _sendOpenRouter(
-    List<Map<String, String>> messages,
+    List<Map<String, dynamic>> messages,
     String? imageBase64,
     double? temperature,
     int? maxTokens,
@@ -841,7 +895,7 @@ class CloudService extends GetxService {
   }
 
   Future<String> _sendDeepSeek(
-    List<Map<String, String>> messages,
+    List<Map<String, dynamic>> messages,
     String? imageBase64,
     double? temperature,
     int? maxTokens,
@@ -1089,7 +1143,7 @@ class CloudService extends GetxService {
   }
 
   Future<String> _sendLocalOpenAICompatible(
-    List<Map<String, String>> messages,
+    List<Map<String, dynamic>> messages,
     String? imageBase64,
     double? temperature,
     int? maxTokens, {
@@ -1169,7 +1223,7 @@ class CloudService extends GetxService {
   }
 
   Future<String> _sendCustomOpenAICompatible(
-    List<Map<String, String>> messages,
+    List<Map<String, dynamic>> messages,
     String? imageBase64,
     double? temperature,
     int? maxTokens, {
@@ -1235,7 +1289,7 @@ class CloudService extends GetxService {
   Future<String> _sendOpenAICompatible({
     required String endpoint,
     required String providerLabel,
-    required List<Map<String, String>> messages,
+    required List<Map<String, dynamic>> messages,
     required String? imageBase64,
     required double? temperature,
     required int? maxTokens,
@@ -1315,7 +1369,7 @@ class CloudService extends GetxService {
   Future<String> _streamOpenAICompatible({
     required String endpoint,
     required String providerLabel,
-    required List<Map<String, String>> messages,
+    required List<Map<String, dynamic>> messages,
     required String? imageBase64,
     required double? temperature,
     required int? maxTokens,
@@ -1557,28 +1611,36 @@ class CloudService extends GetxService {
     }
   }
 
+  /// Bangun `messages` gaya OpenAI. Riwayat bisa sudah memuat part multimodal
+  /// (`content` berupa list dengan `image_url`); kalau belum, [imageBase64]
+  /// ditempelkan ke pesan user terakhir.
   List<Map<String, dynamic>> _buildOpenAICompatibleMessages(
-    List<Map<String, String>> messages,
+    List<Map<String, dynamic>> messages,
     String? imageBase64,
   ) {
     final apiMessages = <Map<String, dynamic>>[];
+    final hasInlineImage = messages.any((msg) => msg['content'] is List);
 
     for (final msg in messages) {
+      final content = msg['content'];
+      final isLast = identical(msg, messages.last);
       if (msg['role'] == 'user' &&
+          isLast &&
+          !hasInlineImage &&
           imageBase64 != null &&
-          msg == messages.last) {
+          imageBase64.isNotEmpty) {
         apiMessages.add({
           'role': 'user',
           'content': [
-            {'type': 'text', 'text': msg['content']},
+            {'type': 'text', 'text': content?.toString() ?? ''},
             {
               'type': 'image_url',
-              'image_url': {'url': 'data:image/jpeg;base64,$imageBase64'}
+              'image_url': {'url': imageDataUrl(imageBase64)}
             },
           ],
         });
       } else {
-        apiMessages.add({'role': msg['role'], 'content': msg['content']});
+        apiMessages.add({'role': msg['role'], 'content': content});
       }
     }
 
@@ -1630,7 +1692,7 @@ class CloudService extends GetxService {
   // ─── Stability AI (Image Generation) ────────────
 
   Future<String> _sendStability(
-    List<Map<String, String>> messages,
+    List<Map<String, dynamic>> messages,
   ) async {
     // Extract the latest user prompt for the image generation
     final userMessages = messages.where((m) => m['role'] == 'user').toList();
@@ -1638,7 +1700,7 @@ class CloudService extends GetxService {
       return 'ERROR: No user prompt found for image generation.';
     }
 
-    final prompt = userMessages.last['content'] ?? '';
+    final prompt = userMessages.last['content']?.toString() ?? '';
 
     // Create a multipart request since stability AI v2beta uses multipart/form-data
     var request = http.MultipartRequest(

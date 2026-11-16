@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -141,8 +142,19 @@ class AttachmentPreview extends StatelessWidget {
       );
     }
     if (imagePath != null && imagePath!.isNotEmpty) {
+      final path = imagePath!;
+      // Di web `imagePath` berupa blob/URL; `dart:io` tidak tersedia.
+      if (kIsWeb || path.startsWith('http') || path.startsWith('blob:')) {
+        return Image.network(
+          path,
+          fit: BoxFit.cover,
+          gaplessPlayback: true,
+          errorBuilder: (_, __, ___) =>
+              const Icon(Icons.broken_image_outlined),
+        );
+      }
       return Image.file(
-        File(imagePath!),
+        File(path),
         fit: BoxFit.cover,
         gaplessPlayback: true,
         errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined),

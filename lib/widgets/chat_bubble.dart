@@ -70,7 +70,7 @@ class ChatBubble extends StatelessWidget {
               ),
             ),
           ),
-        if (message.fileName != null)
+        if (message.fileName != null && message.decodedImageBytes == null)
           Padding(
             padding: const EdgeInsets.only(bottom: 6),
             child: ConstrainedBox(

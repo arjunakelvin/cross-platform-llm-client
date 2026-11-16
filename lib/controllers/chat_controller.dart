@@ -40,16 +40,16 @@ Uint8List? _resizeVisionImageBytes(Map<String, dynamic> args) {
 
   final longestSide =
       decoded.width > decoded.height ? decoded.width : decoded.height;
-  if (longestSide <= _visionImageMaxSide) {
-    return bytes;
-  }
-
-  final resized = img.copyResize(
-    decoded,
-    width: decoded.width >= decoded.height ? _visionImageMaxSide : null,
-    height: decoded.height > decoded.width ? _visionImageMaxSide : null,
-    interpolation: img.Interpolation.average,
-  );
+  // Selalu encode ulang ke JPEG: mime payload jadi konsisten (web sering
+  // mengirim PNG/WEBP) dan ukuran base64 lebih kecil.
+  final resized = longestSide <= _visionImageMaxSide
+      ? decoded
+      : img.copyResize(
+          decoded,
+          width: decoded.width >= decoded.height ? _visionImageMaxSide : null,
+          height: decoded.height > decoded.width ? _visionImageMaxSide : null,
+          interpolation: img.Interpolation.average,
+        );
   return Uint8List.fromList(
     img.encodeJpg(resized, quality: _visionImageJpegQuality),
   );
@@ -271,16 +271,53 @@ class ChatController extends GetxController {
       maxHeight: _visionImageMaxSide.toDouble(),
       imageQuality: _visionImageJpegQuality,
     );
-    if (file != null) {
-      selectedImagePath.value = file.path;
-      selectedImageBase64.value = null;
-      selectedFileName.value = file.name;
-      selectedFilePath.value = file.path;
-      selectedFileType.value = 'image';
-      selectedFileSize.value = await file.length();
-      selectedFileContent.value = null;
-      _checkVisionSupport();
+    if (file == null) return;
+    final bytes = await file.readAsBytes();
+    await _applyPickedImage(
+      bytes: bytes,
+      originalName: file.name,
+      fallbackPath: file.path,
+    );
+  }
+
+  /// Simpan gambar sebagai base64 supaya preview + pengiriman multimodal
+  /// bekerja di web (blob URL tidak bisa dibaca `dart:io`). Di desktop/mobile
+  /// path temp tetap dibuat untuk mesin inference lokal.
+  Future<void> _applyPickedImage({
+    required Uint8List bytes,
+    required String originalName,
+    String? fallbackPath,
+  }) async {
+    var optimized = bytes;
+    try {
+      optimized =
+          await compute(_resizeVisionImageBytes, {'bytes': bytes}) ?? bytes;
+    } catch (_) {}
+
+    selectedImageBase64.value = base64Encode(optimized);
+    selectedFileName.value = originalName;
+    selectedFileType.value = 'image';
+    selectedFileContent.value = null;
+    selectedFileSize.value = optimized.length;
+
+    if (kIsWeb) {
+      selectedImagePath.value = null;
+      selectedFilePath.value = null;
+    } else {
+      try {
+        final tempDir = await getTemporaryDirectory();
+        final path = '${tempDir.path}/ai_chat_vision_'
+            '${DateTime.now().millisecondsSinceEpoch}.jpg';
+        await File(path).writeAsBytes(optimized, flush: false);
+        selectedImagePath.value = path;
+        selectedFilePath.value = path;
+        selectedFileSize.value = await File(path).length();
+      } catch (_) {
+        selectedImagePath.value = fallbackPath;
+        selectedFilePath.value = fallbackPath;
+      }
     }
+    _checkVisionSupport();
   }
 
   void clearImage({bool deleteFile = true}) {
@@ -427,22 +464,15 @@ class ChatController extends GetxController {
 
       if (fileType == 'image') {
         final bytes = file.bytes ??
-            (file.path != null ? await File(file.path!).readAsBytes() : null);
+            (!kIsWeb && file.path != null
+                ? await File(file.path!).readAsBytes()
+                : null);
         if (bytes == null) return;
-        final optimizedPath = await _prepareVisionImagePath(
+        await _applyPickedImage(
           bytes: bytes,
           originalName: file.name,
           fallbackPath: file.path,
         );
-
-        selectedFileName.value = file.name;
-        selectedFilePath.value = optimizedPath;
-        selectedFileType.value = 'image';
-        selectedFileSize.value = await File(optimizedPath).length();
-        selectedFileContent.value = null;
-        selectedImagePath.value = optimizedPath;
-        selectedImageBase64.value = null;
-        _checkVisionSupport();
         return;
       }
 
@@ -510,36 +540,6 @@ class ChatController extends GetxController {
     selectedFilePath.value = null;
     selectedFileType.value = null;
     selectedFileSize.value = 0;
-  }
-
-  Future<String> _prepareVisionImagePath({
-    required Uint8List bytes,
-    required String originalName,
-    String? fallbackPath,
-  }) async {
-    final resized = await compute(_resizeVisionImageBytes, {'bytes': bytes});
-    if (resized == null) {
-      if (fallbackPath != null && fallbackPath.isNotEmpty) return fallbackPath;
-      final tempDir = await getTemporaryDirectory();
-      final failedDecodeFile = File(
-        '${tempDir.path}/ai_chat_image_${DateTime.now().millisecondsSinceEpoch}_$originalName',
-      );
-      await failedDecodeFile.writeAsBytes(bytes, flush: false);
-      return failedDecodeFile.path;
-    }
-
-    if (resized.length == bytes.length &&
-        fallbackPath != null &&
-        fallbackPath.isNotEmpty) {
-      return fallbackPath;
-    }
-
-    final tempDir = await getTemporaryDirectory();
-    final file = File(
-      '${tempDir.path}/ai_chat_vision_${DateTime.now().millisecondsSinceEpoch}.jpg',
-    );
-    await file.writeAsBytes(resized, flush: false);
-    return file.path;
   }
 
   // ─── Send Message ───────────────────────────────
@@ -665,11 +665,13 @@ class ChatController extends GetxController {
     isLoading.value = true;
 
     // Encode image to base64 if it's not already pre-encoded, so the message
-    // saved in history contains the image bytes and is 100% stable.
+    // saved in history contains the image bytes and is 100% stable. Di web
+    // `imagePath` berupa blob URL yang tidak bisa dibaca `dart:io`, jadi
+    // memakai XFile (bekerja di semua platform).
     String? imgBase64 = imageBase64;
-    if (imgBase64 == null && imagePath != null && !kIsWeb) {
+    if ((imgBase64 == null || imgBase64.isEmpty) && imagePath != null) {
       try {
-        imgBase64 = base64Encode(await File(imagePath).readAsBytes());
+        imgBase64 = base64Encode(await XFile(imagePath).readAsBytes());
       } catch (_) {}
     }
 
@@ -741,8 +743,11 @@ class ChatController extends GetxController {
     final generationId = ++_generationSerial;
     isLoading.value = true;
     isStreaming.value = true;
-    streamingAttachmentType.value =
-        (imagePath != null || fileType == 'audio') ? fileType : null;
+    streamingAttachmentType.value = (imagePath != null ||
+            (imgBase64 != null && imgBase64.isNotEmpty) ||
+            fileType == 'audio')
+        ? fileType
+        : null;
     streamingResponse.value = '';
     queueStatus.value = null;
     _followStreaming = true;
@@ -774,7 +779,9 @@ class ChatController extends GetxController {
 
       String rawResponse;
 
-      // Build conversation history
+      // Build conversation history. `textHistory` dipakai mesin inference
+      // lokal; `cloudHistory` membawa gambar per pesan supaya model vision
+      // tetap bisa menjawab pertanyaan lanjutan tentang foto lama.
       final history = messages
           .where((m) => m.role == 'user' || m.role == 'assistant')
           .map((m) => {
@@ -784,6 +791,28 @@ class ChatController extends GetxController {
                     : m.content,
               })
           .toList();
+
+      final cloudHistory = messages
+          .where((m) => m.role == 'user' || m.role == 'assistant')
+          .map<Map<String, dynamic>>((m) {
+        final text = m.role == 'assistant'
+            ? splitThoughtTags(m.content).answer
+            : m.content;
+        final image = m.imageBase64;
+        if (m.role == 'user' && image != null && image.isNotEmpty) {
+          return {
+            'role': 'user',
+            'content': [
+              {'type': 'text', 'text': text},
+              {
+                'type': 'image_url',
+                'image_url': {'url': imageDataUrl(image)},
+              },
+            ],
+          };
+        }
+        return {'role': m.role, 'content': text};
+      }).toList();
 
       if (inferenceMode == 'local') {
         final localImage = Get.find<LocalImageService>();
@@ -902,9 +931,9 @@ class ChatController extends GetxController {
         }
       } else {
         final cloud = Get.find<CloudService>();
-        final apiMessages = [
+        final apiMessages = <Map<String, dynamic>>[
           {'role': 'system', 'content': _effectiveSystemPrompt},
-          ...history,
+          ...cloudHistory,
         ];
         rawResponse = await cloud.sendMessage(
           messages: apiMessages,

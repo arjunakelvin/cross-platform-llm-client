@@ -376,6 +376,51 @@ test('provider OpenAI-compatible: URL dan respons diteruskan', async () => {
   }
 });
 
+test('gambar multimodal (image_url) diteruskan ke provider OpenAI-compatible',
+  async () => {
+    const { store, env } = makeEnv();
+    seedAccount(store);
+    seedProvider(store, {
+      baseUrl: 'https://api.example.com/v1',
+      model: 'gemini-2.5-flash',
+      apiKey: 'sk-test',
+    });
+
+    let captured = null;
+    const restore = mockFetch(async (url, init) => {
+      captured = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        choices: [{
+          index: 0,
+          message: { role: 'assistant', content: 'ada kucing oranye' },
+        }],
+        usage: { prompt_tokens: 10, completion_tokens: 3 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    try {
+      const res = await chat(env, {
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: 'apa isi gambar ini?' },
+            {
+              type: 'image_url',
+              image_url: {
+                url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==',
+              },
+            },
+          ],
+        }],
+      });
+      assert.equal(res.status, 200);
+      const content = captured.messages[0].content;
+      assert.equal(content[1].type, 'image_url');
+      assert.match(content[1].image_url.url, /^data:image\/png;base64,/);
+    } finally {
+      restore();
+    }
+  });
+
 test('batas request harian reset langsung saat habis (tier free 15)',
   async () => {
     const { store, env } = makeEnv();

@@ -190,6 +190,60 @@ void main() {
     expect(worker.chatAuth, 'Bearer legacy-secret');
   });
 
+  test('gambar dikirim sebagai image_url data URL ke gateway', () async {
+    await hive.setSetting(AppConstants.keyCloudProvider, 'local');
+    await hive.setSetting(AppConstants.keyLocalCloudModel, 'gemini-2.5-flash');
+    await secure.write(AppConstants.keyUserApiKey, 'pb_user_key');
+
+    // PNG 1x1 — harus dilabeli image/png, bukan image/jpeg.
+    const pngBase64 =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8'
+        'z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+    final cloud = CloudService();
+    final reply = await cloud.sendMessage(
+      messages: [
+        {
+          'role': 'user',
+          'content': [
+            {'type': 'text', 'text': 'apa isi gambar ini?'},
+            {
+              'type': 'image_url',
+              'image_url': {'url': imageDataUrl(pngBase64)},
+            },
+          ],
+        }
+      ],
+    );
+
+    expect(reply, 'pong');
+    final body = jsonDecode(worker.chatBody!) as Map<String, dynamic>;
+    final content = (body['messages'] as List).first['content'] as List;
+    final url = content[1]['image_url']['url'] as String;
+    expect(url, startsWith('data:image/png;base64,'));
+    expect(url, contains(pngBase64));
+  });
+
+  test('gambar pesan terbaru ikut terkirim walau riwayat masih teks', () async {
+    await hive.setSetting(AppConstants.keyCloudProvider, 'local');
+    await hive.setSetting(AppConstants.keyLocalCloudModel, 'gemini-2.5-flash');
+    await secure.write(AppConstants.keyUserApiKey, 'pb_user_key');
+
+    const jpegBase64 = '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//';
+    final cloud = CloudService();
+    await cloud.sendMessage(
+      messages: [
+        {'role': 'user', 'content': 'apa ini?'}
+      ],
+      imageBase64: jpegBase64,
+    );
+
+    final body = jsonDecode(worker.chatBody!) as Map<String, dynamic>;
+    final content = (body['messages'] as List).first['content'] as List;
+    final url = content[1]['image_url']['url'] as String;
+    expect(url, 'data:image/jpeg;base64,$jpegBase64');
+  });
+
   test('gateway hanya dipakai kalau base URL + API key tersedia', () async {
     await hive.setSetting(AppConstants.keyCloudProvider, 'local');
     await hive.setSetting(AppConstants.keyLocalCloudModel, 'qwen3:8b');
