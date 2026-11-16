@@ -96,6 +96,20 @@ function chat(env, model = MODEL_ID) {
   });
 }
 
+function setTier(store, tier) {
+  const account = JSON.parse(store.get('account:u1'));
+  account.tier = tier;
+  delete account.plan;
+  store.set('account:u1', JSON.stringify(account));
+}
+
+async function listModels(env) {
+  const res = await call(env, '/api/gateway/models', {
+    headers: { Authorization: `Bearer ${SESSION}` },
+  });
+  return { status: res.status, body: await res.json() };
+}
+
 test('model yang disembunyikan tidak muncul di config aplikasi', async () => {
   const { store, env } = makeEnv();
   seed(store, { enabled: false });
@@ -186,4 +200,61 @@ test('admin POST bisa menyembunyikan lalu menampilkan model lagi', async () => {
   config = await (await call(env, '/api/auth/config')).json();
   assert.equal(config.models.length, 1);
   assert.equal(JSON.parse(store.get('server_models'))[0].enabled, true);
+});
+
+// ── Hierarki tier: free < vip < pro ────────────────────────────────
+// Model VIP boleh dipakai VIP & PRO; model PRO hanya PRO; FREE tidak boleh
+// memakai model milik VIP/PRO.
+
+test('FREE tidak bisa melihat/memakai model VIP', async () => {
+  const { store, env } = makeEnv();
+  seed(store, { tierAccess: ['vip'] });
+  setTier(store, 'free');
+
+  const list = await listModels(env);
+  assert.equal(list.status, 200);
+  assert.equal(list.body.models.length, 0);
+
+  const res = await chat(env);
+  assert.equal(res.status, 403);
+});
+
+test('FREE tidak bisa melihat/memakai model PRO', async () => {
+  const { store, env } = makeEnv();
+  seed(store, { tierAccess: ['pro'] });
+  setTier(store, 'free');
+
+  const list = await listModels(env);
+  assert.equal(list.body.models.length, 0);
+  assert.equal((await chat(env)).status, 403);
+});
+
+test('VIP bisa memakai model VIP', async () => {
+  const { store, env } = makeEnv();
+  seed(store, { tierAccess: ['vip'] });
+  setTier(store, 'vip');
+
+  const list = await listModels(env);
+  assert.equal(list.body.models.length, 1);
+});
+
+test('VIP tidak bisa memakai model khusus PRO', async () => {
+  const { store, env } = makeEnv();
+  seed(store, { tierAccess: ['pro'] });
+  setTier(store, 'vip');
+
+  const list = await listModels(env);
+  assert.equal(list.body.models.length, 0);
+  assert.equal((await chat(env)).status, 403);
+});
+
+test('PRO bisa memakai model VIP dan model PRO', async () => {
+  for (const tiers of [['vip'], ['pro'], ['free', 'vip', 'pro']]) {
+    const { store, env } = makeEnv();
+    seed(store, { tierAccess: tiers });
+    setTier(store, 'pro');
+
+    const list = await listModels(env);
+    assert.equal(list.body.models.length, 1, `tierAccess ${tiers.join(',')}`);
+  }
 });

@@ -48,12 +48,29 @@ class AdminModelInfo {
   /// VPS punya model dengan nama sama (dashboard memberi prefix server).
   final String backendModelId;
 
-  /// Tier kosong berarti model terbuka untuk semua tier.
+  /// Hierarki tier: free/guest < vip < pro. Model dengan label VIP boleh
+  /// dipakai VIP & PRO, model PRO hanya PRO, model FREE semua tier. Tier
+  /// kustom yang ditulis persis di [tierAccess] tetap dihormati.
   bool allowsTier(String tier) {
     if (tierAccess.isEmpty) return true;
+    const rank = {'guest': 0, 'free': 0, 'vip': 1, 'pro': 2};
     final normalized = tier.trim().toLowerCase();
-    if (normalized.isEmpty) return tierAccess.contains('free');
-    return tierAccess.contains(normalized);
+    final tiers = tierAccess
+        .map((t) => t.trim().toLowerCase())
+        .where((t) => t.isNotEmpty)
+        .toList();
+    if (tiers.isEmpty) return true;
+    if (tiers.contains(normalized.isEmpty ? 'free' : normalized)) return true;
+    final userRank = rank[normalized.isEmpty ? 'free' : normalized];
+    if (userRank == null) return false;
+    int? requiredRank;
+    for (final t in tiers) {
+      final r = rank[t];
+      if (r != null && (requiredRank == null || r < requiredRank)) {
+        requiredRank = r;
+      }
+    }
+    return requiredRank != null && userRank >= requiredRank;
   }
 
   /// Nama model yang tampil di aplikasi — **tidak pernah** nama file

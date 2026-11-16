@@ -309,3 +309,109 @@ test('method pembayaran selain shopeepay/gopay ditolak', async () => {
   });
   assert.equal(order.status, 400);
 });
+
+// ── Membership 30 hari & pengaturan plan dari dashboard admin ──────
+
+function adminJson(extra = {}) {
+  return { 'X-Admin-Key': ADMIN_KEY, 'Content-Type': 'application/json', ...extra };
+}
+
+function setPlan(env, body) {
+  return call(env, '/api/admin/accounts/u1', {
+    method: 'POST',
+    headers: adminJson(),
+    body: JSON.stringify({ id: 'u1', ...body }),
+  });
+}
+
+test('admin set plan VIP 30 hari, perpanjang, lalu hapus plan', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store);
+
+  const set = await setPlan(env, {
+    planAction: 'set', planTier: 'vip', planDays: 30,
+  });
+  const setBody = await set.json();
+  assert.equal(set.status, 200);
+  assert.equal(setBody.account.tier, 'vip');
+  assert.equal(setBody.account.plan.tier, 'vip');
+  assert.equal(setBody.account.plan.durationDays, 30);
+  const firstExpiry = setBody.account.plan.expiresAt;
+  const days = (firstExpiry - Date.now()) / 86400000;
+  assert.ok(days > 29.9 && days <= 30.01, `expiry ~30 hari (${days})`);
+
+  // Tersimpan di KV.
+  const saved = JSON.parse(store.get('account:u1'));
+  assert.equal(saved.tier, 'vip');
+  assert.equal(saved.plan.tier, 'vip');
+
+  // Perpanjang paket yang sama: masa aktif ditambah dari expiry lama.
+  const again = await setPlan(env, {
+    planAction: 'set', planTier: 'vip', planDays: 30,
+  });
+  const againBody = await again.json();
+  const extendDays =
+    (againBody.account.plan.expiresAt - firstExpiry) / 86400000;
+  assert.ok(extendDays > 29.9 && extendDays <= 30.01);
+
+  // Hapus plan: tier kembali free dan plan hilang.
+  const clear = await setPlan(env, { planAction: 'clear' });
+  const clearBody = await clear.json();
+  assert.equal(clear.status, 200);
+  assert.equal(clearBody.account.tier, 'free');
+  assert.equal(clearBody.account.plan, undefined);
+  assert.equal(JSON.parse(store.get('account:u1')).plan, undefined);
+});
+
+test('akun VIP lama tanpa plan otomatis mendapat plan 30 hari', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store, { tier: 'vip', dailyRequestLimit: 30 });
+  // Pastikan belum ada plan (kasus akun lama yang di-set manual).
+  const before = JSON.parse(store.get('account:u1'));
+  assert.equal(before.plan, undefined);
+
+  const res = await call(env, '/api/admin/accounts', {
+    headers: { 'X-Admin-Key': ADMIN_KEY },
+  });
+  const body = await res.json();
+  const account = body.accounts.find((a) => a.id === 'u1');
+  assert.equal(account.tier, 'vip');
+  assert.equal(account.plan.tier, 'vip');
+  assert.equal(account.plan.durationDays, 30);
+  const days = (account.plan.expiresAt - Date.now()) / 86400000;
+  assert.ok(days > 29.9 && days <= 30.01);
+
+  // Ditulis kembali ke KV supaya user info ikut menampilkan hitung mundur.
+  const saved = JSON.parse(store.get('account:u1'));
+  assert.equal(saved.plan.tier, 'vip');
+});
+
+test('plan kedaluwarsa otomatis mengembalikan akun ke free', async () => {
+  const { store, env } = makeEnv();
+  seedAccount(store, {
+    tier: 'pro',
+    dailyRequestLimit: 45,
+    plan: {
+      id: 'p-old',
+      name: 'PRO',
+      tier: 'pro',
+      expiresAt: Date.now() - 60 * 1000,
+      durationDays: 30,
+      createdAt: Date.now() - 31 * 86400000,
+      prevTier: 'pro',
+      prevDailyReqLimit: 45,
+    },
+  });
+
+  const res = await call(env, '/api/admin/accounts', {
+    headers: { 'X-Admin-Key': ADMIN_KEY },
+  });
+  const body = await res.json();
+  const account = body.accounts.find((a) => a.id === 'u1');
+  assert.equal(account.tier, 'free');
+  assert.equal(account.plan, undefined);
+
+  const saved = JSON.parse(store.get('account:u1'));
+  assert.equal(saved.tier, 'free');
+  assert.equal(saved.plan, undefined);
+});

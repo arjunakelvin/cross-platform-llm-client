@@ -133,6 +133,8 @@ class _PlansViewState extends State<PlansView> {
       if (plan.credits > 0) 'Kredit \$${plan.credits.toStringAsFixed(2)}',
       if (plan.tokenBonus > 0) 'Token bonus ${_fmtTokens(plan.tokenBonus)}',
       if (plan.tier != 'none') 'Tier ${plan.tier.toUpperCase()}',
+      if (plan.isMembership)
+        'Berlaku ${plan.durationDays > 0 ? plan.durationDays : 30} hari',
       if (plan.dailyReqLimit > 0) '${plan.dailyReqLimit} req/hari',
     ];
     return Padding(

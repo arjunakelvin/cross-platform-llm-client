@@ -23,6 +23,7 @@ class PlanInfo {
     required this.tokenBonus,
     required this.tier,
     required this.dailyReqLimit,
+    required this.durationDays,
     required this.description,
   });
 
@@ -34,6 +35,7 @@ class PlanInfo {
   final int tokenBonus; // token yang ditambahkan ke saldo token
   final String tier; // 'none' | 'vip' | 'pro'
   final int dailyReqLimit; // 0 = tidak diubah
+  final int durationDays; // masa aktif membership (hari); 0 = bukan membership
   final String description;
 
   bool get isMembership => kind == 'membership';
@@ -47,6 +49,7 @@ class PlanInfo {
         tokenBonus: toInt(map['tokenBonus']),
         tier: (map['tier'] ?? 'none').toString().toLowerCase(),
         dailyReqLimit: toInt(map['dailyReqLimit']),
+        durationDays: toInt(map['durationDays']),
         description: (map['description'] ?? '').toString(),
       );
 

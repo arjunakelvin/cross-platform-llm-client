@@ -197,8 +197,9 @@ class MembershipPlanCard extends StatelessWidget {
         ? '${effectiveTier.toUpperCase()} Membership'
         : plan!.name;
 
-    // Hitung mundur kedaluwarsa (30 hari default). Kalau plan tidak
-    // punya expiry (mis. di-set manual dari dashboard), tampilkan "Tanpa batas".
+    // Hitung mundur kedaluwarsa. Membership VIP/PRO selalu berdurasi
+    // (default 30 hari); kalau plan belum diterima dari server, tetap
+    // tampilkan paket 30 hari — jangan pernah "tanpa batas".
     final hasExpiry = plan != null && (plan!.expiresAt) > 0;
     final daysLeft = hasExpiry ? plan!.daysLeft : 0;
     final totalDays = plan?.durationDays ?? 30;
@@ -292,7 +293,7 @@ class MembershipPlanCard extends StatelessWidget {
                           color: Colors.white.withValues(alpha: 0.85))),
                 ),
               ] else ...[
-                Text('∞',
+                Text('$totalDays',
                     style: GoogleFonts.inter(
                         fontSize: 38,
                         fontWeight: FontWeight.w800,
@@ -301,7 +302,7 @@ class MembershipPlanCard extends StatelessWidget {
                 const SizedBox(width: 8),
                 Padding(
                   padding: const EdgeInsets.only(bottom: 6),
-                  child: Text('Tanpa batas waktu',
+                  child: Text('hari (paket)',
                       style: GoogleFonts.inter(
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
@@ -334,7 +335,7 @@ class MembershipPlanCard extends StatelessWidget {
                     ? (daysLeft <= 3
                         ? 'Segera berakhir — perpanjang sekarang!'
                         : 'Aktif sampai ${_fmtPlanDate(plan!.expiresAt)}')
-                    : 'Membership permanen (tanpa kedaluwarsa)',
+                    : 'Paket membership $totalDays hari — menunggu data server',
                 style: GoogleFonts.inter(
                     fontSize: 10.5,
                     fontWeight: FontWeight.w600,

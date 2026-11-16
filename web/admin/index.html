@@ -930,10 +930,10 @@ async with aiohttp.ClientSession() as session:<br>
           <thead><tr>
             <th>#</th><th>Nama</th><th>Jenis</th>
             <th>Harga (Rp)</th><th>Kredit ($)</th><th>Token bonus</th>
-            <th>Tier</th><th>Req/hari</th><th>Deskripsi</th><th>Aktif</th><th></th>
+            <th>Tier</th><th>Req/hari</th><th>Durasi (hari)</th><th>Deskripsi</th><th>Aktif</th><th></th>
           </tr></thead>
           <tbody id="planRows">
-            <tr><td colspan="11" style="color:var(--muted)">Memuat paket…</td></tr>
+            <tr><td colspan="12" style="color:var(--muted)">Memuat paket…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1124,12 +1124,18 @@ function planCell(a) {
   const plan = a && a.plan;
   const exp = plan && Number(plan.expiresAt) || 0;
   const remaining = Math.max(0, Math.ceil((exp - Date.now()) / 86400000));
-  if (plan && exp > Date.now()) {
-    const name = escapeHtml(plan.name || ('Tier ' + String(plan.tier || '').toUpperCase()));
+  const tier = String((plan && plan.tier) || (a && a.tier) || '').toLowerCase();
+  if (tier === 'vip' || tier === 'pro') {
+    const name = escapeHtml((plan && plan.name) || (tier.toUpperCase() + ' 30 hari'));
+    const duration = Number(plan && plan.durationDays) || 30;
+    const expiry = exp > Date.now()
+      ? (remaining + ' hari lagi')
+      : ('Paket ' + duration + ' hari');
     return '<td>' +
-      '<span class="pill ' + (plan.tier === 'pro' ? 'info' : 'active') + '">' + name + '</span><br>' +
-      '<span style="font-size:11px; color:var(--muted)">' + remaining + ' hari lagi</span><br>' +
+      '<span class="pill ' + (tier === 'pro' ? 'info' : 'active') + '">' + name + '</span><br>' +
+      '<span style="font-size:11px; color:var(--muted)">' + expiry + '</span><br>' +
       '<div class="actions" style="margin-top:6px">' +
+        '<button data-act="plan-extend" data-tier="' + escapeAttr(tier) + '">Perpanjang 30h</button>' +
         '<button data-act="plan-clear">Hapus plan</button>' +
       '</div>' +
     '</td>';
@@ -1165,6 +1171,9 @@ function planRowHtml(p, i) {
       '</select></td>' +
       '<td><input type="number" data-f="dailyReqLimit" min="0" step="1"' +
         ' style="min-width:76px" value="' + (p.dailyReqLimit ?? 0) + '"></td>' +
+      '<td><input type="number" data-f="durationDays" min="0" step="1"' +
+        ' style="min-width:74px" title="Durasi membership (hari)" value="' +
+        (p.durationDays ?? (p.kind === 'membership' ? 30 : 0)) + '"></td>' +
       '<td><input type="text" data-f="description" style="min-width:140px" value="' +
         escapeAttr(p.description || '') + '"></td>' +
       '<td><input type="checkbox" data-f="active"' +
@@ -1177,7 +1186,7 @@ function planRowHtml(p, i) {
 function renderPlanRows(plans) {
   const rows = $('planRows');
   if (!plans || plans.length === 0) {
-    rows.innerHTML = '<tr><td colspan="11" style="color:var(--muted)">' +
+    rows.innerHTML = '<tr><td colspan="12" style="color:var(--muted)">' +
       'Belum ada plan. Klik "+ Tambah plan".</td></tr>';
     return;
   }
@@ -1202,6 +1211,7 @@ function collectPlans() {
       tokenBonus: Math.max(0, Math.floor(Number(get('tokenBonus')) || 0)),
       tier: get('tier') || 'none',
       dailyReqLimit: Math.max(0, Math.floor(Number(get('dailyReqLimit')) || 0)),
+      durationDays: Math.max(0, Math.floor(Number(get('durationDays')) || 0)),
       description: get('description').trim(),
       active: activeEl ? activeEl.checked : true,
     });
@@ -1839,7 +1849,7 @@ $('addPlanRow').addEventListener('click', () => {
   const blank = {
     id: 'plan-' + Date.now().toString(36),
     name: '', kind: 'credit', priceIdr: 0, credits: 1, tokenBonus: 0,
-    tier: 'none', dailyReqLimit: 0, description: '', active: true,
+    tier: 'none', dailyReqLimit: 0, durationDays: 0, description: '', active: true,
   };
   const tr = document.createElement('tr');
   tr.dataset.id = blank.id;
@@ -1965,8 +1975,12 @@ $('accountRows').addEventListener('click', async (ev) => {
     if (act === 'delete') {
       if (!confirm('Hapus akun ini?')) return;
       await api('DELETE', '/api/admin/accounts/' + encodeURIComponent(id));
-    } else if (act === 'plan-vip' || act === 'plan-pro' || act === 'plan-clear') {
-      const tier = act === 'plan-vip' ? 'vip' : act === 'plan-pro' ? 'pro' : 'none';
+    } else if (act === 'plan-vip' || act === 'plan-pro' ||
+               act === 'plan-extend' || act === 'plan-clear') {
+      const tier = act === 'plan-vip' ? 'vip'
+        : act === 'plan-pro' ? 'pro'
+        : act === 'plan-extend' ? (btn.dataset.tier || 'vip')
+        : 'none';
       if (act === 'plan-clear' && !confirm('Hapus plan dari akun ini?')) return;
       await api('POST', '/api/admin/accounts/' + encodeURIComponent(id), {
         id,

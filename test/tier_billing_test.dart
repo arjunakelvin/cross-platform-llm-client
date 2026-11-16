@@ -73,6 +73,29 @@ void main() {
       expect(m.allowsTier('pro'), isTrue);
       expect(m.allowsTier('vip'), isTrue);
     });
+
+    test('hierarki: model VIP boleh untuk VIP & PRO, tapi bukan FREE', () {
+      final m = model(tiers: const ['vip']);
+      expect(m.allowsTier('free'), isFalse);
+      expect(m.allowsTier('guest'), isFalse);
+      expect(m.allowsTier('vip'), isTrue);
+      expect(m.allowsTier('pro'), isTrue);
+    });
+
+    test('hierarki: model khusus PRO hanya untuk PRO', () {
+      final m = model(tiers: const ['pro']);
+      expect(m.allowsTier('free'), isFalse);
+      expect(m.allowsTier('vip'), isFalse);
+      expect(m.allowsTier('pro'), isTrue);
+    });
+
+    test('hierarki: model FREE terbuka untuk guest, VIP, dan PRO', () {
+      final m = model(tiers: const ['free']);
+      expect(m.allowsTier('guest'), isTrue);
+      expect(m.allowsTier('free'), isTrue);
+      expect(m.allowsTier('vip'), isTrue);
+      expect(m.allowsTier('pro'), isTrue);
+    });
   });
 
   group('label harga', () {

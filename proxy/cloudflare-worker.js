@@ -61,6 +61,41 @@ const GUEST_DAILY_REQUEST_LIMIT = 5;
 const PLAN_MEMBERSHIP_DURATION_DAYS = 30;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+// Hierarki tier: free < vip < pro.
+// Model dengan `tierAccess` = ['vip'] boleh dipakai VIP & PRO; model ['pro']
+// hanya PRO; model ['free'] semua tier. Dengan begitu PRO bisa memakai semua
+// model, VIP tidak bisa memakai model khusus PRO, dan FREE tidak bisa memakai
+// model VIP/PRO.
+const TIER_RANK = { guest: 0, free: 0, vip: 1, pro: 2 };
+
+function normalizeTier(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function tierRank(value) {
+  const rank = TIER_RANK[normalizeTier(value)];
+  return Number.isInteger(rank) ? rank : -1;
+}
+
+/// Cek akses tier berdasarkan hierarki (bukan sekadar daftar persis).
+function tierAllows(userTier, tierAccess) {
+  const user = normalizeTier(userTier) || 'free';
+  const tiers = Array.isArray(tierAccess)
+    ? tierAccess.map(normalizeTier).filter(Boolean)
+    : [];
+  if (tiers.length === 0) return true;
+  // Tier kustom yang ditulis persis tetap dihormati.
+  if (tiers.includes(user)) return true;
+  const userRank = tierRank(user);
+  if (userRank < 0) return false;
+  let requiredRank = Infinity;
+  for (const tier of tiers) {
+    const rank = tierRank(tier);
+    if (rank >= 0 && rank < requiredRank) requiredRank = rank;
+  }
+  return Number.isFinite(requiredRank) ? userRank >= requiredRank : false;
+}
+
 const PLAN_KINDS = ['credit', 'membership'];
 const PLAN_TIERS = ['none', 'vip', 'pro'];
 const WALLET_TYPES = ['shopeepay', 'gopay'];
@@ -1366,24 +1401,100 @@ function bearerToken(request) {
   return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
 }
 
+/// Pasang/perpanjang membership VIP/PRO pada akun.
+///
+/// Membership selalu berdurasi (default 30 hari). Kalau tier yang sama masih
+/// aktif, masa aktif diperpanjang dari `expiresAt` lama; kalau beda tier,
+/// paket baru dimulai dari sekarang.
+function applyMembershipPlan(account, tierInput, daysInput, opts = {}) {
+  if (!account) return account;
+  const tier = normalizeTier(tierInput);
+  if (tier !== 'vip' && tier !== 'pro') return account;
+  const now = Date.now();
+  const durationDays = Math.min(3650, Math.max(1,
+    Math.floor(Number(daysInput) || PLAN_MEMBERSHIP_DURATION_DAYS)));
+  const current = account.plan && typeof account.plan === 'object'
+    ? account.plan : null;
+  const currentExpiry = Number(current && current.expiresAt) || 0;
+  const currentTier = normalizeTier(current && current.tier);
+  const sameTierActive = currentTier === tier && currentExpiry > now;
+  const accountTier = normalizeTier(account.tier);
+  const prevTier = sameTierActive
+    ? (normalizeTier(current.prevTier) || 'free')
+    : (accountTier === 'vip' || accountTier === 'pro'
+      ? 'free'
+      : (accountTier || 'free'));
+  const prevDailyReqLimit = sameTierActive
+    ? Math.max(0, Math.floor(Number(current.prevDailyReqLimit) || 0))
+    : Math.max(0, Math.floor(Number(account.dailyRequestLimit) || 0));
+  account.plan = {
+    id: String(opts.id || (current && current.id) ||
+      `membership-${tier}-${now.toString(36)}`),
+    name: String(opts.name || (current && current.name) || tier.toUpperCase())
+      .trim().slice(0, 80) || tier.toUpperCase(),
+    tier,
+    expiresAt: (sameTierActive ? currentExpiry : now) + durationDays * MS_PER_DAY,
+    durationDays,
+    createdAt: sameTierActive && Number(current.createdAt) > 0
+      ? Number(current.createdAt) : now,
+    prevTier,
+    prevDailyReqLimit,
+  };
+  account.tier = tier;
+  if (Number(opts.dailyReqLimit) > 0) {
+    account.dailyRequestLimit = Math.floor(Number(opts.dailyReqLimit));
+  } else if (!sameTierActive && !(Number(account.dailyRequestLimit) > 0)) {
+    account.dailyRequestLimit = tier === 'pro' ? 45 : 30;
+  }
+  return account;
+}
+
+/// Pastikan akun VIP/PRO selalu punya plan 30 hari. Ini menutup akun lama
+/// yang tier-nya di-set manual dari dashboard tanpa `plan` (dulu tampil
+/// "seumur hidup" di user info).
+function ensureMembershipPlan(account) {
+  if (!account) return account;
+  const tier = normalizeTier(account.tier);
+  if (tier !== 'vip' && tier !== 'pro') return account;
+  const plan = account.plan;
+  const active = plan && typeof plan === 'object' &&
+    normalizeTier(plan.tier) === tier &&
+    (Number(plan.expiresAt) || 0) > Date.now();
+  if (active) return account;
+  return applyMembershipPlan(account, tier, PLAN_MEMBERSHIP_DURATION_DAYS);
+}
+
 /// Lazy expiry membership: kalau paket VIP/Pro akun sudah habis masanya
-/// (plan.expiresAt <= sekarang), akun otomatis kembali ke tier gratis
+/// (plan.expiresAt <= sekarang), akun otomatis kembali ke tier free
 /// dengan limit request admin (plan.prevDailyReqLimit / kalau 0 = aturan
 /// tier free). Dipanggil setiap kali akun dibaca dari KV supaya tidak perlu
-/// cron job terpisah.
+/// cron job terpisah. Akun VIP/PRO lama tanpa plan otomatis diberi plan
+/// 30 hari agar tidak lagi tampil sebagai membership permanen.
 async function applyPlanExpiry(env, account) {
   if (!account) return account;
-  const plan = account.plan;
-  if (!plan || typeof plan !== 'object') return account;
-  const expiresAt = Number(plan.expiresAt) || 0;
-  if (expiresAt <= 0) return account;
-  if (Date.now() < expiresAt) return account;
-  const next = { ...account };
-  next.tier = (typeof plan.prevTier === 'string' && plan.prevTier) || 'free';
-  next.dailyRequestLimit = Math.max(0, Math.floor(Number(plan.prevDailyReqLimit) || 0));
-  delete next.plan;
-  await env.PB_KV.put(`account:${account.id}`, JSON.stringify(next));
-  return next;
+  const plan = account.plan && typeof account.plan === 'object'
+    ? account.plan : null;
+  const expiresAt = Number(plan && plan.expiresAt) || 0;
+  if (plan && expiresAt > 0 && Date.now() >= expiresAt) {
+    const next = { ...account };
+    // Expired selalu kembali ke FREE (tidak mewarisi tier membership lama).
+    next.tier = 'free';
+    next.dailyRequestLimit = Math.max(0,
+      Math.floor(Number(plan.prevDailyReqLimit) || 0));
+    delete next.plan;
+    await env.PB_KV.put(`account:${account.id}`, JSON.stringify(next));
+    return next;
+  }
+  const tier = normalizeTier(account.tier);
+  const active = plan && normalizeTier(plan.tier) === tier &&
+    expiresAt > Date.now();
+  if ((tier === 'vip' || tier === 'pro') && !active) {
+    const next = { ...account };
+    ensureMembershipPlan(next);
+    await env.PB_KV.put(`account:${account.id}`, JSON.stringify(next));
+    return next;
+  }
+  return account;
 }
 
 async function sessionAccount(env, request) {
@@ -1893,43 +2004,33 @@ async function handleAdmin(request, env, pathname) {
       };
       // Konsistensi: tier di-set manual beda dengan plan aktif → plan dihapus.
       if (!body.planAction && !body.planTier && account.plan) {
-        if (String(account.plan.tier || '') !== String(account.tier || '')) {
+        if (normalizeTier(account.plan.tier) !== normalizeTier(account.tier)) {
           delete account.plan;
         }
       }
-      // Plan membersihkan/mengubah tier secara manual di dashboard.
-      //   body.planAction = 'clear'          → hapus plan, tier kembali free
-      //   body.planTier = 'vip' | 'pro'      → beri/perpanjang plan 30 hari
-      //   body.planDays = N (opsional)       → perpanjang N hari (default 30)
+      // Plan diatur manual di dashboard:
+      //   body.planAction = 'clear'     → hapus plan, tier kembali free
+      //   body.planTier = 'vip'|'pro'   → beri/perpanjang plan (default 30 hari)
+      //   body.planDays = N (opsional)  → durasi plan dalam hari
+      // Tanpa planAction, mengubah dropdown tier ke VIP/PRO otomatis membuat
+      // plan 30 hari (bukan membership permanen).
       if (body.planAction === 'clear') {
         delete account.plan;
         account.tier = 'free';
         account.dailyRequestLimit = 0;
       } else if (typeof body.planTier === 'string' &&
-                 PLAN_TIERS.includes(String(body.planTier).toLowerCase()) &&
-                 String(body.planTier).toLowerCase() !== 'none') {
-        const tier = String(body.planTier).toLowerCase();
+                 PLAN_TIERS.includes(normalizeTier(body.planTier)) &&
+                 normalizeTier(body.planTier) !== 'none') {
+        const tier = normalizeTier(body.planTier);
         const days = Number.isFinite(+body.planDays)
           ? Math.max(1, Math.floor(+body.planDays))
           : PLAN_MEMBERSHIP_DURATION_DAYS;
-        const prevTier = String(account.tier || 'free')
-          .replace(/^(vip|pro)$/, 'free');
-        account.plan = {
-          id: `admin-${tier}-${now.toString(36)}`,
+        applyMembershipPlan(account, tier, days, {
           name: tier.toUpperCase(),
-          tier,
-          expiresAt: now + days * MS_PER_DAY,
-          durationDays: days,
-          createdAt: now,
-          prevTier,
-          prevDailyReqLimit: Math.max(0,
-            Math.floor(Number(existing.dailyRequestLimit) || 0)),
-        };
-        account.tier = tier;
-        // dailyReqLimit admin-set atau membership-default kalau kosong.
-        if (!(Number(account.dailyRequestLimit) > 0)) {
-          account.dailyRequestLimit = tier === 'pro' ? 45 : 30;
-        }
+          dailyReqLimit: Number(body.planDailyReqLimit) || 0,
+        });
+      } else {
+        ensureMembershipPlan(account);
       }
       await env.PB_KV.put(`account:${id}`, JSON.stringify(account));
       if (account.discordId) {
@@ -2068,22 +2169,14 @@ async function handleAdmin(request, env, pathname) {
       existing.tokenBalance =
         Math.floor(Number(existing.tokenBalance || 0) + tokenBonus);
       if (tier !== 'none') {
-        const prevTier = String(existing.tier || 'free').toLowerCase() || 'free';
-        const prevLimit = Math.max(0, Math.floor(Number(existing.dailyRequestLimit) || 0));
-        existing.tier = tier;
-        if (dailyReqLimit > 0) existing.dailyRequestLimit = dailyReqLimit;
-        // Membership 30 hari: simpan plan + tanggal kedaluwarsa.
-        // Saat habis, applyPlanExpiry() mengembalikan tier & limit ke semula.
-        existing.plan = {
+        // Membership 30 hari: paket yang sama diperpanjang dari expiry lama,
+        // paket beda tier mulai dari sekarang. Saat habis, applyPlanExpiry()
+        // mengembalikan tier ke free.
+        applyMembershipPlan(existing, tier, durationDays, {
           id: String(grants.planId || ''),
           name: String(grants.planName || grants.tier),
-          tier,
-          expiresAt: Date.now() + durationDays * MS_PER_DAY,
-          durationDays,
-          createdAt: Date.now(),
-          prevTier,
-          prevDailyReqLimit: prevLimit,
-        };
+          dailyReqLimit,
+        });
       }
       existing.planLastPurchaseAt = Date.now();
       await env.PB_KV.put(key, JSON.stringify(existing));
@@ -2997,7 +3090,15 @@ async function handleBotApi(request, env, pathname) {
       return jsonResponse(request, 404, { error: 'Account not found for this discord_id.' });
     }
     account = await applyPlanExpiry(env, account);
-    account.tier = tier;
+    // Tier dari bot mengikuti aturan yang sama: VIP/PRO selalu punya plan
+    // 30 hari; tier lain tidak menyimpan plan.
+    const nextTier = normalizeTier(tier);
+    account.tier = nextTier;
+    if (nextTier === 'vip' || nextTier === 'pro') {
+      ensureMembershipPlan(account);
+    } else {
+      delete account.plan;
+    }
     await env.PB_KV.put(`account:${account.id}`, JSON.stringify(account));
     return jsonResponse(request, 200, { ok: true, account });
   }
@@ -3435,7 +3536,7 @@ async function handleGateway(request, env, pathname) {
             if (m.active === false) return false;
             if (m.serverId && disabled.has(String(m.serverId))) return false;
             const tiers = m.tierAccess || ['free', 'pro', 'vip'];
-            return tiers.includes(userTier);
+            return tierAllows(userTier, tiers);
           })
           // Jangan pernah bocorkan API key backend lewat endpoint user.
           .map(({ apiKey, ...rest }) => ({
@@ -3455,7 +3556,7 @@ async function handleGateway(request, env, pathname) {
             const entry = apiProviderModelEntry(
               provider, model, providerModels.length);
             const tiers = entry.tierAccess || ['free', 'pro', 'vip'];
-            if (!tiers.includes(userTier)) continue;
+            if (!tierAllows(userTier, tiers)) continue;
             list.push(entry);
           }
         }
@@ -3751,19 +3852,12 @@ async function handleGateway(request, env, pathname) {
       });
     }
 
-    // Check tier access
-    // FREE model → bisa dipakai siapa saja (token/credit sesuai label model),
-    // tanpa restriction tier. MODEL PRO/VIP → cek tier user.
+    // Check tier access (hierarki free < vip < pro).
+    // Model FREE → semua tier; model VIP → VIP & PRO; model PRO → hanya PRO.
     const userTier = account.tier || config.defaultTier || 'free';
     const allowedTiers = modelConfig.tierAccess || ['free', 'pro', 'vip'];
     const isFreeModel = allowedTiers.includes('free');
-    // Model AI lokal (self-hosted / IP private) boleh dipakai siapa saja —
-    // user & guest tidak kebagi dulu model lokal, tinggal lewat gateway.
-    const selfHosted = isSelfHostedAi(serverConfig, modelConfig);
-    if (!selfHosted && isFreeModel) {
-      // Model FREE → semua tier boleh gunakan (tanpa restriction).
-      // Pembagian token/credit akan diatur berdasarkan label model di bawah.
-    } else if (!selfHosted && !isFreeModel && !allowedTiers.includes(userTier)) {
+    if (!tierAllows(userTier, allowedTiers)) {
       return jsonResponse(request, 403, {
         error: `Model "${modelId}" requires tier: ${allowedTiers.join(', ')}. Your tier: ${userTier}`,
       });
